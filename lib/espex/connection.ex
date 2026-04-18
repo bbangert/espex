@@ -5,7 +5,7 @@ defmodule Espex.Connection do
   Each accepted TCP connection gets its own handler process. The handler
   is intentionally thin: it buffers incoming bytes, decodes frames via
   `Espex.Frame` or `Espex.Noise.Frame`, runs them through
-  `Espex.Dispatch` (pure), and interprets the returned effects against
+  `Espex.Dispatch` (pure), and interprets the returned actions against
   this process's socket and the configured adapter modules.
 
   The handler captures a snapshot of the per-connection inventory
@@ -104,9 +104,9 @@ defmodule Espex.Connection do
 
   @impl GenServer
   def handle_info(event, {socket, state}) do
-    {state, effects} = Dispatch.handle_event(state, event)
+    {state, actions} = Dispatch.handle_event(state, event)
 
-    case interpret_effects(socket, state, effects) do
+    case interpret_actions(socket, state, actions) do
       {:cont, state} ->
         {:noreply, {socket, state}}
 
@@ -229,9 +229,9 @@ defmodule Espex.Connection do
     case MessageTypes.decode_message(type_id, payload) do
       {:ok, message} ->
         Logger.debug("Espex #{state.peer} recv #{inspect(message.__struct__)}")
-        {state, effects} = Dispatch.step(state, message)
+        {state, actions} = Dispatch.handle_request(state, message)
 
-        case interpret_effects(socket, state, effects) do
+        case interpret_actions(socket, state, actions) do
           {:cont, state} -> process_buffer(socket, state)
           {:halt, _reason, _state} = halt -> halt
         end
@@ -289,32 +289,32 @@ defmodule Espex.Connection do
   # Effect interpreter
   # ---------------------------------------------------------------------------
 
-  defp interpret_effects(socket, state, effects) do
-    Enum.reduce_while(effects, {:cont, state}, fn effect, {:cont, state} ->
-      case interpret_effect(socket, state, effect) do
+  defp interpret_actions(socket, state, actions) do
+    Enum.reduce_while(actions, {:cont, state}, fn action, {:cont, state} ->
+      case interpret_action(socket, state, action) do
         {:cont, state} -> {:cont, {:cont, state}}
         {:halt, reason, state} -> {:halt, {:halt, reason, state}}
       end
     end)
   end
 
-  defp interpret_effect(socket, state, {:send, message}) do
+  defp interpret_action(socket, state, {:send, message}) do
     case send_protobuf(socket, state, message) do
       {:ok, state} -> {:cont, state}
       {:error, reason} -> {:halt, reason, state}
     end
   end
 
-  defp interpret_effect(_socket, state, {:close, reason}) do
+  defp interpret_action(_socket, state, {:close, reason}) do
     {:halt, reason, state}
   end
 
-  defp interpret_effect(_socket, state, {:log, level, message}) do
+  defp interpret_action(_socket, state, {:log, level, message}) do
     Logger.log(level, "Espex #{state.peer} #{message}")
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, {:serial_open, instance, opts}) do
+  defp interpret_action(_socket, state, {:serial_open, instance, opts}) do
     case state.adapters.serial_proxy.open(instance, opts, self()) do
       {:ok, handle} ->
         Logger.info("Espex #{state.peer} opened serial proxy instance #{instance}")
@@ -326,7 +326,7 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_effect(_socket, state, {:serial_write, instance, data}) do
+  defp interpret_action(_socket, state, {:serial_write, instance, data}) do
     with {:ok, handle} <- ConnectionState.port_handle(state, instance),
          :ok <- state.adapters.serial_proxy.write(handle, data) do
       :ok
@@ -341,7 +341,7 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, {:serial_close, instance}) do
+  defp interpret_action(_socket, state, {:serial_close, instance}) do
     case ConnectionState.drop_port(state, instance) do
       {new_state, nil} ->
         {:cont, new_state}
@@ -352,7 +352,7 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_effect(_socket, state, {:serial_modem_pins_set, instance, rts, dtr}) do
+  defp interpret_action(_socket, state, {:serial_modem_pins_set, instance, rts, dtr}) do
     case ConnectionState.port_handle(state, instance) do
       {:ok, handle} -> state.adapters.serial_proxy.set_modem_pins(handle, rts, dtr)
       :error -> :ok
@@ -361,7 +361,7 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_effect(socket, state, {:serial_modem_pins_get, instance}) do
+  defp interpret_action(socket, state, {:serial_modem_pins_get, instance}) do
     result =
       case ConnectionState.port_handle(state, instance) do
         {:ok, handle} -> state.adapters.serial_proxy.get_modem_pins(handle)
@@ -374,7 +374,7 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_effect(socket, state, :zwave_subscribe) do
+  defp interpret_action(socket, state, :zwave_subscribe) do
     case state.adapters.zwave_proxy.subscribe(self()) do
       {:ok, home_id_bytes} ->
         state = ConnectionState.put_zwave_subscribed(state, true)
@@ -386,12 +386,12 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_effect(_socket, state, :zwave_unsubscribe) do
+  defp interpret_action(_socket, state, :zwave_unsubscribe) do
     if adapter = state.adapters.zwave_proxy, do: adapter.unsubscribe(self())
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, {:zwave_send_frame, data}) do
+  defp interpret_action(_socket, state, {:zwave_send_frame, data}) do
     case state.adapters.zwave_proxy.send_frame(data) do
       :ok -> :ok
       {:error, reason} -> Logger.warning("Espex #{state.peer} Z-Wave send_frame failed: #{inspect(reason)}")
@@ -400,17 +400,17 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, :infrared_subscribe) do
+  defp interpret_action(_socket, state, :infrared_subscribe) do
     state.adapters.infrared_proxy.subscribe(self())
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, :infrared_unsubscribe) do
+  defp interpret_action(_socket, state, :infrared_unsubscribe) do
     if adapter = state.adapters.infrared_proxy, do: adapter.unsubscribe(self())
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, {:infrared_transmit, key, timings, opts}) do
+  defp interpret_action(_socket, state, {:infrared_transmit, key, timings, opts}) do
     case state.adapters.infrared_proxy.transmit_raw(key, timings, opts) do
       :ok -> :ok
       {:error, reason} -> Logger.warning("Espex #{state.peer} IR transmit failed: #{inspect(reason)}")
@@ -419,7 +419,7 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_effect(_socket, state, {:entity_command, command}) do
+  defp interpret_action(_socket, state, {:entity_command, command}) do
     case state.adapters.entity_provider.handle_command(command) do
       :ok -> :ok
       {:error, reason} -> Logger.warning("Espex #{state.peer} entity command failed: #{inspect(reason)}")
@@ -531,8 +531,8 @@ defmodule Espex.Connection do
   defp load_entities(%{entity_provider: module}), do: module.list_entities()
 
   defp cleanup(state) do
-    if state.zwave_subscribed, do: interpret_effect(nil, state, :zwave_unsubscribe)
-    if state.infrared_subscribed, do: interpret_effect(nil, state, :infrared_unsubscribe)
+    if state.zwave_subscribed, do: interpret_action(nil, state, :zwave_unsubscribe)
+    if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
 
     if adapter = state.adapters.serial_proxy do
       Enum.each(state.opened_ports, fn {_instance, handle} -> adapter.close(handle) end)

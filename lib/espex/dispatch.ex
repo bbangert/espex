@@ -2,22 +2,23 @@ defmodule Espex.Dispatch do
   @moduledoc """
   Pure message dispatch for the ESPHome Native API server.
 
-  The `Espex.Connection` handler runs each decoded inbound frame and each
-  adapter-driven event through `step/2` or `handle_event/2`, gets back a
-  new `%ConnectionState{}` plus a list of effects, and interprets those
-  effects against its socket and the configured adapters.
+  The `Espex.Connection` handler runs each decoded inbound frame and
+  each adapter-driven event through `handle_request/2` or
+  `handle_event/2`, gets back a new `%ConnectionState{}` plus a list
+  of actions, and interprets those actions against its socket and the
+  configured adapters.
 
   Adapter module calls (e.g. `InfraredProxy.list_entities/0`) happen
   inline here — they are just function calls on consumer-provided
-  modules and stay testable through fake adapters. Everything with
-  socket or process side-effects (sending frames, opening ports,
-  subscribing) is emitted as an effect so the handler owns those
-  interactions exclusively.
+  modules and stay testable through fake adapters. Anything that
+  needs to touch the socket or cross a process boundary (sending
+  frames, opening ports, subscribing) is emitted as an action so the
+  handler owns those interactions exclusively.
   """
 
   alias Espex.{ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy}
 
-  @type effect ::
+  @type action ::
           {:send, struct()}
           | {:close, atom()}
           | {:log, :debug | :info | :warning | :error, String.t()}
@@ -34,19 +35,19 @@ defmodule Espex.Dispatch do
           | {:infrared_transmit, key :: non_neg_integer(), timings :: [integer()], SerialProxy.open_opts()}
           | {:entity_command, struct()}
 
-  @type result :: {ConnectionState.t(), [effect()]}
+  @type result :: {ConnectionState.t(), [action()]}
 
   # ---------------------------------------------------------------------------
-  # step/2 — dispatch for inbound protobuf messages
+  # handle_request/2 — one dispatch per inbound protobuf message
   # ---------------------------------------------------------------------------
 
   @doc """
   Dispatch an inbound protobuf message against the current state.
   """
-  @spec step(ConnectionState.t(), struct()) :: result()
-  def step(state, message)
+  @spec handle_request(ConnectionState.t(), struct()) :: result()
+  def handle_request(state, message)
 
-  def step(state, %Proto.HelloRequest{} = req) do
+  def handle_request(state, %Proto.HelloRequest{} = req) do
     response = %Proto.HelloResponse{
       api_version_major: DeviceConfig.api_version_major(),
       api_version_minor: DeviceConfig.api_version_minor(),
@@ -57,61 +58,61 @@ defmodule Espex.Dispatch do
     {state, [{:log, :info, "hello from #{state.peer} (client_info=#{inspect(req.client_info)})"}, {:send, response}]}
   end
 
-  def step(state, %Proto.AuthenticationRequest{}) do
+  def handle_request(state, %Proto.AuthenticationRequest{}) do
     {state, [{:send, %Proto.AuthenticationResponse{invalid_password: false}}]}
   end
 
-  def step(state, %Proto.PingRequest{}) do
+  def handle_request(state, %Proto.PingRequest{}) do
     {state, [{:send, %Proto.PingResponse{}}]}
   end
 
-  def step(state, %Proto.DeviceInfoRequest{}) do
+  def handle_request(state, %Proto.DeviceInfoRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
     response = DeviceConfig.to_device_info_response(state.device_config, serial_protos)
     {state, [{:send, response}]}
   end
 
-  def step(state, %Proto.ListEntitiesRequest{}) do
-    ir_effects =
+  def handle_request(state, %Proto.ListEntitiesRequest{}) do
+    ir_actions =
       state.infrared_entities
       |> Enum.map(&InfraredProxy.Entity.to_proto/1)
       |> Enum.map(&{:send, &1})
 
-    custom_effects = Enum.map(state.entities, &{:send, &1})
+    custom_actions = Enum.map(state.entities, &{:send, &1})
 
-    {state, ir_effects ++ custom_effects ++ [{:send, %Proto.ListEntitiesDoneResponse{}}]}
+    {state, ir_actions ++ custom_actions ++ [{:send, %Proto.ListEntitiesDoneResponse{}}]}
   end
 
-  def step(state, %Proto.SubscribeStatesRequest{}) do
-    initial_state_effects =
+  def handle_request(state, %Proto.SubscribeStatesRequest{}) do
+    initial_state_actions =
       case ConnectionState.adapter(state, :entity_provider) do
         nil -> []
         module -> Enum.map(module.initial_states(), &{:send, &1})
       end
 
-    {subscribe_effects, state} =
+    {subscribe_actions, state} =
       if ConnectionState.adapter?(state, :infrared_proxy) and not state.infrared_subscribed do
         {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
       else
         {[], state}
       end
 
-    {state, initial_state_effects ++ subscribe_effects}
+    {state, initial_state_actions ++ subscribe_actions}
   end
 
-  def step(state, %Proto.SubscribeLogsRequest{} = req) do
+  def handle_request(state, %Proto.SubscribeLogsRequest{} = req) do
     {state, [{:log, :debug, "#{state.peer} subscribed to logs (level=#{req.level})"}]}
   end
 
-  def step(state, %Proto.SubscribeHomeassistantServicesRequest{}) do
+  def handle_request(state, %Proto.SubscribeHomeassistantServicesRequest{}) do
     {state, [{:log, :debug, "#{state.peer} subscribed to HA services"}]}
   end
 
-  def step(state, %Proto.SubscribeHomeAssistantStatesRequest{}) do
+  def handle_request(state, %Proto.SubscribeHomeAssistantStatesRequest{}) do
     {state, [{:log, :debug, "#{state.peer} subscribed to HA states"}]}
   end
 
-  def step(state, %Proto.DisconnectRequest{}) do
+  def handle_request(state, %Proto.DisconnectRequest{}) do
     {state,
      [
        {:log, :info, "#{state.peer} requested disconnect"},
@@ -120,31 +121,31 @@ defmodule Espex.Dispatch do
      ]}
   end
 
-  def step(state, %Proto.GetTimeRequest{}) do
+  def handle_request(state, %Proto.GetTimeRequest{}) do
     epoch = state.clock_fun.() |> Bitwise.band(0xFFFFFFFF)
     {state, [{:send, %Proto.GetTimeResponse{epoch_seconds: epoch}}]}
   end
 
   # -- Serial Proxy --
 
-  def step(state, %Proto.SerialProxyConfigureRequest{} = req) do
+  def handle_request(state, %Proto.SerialProxyConfigureRequest{} = req) do
     case ConnectionState.find_serial_proxy(state, req.instance) do
       nil ->
         {state, [{:log, :warning, "serial proxy configure for unknown instance #{req.instance}"}]}
 
       _info ->
         opts = SerialProxy.configure_request_to_open_opts(req)
-        close_effects =
+        close_actions =
           case ConnectionState.port_handle(state, req.instance) do
             {:ok, _h} -> [{:serial_close, req.instance}]
             :error -> []
           end
 
-        {state, close_effects ++ [{:serial_open, req.instance, opts}]}
+        {state, close_actions ++ [{:serial_open, req.instance, opts}]}
     end
   end
 
-  def step(state, %Proto.SerialProxyWriteRequest{} = req) do
+  def handle_request(state, %Proto.SerialProxyWriteRequest{} = req) do
     case ConnectionState.port_handle(state, req.instance) do
       {:ok, _handle} ->
         {state, [{:serial_write, req.instance, req.data}]}
@@ -154,14 +155,14 @@ defmodule Espex.Dispatch do
     end
   end
 
-  def step(state, %Proto.SerialProxySetModemPinsRequest{} = req) do
+  def handle_request(state, %Proto.SerialProxySetModemPinsRequest{} = req) do
     case ConnectionState.port_handle(state, req.instance) do
       {:ok, _h} -> {state, [{:serial_modem_pins_set, req.instance, req.rts, req.dtr}]}
       :error -> {state, [{:log, :warning, "set_modem_pins for unopened instance #{req.instance}"}]}
     end
   end
 
-  def step(state, %Proto.SerialProxyGetModemPinsRequest{} = req) do
+  def handle_request(state, %Proto.SerialProxyGetModemPinsRequest{} = req) do
     case ConnectionState.port_handle(state, req.instance) do
       {:ok, _h} ->
         {state, [{:serial_modem_pins_get, req.instance}]}
@@ -172,27 +173,27 @@ defmodule Espex.Dispatch do
     end
   end
 
-  def step(state, %Proto.SerialProxyRequest{} = req) do
+  def handle_request(state, %Proto.SerialProxyRequest{} = req) do
     {state, [{:log, :debug, "serial proxy request instance #{req.instance} type #{inspect(req.type)}"}]}
   end
 
   # -- Infrared Proxy --
 
-  def step(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
+  def handle_request(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
     if ConnectionState.adapter?(state, :infrared_proxy) do
       opts = [
         carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
         repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
       ]
 
-      {sub_effects, state} =
+      {sub_actions, state} =
         if state.infrared_subscribed do
           {[], state}
         else
           {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
         end
 
-      {state, sub_effects ++ [{:infrared_transmit, req.key, req.timings, opts}]}
+      {state, sub_actions ++ [{:infrared_transmit, req.key, req.timings, opts}]}
     else
       {state, [{:log, :warning, "infrared transmit ignored — no adapter configured"}]}
     end
@@ -200,7 +201,7 @@ defmodule Espex.Dispatch do
 
   # -- Z-Wave Proxy --
 
-  def step(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE}) do
+  def handle_request(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE}) do
     if ConnectionState.adapter?(state, :zwave_proxy) do
       {state, [:zwave_subscribe]}
     else
@@ -208,7 +209,7 @@ defmodule Espex.Dispatch do
     end
   end
 
-  def step(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE}) do
+  def handle_request(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE}) do
     if state.zwave_subscribed do
       {ConnectionState.put_zwave_subscribed(state, false), [:zwave_unsubscribe]}
     else
@@ -216,11 +217,11 @@ defmodule Espex.Dispatch do
     end
   end
 
-  def step(state, %Proto.ZWaveProxyRequest{} = req) do
+  def handle_request(state, %Proto.ZWaveProxyRequest{} = req) do
     {state, [{:log, :debug, "unhandled Z-Wave proxy request type: #{inspect(req.type)}"}]}
   end
 
-  def step(state, %Proto.ZWaveProxyFrame{data: data}) do
+  def handle_request(state, %Proto.ZWaveProxyFrame{data: data}) do
     if ConnectionState.adapter?(state, :zwave_proxy) do
       {state, [{:zwave_send_frame, data}]}
     else
@@ -230,7 +231,7 @@ defmodule Espex.Dispatch do
 
   # -- Entity commands (routed to EntityProvider if configured) --
 
-  def step(state, %type{} = message) when type in [
+  def handle_request(state, %type{} = message) when type in [
          Proto.CoverCommandRequest,
          Proto.FanCommandRequest,
          Proto.LightCommandRequest,
@@ -260,7 +261,7 @@ defmodule Espex.Dispatch do
 
   # -- Catch-all --
 
-  def step(state, message) do
+  def handle_request(state, message) do
     {state, [{:log, :debug, "unhandled message: #{inspect(message.__struct__)}"}]}
   end
 
@@ -319,14 +320,14 @@ defmodule Espex.Dispatch do
   end
 
   # ---------------------------------------------------------------------------
-  # Response builders for effects that the handler resolves inline
+  # Response builders for actions that the handler resolves inline
   # (e.g. it performs an adapter call then needs to reply with a struct)
   # ---------------------------------------------------------------------------
 
   @doc """
   Build a `SerialProxyGetModemPinsResponse` from an adapter's return
   value. The handler calls this after resolving a
-  `:serial_modem_pins_get` effect.
+  `:serial_modem_pins_get` action.
   """
   @spec modem_pins_response(non_neg_integer(), {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}) ::
           Proto.SerialProxyGetModemPinsResponse.t()
