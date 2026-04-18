@@ -21,6 +21,31 @@ defmodule Espex.Test.FakeSerialProxy do
   def get_modem_pins(_handle), do: {:ok, %{rts: false, dtr: false}}
 end
 
+defmodule Espex.Test.FakeSerialProxyWithOne do
+  @moduledoc false
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances do
+    [Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl)]
+  end
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :fake_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def set_modem_pins(_handle, _rts, _dtr), do: :ok
+
+  @impl true
+  def get_modem_pins(_handle), do: {:ok, %{rts: false, dtr: false}}
+end
+
 defmodule Espex.Test.FakeZWaveProxy do
   @moduledoc false
   @behaviour Espex.ZWaveProxy
