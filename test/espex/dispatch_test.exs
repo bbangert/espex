@@ -50,6 +50,22 @@ defmodule Espex.DispatchTest do
       assert resp.zwave_proxy_feature_flags == 1
       assert resp.zwave_home_id == 0x1234
     end
+
+    test "response includes sub-devices from config" do
+      cfg = %DeviceConfig{
+        devices: [
+          Espex.DeviceConfig.Device.new(id: 1, name: "Switch Pod"),
+          Espex.DeviceConfig.Device.new(id: 2, name: "Button Pod", area_id: 5)
+        ]
+      }
+
+      {_s, [{:send, resp}]} = Dispatch.step(state(device_config: cfg), %Proto.DeviceInfoRequest{})
+
+      assert [
+               %Proto.DeviceInfo{device_id: 1, name: "Switch Pod", area_id: 0},
+               %Proto.DeviceInfo{device_id: 2, name: "Button Pod", area_id: 5}
+             ] = resp.devices
+    end
   end
 
   describe "ListEntitiesRequest" do

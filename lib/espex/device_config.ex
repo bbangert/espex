@@ -10,8 +10,19 @@ defmodule Espex.DeviceConfig do
   `zwave_feature_flags` and `zwave_home_id` are populated by the consumer
   (typically from an `Espex.ZWaveProxy.Adapter`) before building a
   `DeviceInfoResponse` — the struct itself is pure.
+
+  ## `project_name` format
+
+  If set, `project_name` must follow the ESPHome `"author.project"`
+  convention — e.g. `"mycompany.thermostat"`. Home Assistant's ESPHome
+  integration splits this string on `.` and indexes `[1]` to derive the
+  model name shown in its device registry; a bare token like `"espex"`
+  (no dot) makes HA's setup task crash silently and the device never
+  registers. The default is `""`, which is what HA treats as "no project"
+  and safely skips.
   """
 
+  alias Espex.DeviceConfig.Device
   alias Espex.Proto.DeviceInfoResponse
 
   @default_port 6053
@@ -39,7 +50,8 @@ defmodule Espex.DeviceConfig do
           project_version: String.t(),
           port: non_neg_integer(),
           zwave_feature_flags: non_neg_integer(),
-          zwave_home_id: non_neg_integer()
+          zwave_home_id: non_neg_integer(),
+          devices: [Device.t()]
         }
 
   defstruct name: "espex",
@@ -50,11 +62,12 @@ defmodule Espex.DeviceConfig do
             model: "Espex",
             manufacturer: "Espex",
             suggested_area: "",
-            project_name: "espex",
-            project_version: "0.1.0",
+            project_name: "",
+            project_version: "",
             port: @default_port,
             zwave_feature_flags: 0,
-            zwave_home_id: 0
+            zwave_home_id: 0,
+            devices: []
 
   @doc """
   Build a new `%DeviceConfig{}` from keyword options.
@@ -90,7 +103,8 @@ defmodule Espex.DeviceConfig do
   Convert this config to a `DeviceInfoResponse` protobuf struct.
 
   Accepts an optional list of `%SerialProxyInfo{}` structs to populate
-  the `serial_proxies` field in the response.
+  the `serial_proxies` field in the response. Sub-devices (if any) come
+  from the `:devices` field on the config.
   """
   @spec to_device_info_response(t(), [struct()]) :: DeviceInfoResponse.t()
   def to_device_info_response(%__MODULE__{} = config, serial_proxies \\ []) do
@@ -111,7 +125,8 @@ defmodule Espex.DeviceConfig do
       api_encryption_supported: false,
       zwave_proxy_feature_flags: config.zwave_feature_flags,
       zwave_home_id: config.zwave_home_id,
-      serial_proxies: serial_proxies
+      serial_proxies: serial_proxies,
+      devices: Enum.map(config.devices, &Device.to_proto/1)
     }
   end
 

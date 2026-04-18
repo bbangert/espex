@@ -114,6 +114,7 @@ defmodule Espex.Connection do
   defp handle_frame(socket, state, type_id, payload) do
     case MessageTypes.decode_message(type_id, payload) do
       {:ok, message} ->
+        Logger.debug("Espex #{state.peer} recv #{inspect(message.__struct__)}")
         {state, effects} = Dispatch.step(state, message)
 
         case interpret_effects(socket, state, effects) do
@@ -288,6 +289,8 @@ defmodule Espex.Connection do
   defp load_entities(%{entity_provider: module}), do: module.list_entities()
 
   defp send_message(socket, message) do
+    Logger.debug("Espex send #{inspect(message.__struct__)}")
+
     case MessageTypes.encode_message(message) do
       {:ok, frame} ->
         ThousandIsland.Socket.send(socket, frame)

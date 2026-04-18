@@ -2,7 +2,7 @@
 #
 # Run with:
 #
-#   mix run --no-halt test/manual/live_demo.exs
+#   mix run test/manual/live_demo.exs
 #
 # Starts an Espex server advertising a Switch, a Button, and a Sensor. Walks
 # you through connecting an ESPHome client (e.g. Home Assistant) to it and
@@ -15,7 +15,7 @@
 # Prompts are interactive — expect to paste IP/port into Home Assistant and
 # then press Enter in this terminal to advance through the checklist.
 
-Logger.configure(level: :info)
+Logger.configure(level: :debug)
 
 defmodule Espex.DemoEntityProvider do
   @moduledoc false
@@ -29,13 +29,16 @@ defmodule Espex.DemoEntityProvider do
   @button_key 1002
   @sensor_key 1003
 
+  @switch_device_id 1
+  @button_device_id 2
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   def subscribe_events(pid \\ self()), do: GenServer.call(__MODULE__, {:subscribe_events, pid})
   def sensor_value, do: GenServer.call(__MODULE__, :sensor_value)
-  def set_sensor_value(value, server), do: GenServer.call(__MODULE__, {:set_sensor_value, value, server})
+  def set_sensor_value(value), do: GenServer.call(__MODULE__, {:set_sensor_value, value})
   def switch_value, do: GenServer.call(__MODULE__, :switch_value)
 
   # ----- EntityProvider callbacks -----
@@ -49,7 +52,8 @@ defmodule Espex.DemoEntityProvider do
         name: "Demo Switch",
         icon: "mdi:light-switch",
         disabled_by_default: false,
-        entity_category: :ENTITY_CATEGORY_NONE
+        entity_category: :ENTITY_CATEGORY_NONE,
+        device_id: @switch_device_id
       },
       %Proto.ListEntitiesButtonResponse{
         object_id: "demo_button",
@@ -57,7 +61,8 @@ defmodule Espex.DemoEntityProvider do
         name: "Demo Button",
         icon: "mdi:gesture-tap-button",
         disabled_by_default: false,
-        entity_category: :ENTITY_CATEGORY_NONE
+        entity_category: :ENTITY_CATEGORY_NONE,
+        device_id: @button_device_id
       },
       %Proto.ListEntitiesSensorResponse{
         object_id: "demo_sensor",
@@ -78,7 +83,7 @@ defmodule Espex.DemoEntityProvider do
     snapshot = GenServer.call(__MODULE__, :snapshot)
 
     [
-      %Proto.SwitchStateResponse{key: @switch_key, state: snapshot.switch},
+      %Proto.SwitchStateResponse{key: @switch_key, state: snapshot.switch, device_id: @switch_device_id},
       %Proto.SensorStateResponse{key: @sensor_key, state: snapshot.sensor, missing_state: false}
     ]
   end
@@ -92,8 +97,9 @@ defmodule Espex.DemoEntityProvider do
   # ----- GenServer -----
 
   @impl GenServer
-  def init(_opts) do
-    {:ok, %{switch: false, sensor: 20.0, observers: MapSet.new(), server: Espex.Server}}
+  def init(opts) do
+    server = Keyword.get(opts, :server, Espex.Server)
+    {:ok, %{switch: false, sensor: 20.0, observers: MapSet.new(), server: server}}
   end
 
   @impl GenServer
@@ -105,19 +111,24 @@ defmodule Espex.DemoEntityProvider do
     {:reply, :ok, %{state | observers: MapSet.put(state.observers, pid)}}
   end
 
-  def handle_call({:set_sensor_value, value, server}, _from, state) do
-    Espex.push_state(server, %Proto.SensorStateResponse{
+  def handle_call({:set_sensor_value, value}, _from, state) do
+    Espex.push_state(state.server, %Proto.SensorStateResponse{
       key: @sensor_key,
       state: value,
       missing_state: false
     })
 
-    {:reply, :ok, %{state | sensor: value, server: server}}
+    {:reply, :ok, %{state | sensor: value}}
   end
 
   @impl GenServer
   def handle_cast({:command, %Proto.SwitchCommandRequest{key: @switch_key, state: new_state}}, state) do
-    Espex.push_state(state.server, %Proto.SwitchStateResponse{key: @switch_key, state: new_state})
+    Espex.push_state(state.server, %Proto.SwitchStateResponse{
+      key: @switch_key,
+      state: new_state,
+      device_id: @switch_device_id
+    })
+
     notify(state.observers, {:switch_flipped, new_state})
     {:noreply, %{state | switch: new_state}}
   end
@@ -141,7 +152,7 @@ defmodule Espex.DemoRunner do
   @sup_name :espex_demo_supervisor
 
   def run do
-    {:ok, provider_pid} = Espex.DemoEntityProvider.start_link()
+    {:ok, provider_pid} = Espex.DemoEntityProvider.start_link(server: @server_name)
 
     {:ok, sup_pid} =
       Espex.start_link(
@@ -151,8 +162,12 @@ defmodule Espex.DemoRunner do
         device_config: [
           name: "espex-demo",
           friendly_name: "Espex Demo",
-          project_name: "espex_demo",
-          project_version: "0.1.0"
+          project_name: "espex.demo",
+          project_version: "0.1.0",
+          devices: [
+            Espex.DeviceConfig.Device.new(id: 1, name: "Switch Pod"),
+            Espex.DeviceConfig.Device.new(id: 2, name: "Button Pod")
+          ]
         ],
         entity_provider: Espex.DemoEntityProvider
       )
@@ -172,10 +187,14 @@ defmodule Espex.DemoRunner do
       All three flows verified. Stopping the server.
     """)
 
-    Supervisor.stop(sup_pid, :normal, 5_000)
-    GenServer.stop(provider_pid, :normal, 5_000)
-  catch
-    :exit, _ -> :ok
+    try do
+      Supervisor.stop(sup_pid, :normal, 5_000)
+      GenServer.stop(provider_pid, :normal, 5_000)
+    catch
+      :exit, _ -> :ok
+    end
+
+    System.halt(0)
   end
 
   defp banner(port) do
@@ -238,7 +257,7 @@ defmodule Espex.DemoRunner do
     IO.puts("\nStep 3/3 — in Home Assistant, note that 'Demo Sensor' reads #{current} °C.")
     _ = IO.gets("         Press Enter once you've confirmed the current value... ")
 
-    :ok = Espex.DemoEntityProvider.set_sensor_value(new_value, @server_name)
+    :ok = Espex.DemoEntityProvider.set_sensor_value(new_value)
     IO.puts("    ✓ pushed new sensor value: #{new_value} °C")
 
     answer = IO.gets("         Does Home Assistant now show #{new_value} °C? (y/n) ")
