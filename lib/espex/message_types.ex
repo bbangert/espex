@@ -213,4 +213,18 @@ defmodule Espex.MessageTypes do
         {:error, {:unknown_module, mod}}
     end
   end
+
+  @doc """
+  Encode a protobuf struct to its `{type_id, payload}` parts, without
+  wrapping in a transport frame. Used by the encrypted transport
+  (`Espex.Noise.Frame.encode_inner/2`) where the wrapping differs from
+  plaintext.
+  """
+  @spec encode_parts(struct()) :: {:ok, non_neg_integer(), binary()} | {:error, term()}
+  def encode_parts(%mod{} = message) do
+    case id_for_module(mod) do
+      {:ok, type_id} -> {:ok, type_id, mod.encode(message)}
+      :error -> {:error, {:unknown_module, mod}}
+    end
+  end
 end

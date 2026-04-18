@@ -8,10 +8,25 @@ defmodule Espex.ConnectionState do
   tests can override.
   """
 
-  alias Espex.{DeviceConfig, InfraredProxy, SerialProxy}
+  alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy}
 
   @type feature :: :serial_proxy | :zwave_proxy | :infrared_proxy | :entity_provider
   @type adapters :: %{feature() => module() | nil}
+
+  @typedoc """
+  Per-connection encryption state:
+
+    * `:disabled` — no PSK; plaintext transport only
+    * `:awaiting_hello` — PSK set; waiting for the client's NOISE_HELLO frame
+    * `{:awaiting_init, handshake}` — sent ServerHello; waiting for client's
+      handshake init message
+    * `{:active, tx, rx}` — handshake complete; encrypted transport
+  """
+  @type encryption ::
+          :disabled
+          | :awaiting_hello
+          | {:awaiting_init, Noise.handshake()}
+          | {:active, Noise.cipher(), Noise.cipher()}
 
   @typedoc """
   The lists below are captured once at connection accept time and never
@@ -31,7 +46,8 @@ defmodule Espex.ConnectionState do
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
           adapters: adapters(),
-          clock_fun: (-> non_neg_integer())
+          clock_fun: (-> non_neg_integer()),
+          encryption: encryption()
         }
 
   @enforce_keys [:device_config, :peer]
@@ -51,7 +67,8 @@ defmodule Espex.ConnectionState do
       infrared_proxy: nil,
       entity_provider: nil
     },
-    clock_fun: &__MODULE__.os_time_second/0
+    clock_fun: &__MODULE__.os_time_second/0,
+    encryption: :disabled
   ]
 
   @doc false
@@ -161,4 +178,10 @@ defmodule Espex.ConnectionState do
   """
   @spec adapter?(t(), feature()) :: boolean()
   def adapter?(%__MODULE__{} = state, feature), do: adapter(state, feature) != nil
+
+  @doc """
+  Replace the encryption state.
+  """
+  @spec put_encryption(t(), encryption()) :: t()
+  def put_encryption(%__MODULE__{} = state, enc), do: %{state | encryption: enc}
 end

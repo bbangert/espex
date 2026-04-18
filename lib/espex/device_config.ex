@@ -20,6 +20,19 @@ defmodule Espex.DeviceConfig do
   (no dot) makes HA's setup task crash silently and the device never
   registers. The default is `""`, which is what HA treats as "no project"
   and safely skips.
+
+  ## `psk` (Noise encryption pre-shared key)
+
+  Leave `:psk` as `nil` (the default) to run plaintext only. To enable
+  `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encryption — matching the
+  ESPHome Native API's encrypted transport — set `:psk` either to:
+
+    * a raw 32-byte binary, or
+    * a base64-encoded string (44 chars incl. `=` padding, matching the
+      format used in ESPHome YAML config).
+
+  `new/1` normalises both forms to the raw binary. When a PSK is set,
+  the server rejects plaintext clients — they have to use the key.
   """
 
   alias Espex.DeviceConfig.Device
@@ -51,7 +64,8 @@ defmodule Espex.DeviceConfig do
           port: non_neg_integer(),
           zwave_feature_flags: non_neg_integer(),
           zwave_home_id: non_neg_integer(),
-          devices: [Device.t()]
+          devices: [Device.t()],
+          psk: <<_::256>> | nil
         }
 
   defstruct name: "espex",
@@ -67,7 +81,8 @@ defmodule Espex.DeviceConfig do
             port: @default_port,
             zwave_feature_flags: 0,
             zwave_home_id: 0,
-            devices: []
+            devices: [],
+            psk: nil
 
   @doc """
   Build a new `%DeviceConfig{}` from keyword options.
@@ -83,9 +98,34 @@ defmodule Espex.DeviceConfig do
   """
   @spec new(keyword()) :: t()
   def new(opts \\ []) do
-    opts = Keyword.put_new_lazy(opts, :mac_address, &detect_mac_address/0)
+    opts =
+      opts
+      |> Keyword.put_new_lazy(:mac_address, &detect_mac_address/0)
+      |> Keyword.update(:psk, nil, &normalise_psk/1)
+
     struct!(__MODULE__, opts)
   end
+
+  @spec normalise_psk(term()) :: binary() | nil
+  defp normalise_psk(nil), do: nil
+  defp normalise_psk(bin) when is_binary(bin) and byte_size(bin) == 32, do: bin
+
+  defp normalise_psk(bin) when is_binary(bin) do
+    case Base.decode64(String.trim(bin), padding: true) do
+      {:ok, <<_::binary-size(32)>> = decoded} -> decoded
+      {:ok, _} -> raise ArgumentError, "PSK base64 string must decode to exactly 32 bytes"
+      :error -> raise ArgumentError, "PSK must be a 32-byte binary or a base64-encoded 32-byte string"
+    end
+  end
+
+  defp normalise_psk(_), do: raise(ArgumentError, "PSK must be a 32-byte binary or a base64-encoded string")
+
+  @doc """
+  Whether encryption is enabled (i.e. a PSK is configured).
+  """
+  @spec encrypted?(t()) :: boolean()
+  def encrypted?(%__MODULE__{psk: nil}), do: false
+  def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
 
   @doc """
   Returns the API version major number this server advertises.
@@ -122,7 +162,7 @@ defmodule Espex.DeviceConfig do
       webserver_port: 0,
       has_deep_sleep: false,
       uses_password: false,
-      api_encryption_supported: false,
+      api_encryption_supported: encrypted?(config),
       zwave_proxy_feature_flags: config.zwave_feature_flags,
       zwave_home_id: config.zwave_home_id,
       serial_proxies: serial_proxies,

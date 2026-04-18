@@ -2,7 +2,8 @@
 #
 # Run with:
 #
-#   mix run test/manual/live_demo.exs
+#   mix run test/manual/live_demo.exs              # plaintext
+#   ESPEX_ENCRYPT=1 mix run test/manual/live_demo.exs  # Noise-encrypted
 #
 # Starts an Espex server advertising a Switch, a Button, and a Sensor. Walks
 # you through connecting an ESPHome client (e.g. Home Assistant) to it and
@@ -11,6 +12,10 @@
 #   1. flipping the switch on the client side reaches the server,
 #   2. pushing the button on the client side reaches the server,
 #   3. a sensor value pushed from the server side shows up on the client.
+#
+# When ESPEX_ENCRYPT=1 is set, a random 32-byte PSK is generated on
+# startup and printed as a base64 string; paste it into HA's ESPHome
+# integration dialog under "Encryption key".
 #
 # Prompts are interactive — expect to paste IP/port into Home Assistant and
 # then press Enter in this terminal to advance through the checklist.
@@ -154,21 +159,27 @@ defmodule Espex.DemoRunner do
   def run do
     {:ok, provider_pid} = Espex.DemoEntityProvider.start_link(server: @server_name)
 
+    psk = maybe_generate_psk()
+
+    device_config =
+      [
+        name: "espex-demo",
+        friendly_name: "Espex Demo",
+        project_name: "espex.demo",
+        project_version: "0.1.0",
+        devices: [
+          Espex.DeviceConfig.Device.new(id: 1, name: "Switch Pod"),
+          Espex.DeviceConfig.Device.new(id: 2, name: "Button Pod")
+        ]
+      ]
+      |> then(fn cfg -> if psk, do: Keyword.put(cfg, :psk, psk), else: cfg end)
+
     {:ok, sup_pid} =
       Espex.start_link(
         name: @sup_name,
         server_name: @server_name,
         port: 6053,
-        device_config: [
-          name: "espex-demo",
-          friendly_name: "Espex Demo",
-          project_name: "espex.demo",
-          project_version: "0.1.0",
-          devices: [
-            Espex.DeviceConfig.Device.new(id: 1, name: "Switch Pod"),
-            Espex.DeviceConfig.Device.new(id: 2, name: "Button Pod")
-          ]
-        ],
+        device_config: device_config,
         entity_provider: Espex.DemoEntityProvider
       )
 
@@ -176,7 +187,7 @@ defmodule Espex.DemoRunner do
 
     Espex.DemoEntityProvider.subscribe_events()
 
-    banner(bound)
+    banner(bound, psk)
     await_connect()
     verify_switch()
     verify_button()
@@ -197,8 +208,14 @@ defmodule Espex.DemoRunner do
     System.halt(0)
   end
 
-  defp banner(port) do
+  defp banner(port, psk) do
     ip = local_ipv4()
+
+    encryption_line =
+      case psk do
+        nil -> "Encryption key:    (leave blank — this demo is plaintext)"
+        bin -> "Encryption key:    #{Base.encode64(bin)}"
+      end
 
     IO.puts("""
 
@@ -214,10 +231,17 @@ defmodule Espex.DemoRunner do
 
         Host:              #{ip}
         Port:              #{port}
-        Encryption key:    (leave blank — this demo is plaintext)
+        #{encryption_line}
 
     ╚════════════════════════════════════════════════════════════════════╝
     """)
+  end
+
+  defp maybe_generate_psk do
+    case System.get_env("ESPEX_ENCRYPT") do
+      env when env in [nil, "", "0", "false"] -> nil
+      _ -> :crypto.strong_rand_bytes(32)
+    end
   end
 
   defp await_connect do
