@@ -65,7 +65,7 @@ defmodule Espex.MixProject do
 
   defp package do
     [
-      licenses: ["MPL-2.0"],
+      licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
       files: ~w(lib priv/protos .formatter.exs mix.exs README.md LICENSE)
     ]

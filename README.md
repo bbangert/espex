@@ -68,4 +68,4 @@ mix dialyzer
 
 ## License
 
-MPL-2.0
+MIT — see [LICENSE](LICENSE).
