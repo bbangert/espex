@@ -22,6 +22,10 @@ Not yet published to hex.pm.
   Proxy feature sets
 - Server-side state push via `Espex.push_state/2` so adapters and
   `EntityProvider` implementations can update live values
+- Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
+  `Espex.Mdns.MdnsLite` adapter over the
+  [`mdns_lite`](https://hex.pm/packages/mdns_lite) library for the Nerves
+  case, and a behaviour for custom backends
 - Pluggable hardware via behaviours:
   - `Espex.SerialProxy`
   - `Espex.ZWaveProxy`
@@ -73,6 +77,41 @@ standard "encryption required" signal so Home Assistant's ESPHome
 integration prompts the user for the key. Any adapter key you omit
 disables that feature.
 
+### mDNS advertising
+
+Advertise the server as a `_esphomelib._tcp` service so ESPHome clients
+auto-discover it. Add `:mdns_lite` to your application's deps (it's not
+a runtime dep of espex) and wire the shipped adapter:
+
+```elixir
+# in your mix.exs
+{:mdns_lite, "~> 0.8"}
+
+# at start
+Espex.start_link(
+  device_config: [name: "my-device", ...],
+  mdns: Espex.Mdns.MdnsLite
+)
+```
+
+For non-Nerves setups (e.g. a host running Avahi), implement your own
+adapter against the `Espex.Mdns` behaviour — just `advertise(service)`
+and `withdraw(service_id)`:
+
+```elixir
+defmodule MyApp.AvahiAdapter do
+  @behaviour Espex.Mdns
+
+  @impl true
+  def advertise(service), do: MyApp.Avahi.publish(service)
+
+  @impl true
+  def withdraw(id), do: MyApp.Avahi.unpublish(id)
+end
+
+Espex.start_link(mdns: MyApp.AvahiAdapter, ...)
+```
+
 ## Development
 
 ```sh
@@ -93,7 +132,6 @@ ESPEX_ENCRYPT=1 mix run test/manual/live_demo.exs  # Noise-encrypted
 
 ## Roadmap
 
-- [ ] mDNS advertising helper
 - [ ] Client-side library (connect to ESPHome devices instead of being one)
 
 ## License

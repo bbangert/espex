@@ -27,17 +27,22 @@ defmodule Espex.Supervisor do
       )
 
   Any adapter key omitted → that feature is disabled.
+
+  Pass `:mdns` with the adapter module to advertise the server over
+  mDNS. See `Espex.Mdns` for the behaviour and `Espex.Mdns.MdnsLite`
+  for the shipped adapter over `:mdns_lite`. Omit to skip.
   """
 
   use Supervisor
 
   alias Espex.{Connection, DeviceConfig, Server}
+  alias Espex.Mdns.Advertiser, as: MdnsAdvertiser
 
   @adapter_keys [:serial_proxy, :zwave_proxy, :infrared_proxy, :entity_provider]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    {name, opts} = Keyword.pop(opts, :name, __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
     Supervisor.start_link(__MODULE__, opts, name: name)
   end
 
@@ -72,25 +77,44 @@ defmodule Espex.Supervisor do
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
     port = opts[:port] || device_config.port
+    supervisor_name = Keyword.get(opts, :name, __MODULE__)
     server_name = opts[:server_name] || Server
     registry_name = registry_name(server_name)
     num_acceptors = opts[:num_acceptors] || 10
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
 
-    children = [
-      {Registry, keys: :duplicate, name: registry_name},
-      {Server, name: server_name, device_config: device_config, adapters: adapters},
-      {ThousandIsland,
-       port: port,
-       handler_module: Connection,
-       handler_options: [server_name: server_name, registry_name: registry_name],
-       transport_module: ThousandIsland.Transports.TCP,
-       transport_options: [nodelay: true],
-       num_acceptors: num_acceptors}
-    ]
+    children =
+      [
+        {Registry, keys: :duplicate, name: registry_name},
+        {Server, name: server_name, device_config: device_config, adapters: adapters},
+        {ThousandIsland,
+         port: port,
+         handler_module: Connection,
+         handler_options: [server_name: server_name, registry_name: registry_name],
+         transport_module: ThousandIsland.Transports.TCP,
+         transport_options: [nodelay: true],
+         num_acceptors: num_acceptors}
+      ] ++ mdns_children(opts, device_config, supervisor_name)
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  # Builds the advertiser child spec when the caller opted in via :mdns.
+  defp mdns_children(opts, device_config, supervisor_name) do
+    case Keyword.get(opts, :mdns) do
+      adapter when is_atom(adapter) and adapter not in [nil, false] ->
+        [
+          {MdnsAdvertiser,
+           adapter: adapter,
+           device_config: device_config,
+           supervisor_name: supervisor_name,
+           port: opts[:port]}
+        ]
+
+      _ ->
+        []
+    end
   end
 
   @doc """
