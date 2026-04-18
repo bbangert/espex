@@ -195,8 +195,12 @@ defmodule Espex.Noise do
   @doc """
   Encrypt a payload with the given cipher state. Returns the updated
   cipher (with nonce incremented) plus the ciphertext.
+
+  `ad` and `plaintext` may be `iodata()` — the underlying AEAD accepts
+  it directly, so callers can hand in pre-split iolists without
+  collapsing them to a binary first.
   """
-  @spec encrypt(cipher(), binary(), binary()) :: {:ok, cipher(), binary()}
+  @spec encrypt(cipher(), iodata(), iodata()) :: {:ok, cipher(), binary()}
   def encrypt(%{k: k, n: n} = cipher, ad, plaintext) do
     {ct, tag} =
       :crypto.crypto_one_time_aead(:chacha20_poly1305, k, nonce_bytes(n), plaintext, ad, @tag_len, true)
@@ -207,7 +211,7 @@ defmodule Espex.Noise do
   @doc """
   Decrypt a ciphertext with the given cipher state.
   """
-  @spec decrypt(cipher(), binary(), binary()) :: {:ok, cipher(), binary()} | {:error, :auth_failed}
+  @spec decrypt(cipher(), iodata(), binary()) :: {:ok, cipher(), binary()} | {:error, :auth_failed | :ciphertext_too_short}
   def decrypt(%{k: k, n: n} = cipher, ad, ciphertext) when byte_size(ciphertext) >= @tag_len do
     split = byte_size(ciphertext) - @tag_len
     <<ct::binary-size(split), tag::binary-size(@tag_len)>> = ciphertext
@@ -226,7 +230,9 @@ defmodule Espex.Noise do
 
   defp mix_hash(%__MODULE__{h: h} = state, data), do: %{state | h: mix_hash_bytes(h, data)}
 
-  defp mix_hash_bytes(h, data), do: :crypto.hash(:sha256, h <> data)
+  # :crypto.hash accepts iodata, so passing [h, data] avoids an h <> data
+  # copy on every MixHash call (the handshake performs roughly half a dozen).
+  defp mix_hash_bytes(h, data), do: :crypto.hash(:sha256, [h, data])
 
   defp mix_key(%__MODULE__{ck: ck} = state, ikm) do
     <<new_ck::binary-size(32), temp_k::binary-size(32)>> = hkdf(ck, ikm, 2)

@@ -33,6 +33,8 @@ defmodule Espex.Connection do
 
   @noise_prologue "NoiseAPIInit" <> <<0, 0>>
   @noise_proto_selector 0x01
+  @noise_preamble 0x01
+  @plaintext_indicator 0x00
   @handshake_status_ok 0x00
   @handshake_status_error 0x01
 
@@ -433,8 +435,18 @@ defmodule Espex.Connection do
   defp send_protobuf(socket, %{encryption: :disabled} = state, message) do
     Logger.debug("Espex send #{inspect(message.__struct__)}")
 
-    case MessageTypes.encode_message(message) do
-      {:ok, frame} ->
+    case MessageTypes.encode_parts(message) do
+      {:ok, type_id, payload} ->
+        # Build the plaintext frame as an iolist so gen_tcp.send sees all
+        # four segments without a preceding concat of (indicator + varints +
+        # payload) into a single binary.
+        frame = [
+          <<@plaintext_indicator>>,
+          Frame.encode_varint(byte_size(payload)),
+          Frame.encode_varint(type_id),
+          payload
+        ]
+
         :ok = ThousandIsland.Socket.send(socket, frame)
         {:ok, state}
 
@@ -447,14 +459,28 @@ defmodule Espex.Connection do
   defp send_protobuf(socket, %{encryption: {:active, tx, rx}} = state, message) do
     Logger.debug("Espex send #{inspect(message.__struct__)} (encrypted)")
 
-    with {:ok, type_id, payload} <- MessageTypes.encode_parts(message),
-         inner = Noise.Frame.encode_inner(type_id, payload),
-         {:ok, new_tx, ciphertext} <- Noise.encrypt(tx, <<>>, inner) do
-      :ok = ThousandIsland.Socket.send(socket, Noise.Frame.encode_outer(ciphertext))
-      {:ok, ConnectionState.put_encryption(state, {:active, new_tx, rx})}
-    else
+    case MessageTypes.encode_parts(message) do
+      {:ok, type_id, payload} ->
+        # The AEAD "plaintext" is the ESPHome inner frame (type + length +
+        # protobuf). Hand it to Noise.encrypt as an iolist — crypto_one_time_aead
+        # accepts iodata, so we skip concatenating the inner frame header
+        # to the protobuf payload.
+        inner = [
+          <<type_id::unsigned-big-16, byte_size(payload)::unsigned-big-16>>,
+          payload
+        ]
+
+        {:ok, new_tx, ciphertext} = Noise.encrypt(tx, <<>>, inner)
+
+        # Outer frame as iolist: 3-byte header references the ciphertext
+        # without copying. gen_tcp.send walks the iolist directly.
+        frame = [<<@noise_preamble, byte_size(ciphertext)::unsigned-big-16>>, ciphertext]
+
+        :ok = ThousandIsland.Socket.send(socket, frame)
+        {:ok, ConnectionState.put_encryption(state, {:active, new_tx, rx})}
+
       {:error, reason} ->
-        Logger.warning("Espex encrypt/encode error: #{inspect(reason)}")
+        Logger.warning("Espex encode error: #{inspect(reason)}")
         {:error, reason}
     end
   end
