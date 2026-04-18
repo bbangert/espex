@@ -1,0 +1,25 @@
+# Mix build artifacts
+/_build/
+/cover/
+/deps/
+/doc/
+erl_crash.dump
+*.ez
+espex-*.tar
+
+# Dialyzer PLTs
+/priv/plts/*.plt
+/priv/plts/*.plt.hash
+
+# Editor / LSP workspace files
+/.elixir_ls/
+/.lexical/
+
+# Local environment
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
