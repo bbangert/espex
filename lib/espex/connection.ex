@@ -25,6 +25,7 @@ defmodule Espex.Connection do
   @impl ThousandIsland.Handler
   def handle_connection(socket, handler_options) do
     server_name = Keyword.fetch!(handler_options, :server_name)
+    registry_name = Keyword.fetch!(handler_options, :registry_name)
     server_state = Server.get_state(server_name)
     peer = peer_label(socket)
     adapters = server_state.adapters
@@ -39,6 +40,7 @@ defmodule Espex.Connection do
         entities: load_entities(adapters)
       )
 
+    {:ok, _} = Registry.register(registry_name, :subscribers, nil)
     Logger.info("Espex client connected from #{peer}")
     {:continue, state}
   end

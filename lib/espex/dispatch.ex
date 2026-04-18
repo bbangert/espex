@@ -310,6 +310,10 @@ defmodule Espex.Dispatch do
     end
   end
 
+  def handle_event(state, {:espex_state_update, %_{} = struct}) do
+    {state, [{:send, struct}]}
+  end
+
   def handle_event(state, event) do
     {state, [{:log, :debug, "unhandled adapter event: #{inspect(event)}"}]}
   end

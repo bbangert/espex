@@ -73,16 +73,18 @@ defmodule Espex.Supervisor do
     device_config = normalise_device_config(opts[:device_config])
     port = opts[:port] || device_config.port
     server_name = opts[:server_name] || Server
+    registry_name = registry_name(server_name)
     num_acceptors = opts[:num_acceptors] || 10
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
 
     children = [
+      {Registry, keys: :duplicate, name: registry_name},
       {Server, name: server_name, device_config: device_config, adapters: adapters},
       {ThousandIsland,
        port: port,
        handler_module: Connection,
-       handler_options: [server_name: server_name],
+       handler_options: [server_name: server_name, registry_name: registry_name],
        transport_module: ThousandIsland.Transports.TCP,
        transport_options: [nodelay: true],
        num_acceptors: num_acceptors}
@@ -90,6 +92,12 @@ defmodule Espex.Supervisor do
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
+
+  @doc """
+  Return the conventional Registry name for a given server name.
+  """
+  @spec registry_name(atom()) :: atom()
+  def registry_name(server_name), do: Module.concat(server_name, "Registry")
 
   defp normalise_device_config(%DeviceConfig{} = config), do: config
   defp normalise_device_config(opts) when is_list(opts), do: DeviceConfig.new(opts)

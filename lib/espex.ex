@@ -32,6 +32,7 @@ defmodule Espex do
   """
 
   alias Espex.{DeviceConfig, Server}
+  alias Espex.Supervisor, as: EspexSupervisor
 
   @doc """
   `child_spec/1` — makes `{Espex, opts}` usable as a child spec.
@@ -58,4 +59,24 @@ defmodule Espex do
   """
   @spec device_config(GenServer.server()) :: DeviceConfig.t()
   def device_config(server \\ Server), do: Server.device_config(server)
+
+  @doc """
+  Broadcast an entity-state struct to every currently-connected client.
+
+  Pass any `%Espex.Proto.*StateResponse{}` (e.g.
+  `%Espex.Proto.SensorStateResponse{key: k, state: 21.3}`). Clients that
+  subscribed via `SubscribeStatesRequest` will receive the frame over
+  their socket.
+
+  `server_name` defaults to `Espex.Server` — pass your custom name if
+  you started the supervisor with `:server_name`.
+  """
+  @spec push_state(atom(), struct()) :: :ok
+  def push_state(server_name \\ Server, %_{} = struct) do
+    registry = EspexSupervisor.registry_name(server_name)
+
+    Registry.dispatch(registry, :subscribers, fn entries ->
+      Enum.each(entries, fn {pid, _} -> send(pid, {:espex_state_update, struct}) end)
+    end)
+  end
 end

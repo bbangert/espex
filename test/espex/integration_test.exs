@@ -127,4 +127,30 @@ defmodule Espex.IntegrationTest do
       assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
   end
+
+  describe "push_state/2" do
+    test "broadcasts a StateResponse struct to every connected client", context do
+      server_name = :"espex_server_#{context.test}"
+      socket1 = connect(context.port)
+      socket2 = connect(context.port)
+
+      # Both clients must be registered before broadcast.
+      # Force each through the handshake so we know their Connection process has
+      # finished handle_connection (and therefore Registry.register).
+      for sock <- [socket1, socket2] do
+        send_struct(sock, %Proto.HelloRequest{})
+        {:ok, %Proto.HelloResponse{}, _} = recv_struct(sock)
+      end
+
+      :ok = Espex.push_state(server_name, %Proto.SensorStateResponse{key: 99, state: 42.5})
+
+      for sock <- [socket1, socket2] do
+        {:ok, %Proto.SensorStateResponse{key: 99, state: state}, _} = recv_struct(sock)
+        assert_in_delta state, 42.5, 0.01
+      end
+
+      :gen_tcp.close(socket1)
+      :gen_tcp.close(socket2)
+    end
+  end
 end
