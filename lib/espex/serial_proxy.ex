@@ -30,6 +30,7 @@ defmodule Espex.SerialProxy do
       end
   """
 
+  alias Espex.Proto
   alias Espex.SerialProxy.Info
 
   @typedoc "Opaque handle returned by the adapter from `c:open/3`."
@@ -46,6 +47,26 @@ defmodule Espex.SerialProxy do
           parity: :none | :even | :odd,
           flow_control: :none | :hardware
         ]
+
+  @doc """
+  Translate a `SerialProxyConfigureRequest` protobuf into the keyword
+  list passed to `c:open/3`. Zero-valued protobuf fields fall back to
+  sensible defaults (9600-8-N-1, no flow control).
+  """
+  @spec configure_request_to_open_opts(Proto.SerialProxyConfigureRequest.t()) :: open_opts()
+  def configure_request_to_open_opts(%Proto.SerialProxyConfigureRequest{} = req) do
+    [
+      speed: if(req.baudrate > 0, do: req.baudrate, else: 9600),
+      data_bits: if(req.data_size > 0, do: req.data_size, else: 8),
+      stop_bits: if(req.stop_bits > 0, do: req.stop_bits, else: 1),
+      parity: parity_atom(req.parity),
+      flow_control: if(req.flow_control, do: :hardware, else: :none)
+    ]
+  end
+
+  defp parity_atom(:SERIAL_PROXY_PARITY_EVEN), do: :even
+  defp parity_atom(:SERIAL_PROXY_PARITY_ODD), do: :odd
+  defp parity_atom(_), do: :none
 
   @doc """
   Return the list of available serial proxy instances.

@@ -18,8 +18,17 @@ defmodule Espex.ConnectionStateTest do
       assert state.buffer == <<>>
       assert state.opened_ports == %{}
       assert state.serial_proxies == []
+      assert state.infrared_entities == []
+      assert state.entities == []
       refute state.zwave_subscribed
       refute state.infrared_subscribed
+    end
+
+    test "entity lists are frozen at construction time (passed via new/1)" do
+      ir = Espex.InfraredProxy.Entity.new(key: 1, object_id: "a", name: "A", capabilities: [:transmit])
+      state = base_state(infrared_entities: [ir], entities: [%{tag: :custom}])
+      assert state.infrared_entities == [ir]
+      assert state.entities == [%{tag: :custom}]
     end
 
     test "adapter map has all features defaulting to nil" do

@@ -8,16 +8,25 @@ defmodule Espex.ConnectionState do
   tests can override.
   """
 
-  alias Espex.{DeviceConfig, SerialProxy}
+  alias Espex.{DeviceConfig, InfraredProxy, SerialProxy}
 
   @type feature :: :serial_proxy | :zwave_proxy | :infrared_proxy | :entity_provider
   @type adapters :: %{feature() => module() | nil}
 
+  @typedoc """
+  The lists below are captured once at connection accept time and never
+  change for the lifetime of the connection — ESPHome clients (Home
+  Assistant) cache them after the first `ListEntitiesRequest` /
+  `DeviceInfoRequest` round, so silently changing them mid-connection
+  would desync the client. To advertise a new device, force a reconnect.
+  """
   @type t :: %__MODULE__{
           buffer: binary(),
           device_config: DeviceConfig.t(),
           peer: String.t(),
           serial_proxies: [SerialProxy.Info.t()],
+          infrared_entities: [InfraredProxy.Entity.t()],
+          entities: [struct()],
           opened_ports: %{non_neg_integer() => term()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
@@ -31,6 +40,8 @@ defmodule Espex.ConnectionState do
     :peer,
     buffer: <<>>,
     serial_proxies: [],
+    infrared_entities: [],
+    entities: [],
     opened_ports: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
