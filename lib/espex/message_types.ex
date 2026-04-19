@@ -76,6 +76,7 @@ defmodule Espex.MessageTypes do
     64 => Proto.MediaPlayerStateResponse,
     65 => Proto.MediaPlayerCommandRequest,
     66 => Proto.SubscribeBluetoothLEAdvertisementsRequest,
+    67 => Proto.BluetoothLEAdvertisementResponse,
     68 => Proto.BluetoothDeviceRequest,
     69 => Proto.BluetoothDeviceConnectionResponse,
     70 => Proto.BluetoothGATTGetServicesRequest,
@@ -152,7 +153,10 @@ defmodule Espex.MessageTypes do
     141 => Proto.SerialProxySetModemPinsRequest,
     142 => Proto.SerialProxyGetModemPinsRequest,
     143 => Proto.SerialProxyGetModemPinsResponse,
-    144 => Proto.SerialProxyRequest
+    144 => Proto.SerialProxyRequest,
+    145 => Proto.BluetoothSetConnectionParamsRequest,
+    146 => Proto.BluetoothSetConnectionParamsResponse,
+    147 => Proto.SerialProxyRequestResponse
   }
 
   @reverse_types Map.new(@message_types, fn {id, mod} -> {mod, id} end)

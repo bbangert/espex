@@ -107,5 +107,23 @@ defmodule Espex.SerialProxy do
   @callback get_modem_pins(handle()) ::
               {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}
 
-  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1
+  @typedoc "Internal atom form of the `SerialProxyRequestType` enum."
+  @type request_type :: :subscribe | :unsubscribe | :flush
+
+  @typedoc "Internal atom form of the `SerialProxyStatus` enum."
+  @type request_status :: :ok | :assumed_success | :error | :timeout | :not_supported
+
+  @doc """
+  Handle one of the `SerialProxyRequest` operations (subscribe,
+  unsubscribe, flush) and return a status for the client. Optional —
+  when undefined, espex responds with `:not_supported`.
+
+  Subscribe/unsubscribe are currently no-ops in the default espex flow
+  (data delivery is wired at `c:open/3` time); adapters that care about
+  explicit stream control can implement the toggle here.
+  """
+  @callback request(handle(), request_type()) ::
+              {:ok, request_status()} | {:error, term()}
+
+  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2
 end

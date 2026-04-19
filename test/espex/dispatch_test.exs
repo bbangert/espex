@@ -198,6 +198,99 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "SerialProxySetModemPinsRequest" do
+    test "unpacks line_states bitmask into rts/dtr booleans" do
+      s = state() |> ConnectionState.put_port(3, :h)
+
+      {_, [{:serial_modem_pins_set, 3, true, false}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0x01})
+
+      {_, [{:serial_modem_pins_set, 3, false, true}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0x02})
+
+      {_, [{:serial_modem_pins_set, 3, true, true}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0x03})
+
+      {_, [{:serial_modem_pins_set, 3, false, false}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0})
+    end
+  end
+
+  describe "SerialProxyRequest" do
+    test "open instance with known type: emits :serial_request action" do
+      s = state() |> ConnectionState.put_port(3, :h)
+
+      {_, [{:serial_request, 3, :subscribe}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
+          instance: 3,
+          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+        })
+
+      {_, [{:serial_request, 3, :unsubscribe}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
+          instance: 3,
+          type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+        })
+
+      {_, [{:serial_request, 3, :flush}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
+          instance: 3,
+          type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
+        })
+    end
+
+    test "unopened instance: sends ERROR response" do
+      {_, [{:log, :warning, _}, {:send, response}]} =
+        Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
+          instance: 3,
+          type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
+               status: :SERIAL_PROXY_STATUS_ERROR,
+               error_message: "instance not open"
+             } = response
+    end
+
+    test "unknown request type: sends ERROR response and logs" do
+      s = state() |> ConnectionState.put_port(3, :h)
+
+      {_, [{:log, :warning, _}, {:send, response}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: :SERIAL_PROXY_REQUEST_TYPE_UNKNOWN})
+
+      assert %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_ERROR} = response
+    end
+  end
+
+  describe "serial_request_response/3" do
+    test "ok status maps to wire enum with empty error_message" do
+      r = Dispatch.serial_request_response(2, :flush, {:ok, :ok})
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 2,
+               type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
+               status: :SERIAL_PROXY_STATUS_OK,
+               error_message: ""
+             } = r
+    end
+
+    test "assumed_success and not_supported map through" do
+      r = Dispatch.serial_request_response(2, :subscribe, {:ok, :assumed_success})
+      assert r.status == :SERIAL_PROXY_STATUS_ASSUMED_SUCCESS
+
+      r = Dispatch.serial_request_response(2, :subscribe, {:ok, :not_supported})
+      assert r.status == :SERIAL_PROXY_STATUS_NOT_SUPPORTED
+    end
+
+    test "error tuple yields ERROR status and inspects reason" do
+      r = Dispatch.serial_request_response(2, :flush, {:error, :port_busy})
+      assert r.status == :SERIAL_PROXY_STATUS_ERROR
+      assert r.error_message == ":port_busy"
+    end
+  end
+
   describe "ZWaveProxyRequest" do
     test "subscribe with adapter: emits :zwave_subscribe" do
       adapters = %{serial_proxy: nil, zwave_proxy: Espex.Test.FakeZWaveProxy, infrared_proxy: nil, entity_provider: nil}
@@ -326,14 +419,17 @@ defmodule Espex.DispatchTest do
   end
 
   describe "modem_pins_response/2" do
-    test "ok result maps rts/dtr through" do
+    test "ok result packs rts/dtr into line_states bitmask" do
       r = Dispatch.modem_pins_response(3, {:ok, %{rts: true, dtr: false}})
-      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, rts: true, dtr: false} = r
+      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, line_states: 0x01} = r
+
+      r = Dispatch.modem_pins_response(3, {:ok, %{rts: true, dtr: true}})
+      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, line_states: 0x03} = r
     end
 
-    test "error result yields false/false" do
+    test "error result yields empty bitmask" do
       r = Dispatch.modem_pins_response(3, {:error, :nope})
-      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, rts: false, dtr: false} = r
+      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, line_states: 0} = r
     end
   end
 end

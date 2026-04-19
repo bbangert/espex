@@ -110,6 +110,16 @@ defmodule Espex.Proto.LogLevel do
   field(:LOG_LEVEL_VERY_VERBOSE, 7)
 end
 
+defmodule Espex.Proto.DSTRuleType do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:DST_RULE_TYPE_NONE, 0)
+  field(:DST_RULE_TYPE_MONTH_WEEK_DAY, 1)
+  field(:DST_RULE_TYPE_JULIAN_NO_LEAP, 2)
+  field(:DST_RULE_TYPE_DAY_OF_YEAR, 3)
+end
+
 defmodule Espex.Proto.ServiceArgType do
   @moduledoc false
   use Protobuf, enum: true, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
@@ -183,6 +193,7 @@ defmodule Espex.Proto.ClimateAction do
   field(:CLIMATE_ACTION_IDLE, 4)
   field(:CLIMATE_ACTION_DRYING, 5)
   field(:CLIMATE_ACTION_FAN, 6)
+  field(:CLIMATE_ACTION_DEFROSTING, 7)
 end
 
 defmodule Espex.Proto.ClimatePreset do
@@ -456,7 +467,20 @@ defmodule Espex.Proto.SerialProxyRequestType do
   @moduledoc false
   use Protobuf, enum: true, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:SERIAL_PROXY_REQUEST_TYPE_FLUSH, 0)
+  field(:SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE, 0)
+  field(:SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE, 1)
+  field(:SERIAL_PROXY_REQUEST_TYPE_FLUSH, 2)
+end
+
+defmodule Espex.Proto.SerialProxyStatus do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:SERIAL_PROXY_STATUS_OK, 0)
+  field(:SERIAL_PROXY_STATUS_ASSUMED_SUCCESS, 1)
+  field(:SERIAL_PROXY_STATUS_ERROR, 2)
+  field(:SERIAL_PROXY_STATUS_TIMEOUT, 3)
+  field(:SERIAL_PROXY_STATUS_NOT_SUPPORTED, 4)
 end
 
 defmodule Espex.Proto.HelloRequest do
@@ -474,8 +498,8 @@ defmodule Espex.Proto.HelloResponse do
 
   field(:api_version_major, 1, type: :uint32, json_name: "apiVersionMajor")
   field(:api_version_minor, 2, type: :uint32, json_name: "apiVersionMinor")
-  field(:server_info, 3, type: :string, json_name: "serverInfo")
-  field(:name, 4, type: :string)
+  field(:server_info, 3, type: :string, json_name: "serverInfo", deprecated: false)
+  field(:name, 4, type: :string, deprecated: false)
 end
 
 defmodule Espex.Proto.AuthenticationRequest do
@@ -522,7 +546,7 @@ defmodule Espex.Proto.AreaInfo do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:area_id, 1, type: :uint32, json_name: "areaId")
-  field(:name, 2, type: :string)
+  field(:name, 2, type: :string, deprecated: false)
 end
 
 defmodule Espex.Proto.DeviceInfo do
@@ -530,7 +554,7 @@ defmodule Espex.Proto.DeviceInfo do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:device_id, 1, type: :uint32, json_name: "deviceId")
-  field(:name, 2, type: :string)
+  field(:name, 2, type: :string, deprecated: false)
   field(:area_id, 3, type: :uint32, json_name: "areaId")
 end
 
@@ -547,11 +571,11 @@ defmodule Espex.Proto.DeviceInfoResponse do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:uses_password, 1, type: :bool, json_name: "usesPassword", deprecated: true)
-  field(:name, 2, type: :string)
-  field(:mac_address, 3, type: :string, json_name: "macAddress")
-  field(:esphome_version, 4, type: :string, json_name: "esphomeVersion")
-  field(:compilation_time, 5, type: :string, json_name: "compilationTime")
-  field(:model, 6, type: :string)
+  field(:name, 2, type: :string, deprecated: false)
+  field(:mac_address, 3, type: :string, json_name: "macAddress", deprecated: false)
+  field(:esphome_version, 4, type: :string, json_name: "esphomeVersion", deprecated: false)
+  field(:compilation_time, 5, type: :string, json_name: "compilationTime", deprecated: false)
+  field(:model, 6, type: :string, deprecated: false)
   field(:has_deep_sleep, 7, type: :bool, json_name: "hasDeepSleep", deprecated: false)
   field(:project_name, 8, type: :string, json_name: "projectName", deprecated: false)
   field(:project_version, 9, type: :string, json_name: "projectVersion", deprecated: false)
@@ -569,8 +593,8 @@ defmodule Espex.Proto.DeviceInfoResponse do
     deprecated: false
   )
 
-  field(:manufacturer, 12, type: :string)
-  field(:friendly_name, 13, type: :string, json_name: "friendlyName")
+  field(:manufacturer, 12, type: :string, deprecated: false)
+  field(:friendly_name, 13, type: :string, json_name: "friendlyName", deprecated: false)
 
   field(:legacy_voice_assistant_version, 14,
     type: :uint32,
@@ -637,10 +661,10 @@ defmodule Espex.Proto.ListEntitiesBinarySensorResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
-  field(:device_class, 5, type: :string, json_name: "deviceClass")
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
+  field(:device_class, 5, type: :string, json_name: "deviceClass", deprecated: false)
   field(:is_status_binary_sensor, 6, type: :bool, json_name: "isStatusBinarySensor")
   field(:disabled_by_default, 7, type: :bool, json_name: "disabledByDefault")
   field(:icon, 8, type: :string, deprecated: false)
@@ -658,7 +682,7 @@ defmodule Espex.Proto.BinarySensorStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -668,13 +692,13 @@ defmodule Espex.Proto.ListEntitiesCoverResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:assumed_state, 5, type: :bool, json_name: "assumedState")
   field(:supports_position, 6, type: :bool, json_name: "supportsPosition")
   field(:supports_tilt, 7, type: :bool, json_name: "supportsTilt")
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:disabled_by_default, 9, type: :bool, json_name: "disabledByDefault")
   field(:icon, 10, type: :string, deprecated: false)
 
@@ -692,7 +716,7 @@ defmodule Espex.Proto.CoverStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
 
   field(:legacy_state, 2,
     type: Espex.Proto.LegacyCoverState,
@@ -717,7 +741,7 @@ defmodule Espex.Proto.CoverCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_legacy_command, 2, type: :bool, json_name: "hasLegacyCommand", deprecated: true)
 
   field(:legacy_command, 3,
@@ -739,9 +763,9 @@ defmodule Espex.Proto.ListEntitiesFanResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:supports_oscillation, 5, type: :bool, json_name: "supportsOscillation")
   field(:supports_speed, 6, type: :bool, json_name: "supportsSpeed")
   field(:supports_direction, 7, type: :bool, json_name: "supportsDirection")
@@ -769,7 +793,7 @@ defmodule Espex.Proto.FanStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:oscillating, 3, type: :bool)
   field(:speed, 4, type: Espex.Proto.FanSpeed, enum: true, deprecated: true)
@@ -783,7 +807,7 @@ defmodule Espex.Proto.FanCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_state, 2, type: :bool, json_name: "hasState")
   field(:state, 3, type: :bool)
   field(:has_speed, 4, type: :bool, json_name: "hasSpeed", deprecated: true)
@@ -803,9 +827,9 @@ defmodule Espex.Proto.ListEntitiesLightResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
 
   field(:supported_color_modes, 12,
     repeated: true,
@@ -854,7 +878,7 @@ defmodule Espex.Proto.LightStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:brightness, 3, type: :float)
   field(:color_mode, 11, type: Espex.Proto.ColorMode, json_name: "colorMode", enum: true)
@@ -874,7 +898,7 @@ defmodule Espex.Proto.LightCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_state, 2, type: :bool, json_name: "hasState")
   field(:state, 3, type: :bool)
   field(:has_brightness, 4, type: :bool, json_name: "hasBrightness")
@@ -908,14 +932,14 @@ defmodule Espex.Proto.ListEntitiesSensorResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
-  field(:unit_of_measurement, 6, type: :string, json_name: "unitOfMeasurement")
+  field(:unit_of_measurement, 6, type: :string, json_name: "unitOfMeasurement", deprecated: false)
   field(:accuracy_decimals, 7, type: :int32, json_name: "accuracyDecimals")
   field(:force_update, 8, type: :bool, json_name: "forceUpdate")
-  field(:device_class, 9, type: :string, json_name: "deviceClass")
+  field(:device_class, 9, type: :string, json_name: "deviceClass", deprecated: false)
   field(:state_class, 10, type: Espex.Proto.SensorStateClass, json_name: "stateClass", enum: true)
 
   field(:legacy_last_reset_type, 11,
@@ -940,7 +964,7 @@ defmodule Espex.Proto.SensorStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :float)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -950,9 +974,9 @@ defmodule Espex.Proto.ListEntitiesSwitchResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:assumed_state, 6, type: :bool, json_name: "assumedState")
   field(:disabled_by_default, 7, type: :bool, json_name: "disabledByDefault")
@@ -963,7 +987,7 @@ defmodule Espex.Proto.ListEntitiesSwitchResponse do
     enum: true
   )
 
-  field(:device_class, 9, type: :string, json_name: "deviceClass")
+  field(:device_class, 9, type: :string, json_name: "deviceClass", deprecated: false)
   field(:device_id, 10, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -971,7 +995,7 @@ defmodule Espex.Proto.SwitchStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -980,7 +1004,7 @@ defmodule Espex.Proto.SwitchCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -989,9 +1013,9 @@ defmodule Espex.Proto.ListEntitiesTextSensorResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -1001,7 +1025,7 @@ defmodule Espex.Proto.ListEntitiesTextSensorResponse do
     enum: true
   )
 
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:device_id, 9, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -1009,7 +1033,7 @@ defmodule Espex.Proto.TextSensorStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :string)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -1027,8 +1051,8 @@ defmodule Espex.Proto.SubscribeLogsResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:level, 1, type: Espex.Proto.LogLevel, enum: true)
-  field(:message, 3, type: :bytes)
+  field(:level, 1, type: Espex.Proto.LogLevel, enum: true, deprecated: false)
+  field(:message, 3, type: :bytes, deprecated: false)
 end
 
 defmodule Espex.Proto.NoiseEncryptionSetKeyRequest do
@@ -1122,12 +1146,35 @@ defmodule Espex.Proto.GetTimeRequest do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 end
 
+defmodule Espex.Proto.DSTRule do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:time_seconds, 1, type: :sint32, json_name: "timeSeconds")
+  field(:day, 2, type: :uint32)
+  field(:type, 3, type: Espex.Proto.DSTRuleType, enum: true)
+  field(:month, 4, type: :uint32)
+  field(:week, 5, type: :uint32)
+  field(:day_of_week, 6, type: :uint32, json_name: "dayOfWeek")
+end
+
+defmodule Espex.Proto.ParsedTimezone do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:std_offset_seconds, 1, type: :sint32, json_name: "stdOffsetSeconds")
+  field(:dst_offset_seconds, 2, type: :sint32, json_name: "dstOffsetSeconds")
+  field(:dst_start, 3, type: Espex.Proto.DSTRule, json_name: "dstStart")
+  field(:dst_end, 4, type: Espex.Proto.DSTRule, json_name: "dstEnd")
+end
+
 defmodule Espex.Proto.GetTimeResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:epoch_seconds, 1, type: :fixed32, json_name: "epochSeconds")
   field(:timezone, 2, type: :string)
+  field(:parsed_timezone, 3, type: Espex.Proto.ParsedTimezone, json_name: "parsedTimezone")
 end
 
 defmodule Espex.Proto.ListEntitiesServicesArgument do
@@ -1143,7 +1190,7 @@ defmodule Espex.Proto.ListEntitiesServicesResponse do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:name, 1, type: :string)
-  field(:key, 2, type: :fixed32)
+  field(:key, 2, type: :fixed32, deprecated: false)
 
   field(:args, 3,
     repeated: true,
@@ -1204,7 +1251,7 @@ defmodule Espex.Proto.ExecuteServiceRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:args, 2, repeated: true, type: Espex.Proto.ExecuteServiceArgument, deprecated: false)
   field(:call_id, 3, type: :uint32, json_name: "callId", deprecated: false)
   field(:return_response, 4, type: :bool, json_name: "returnResponse", deprecated: false)
@@ -1224,9 +1271,9 @@ defmodule Espex.Proto.ListEntitiesCameraResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:disabled_by_default, 5, type: :bool, json_name: "disabledByDefault")
   field(:icon, 6, type: :string, deprecated: false)
 
@@ -1243,7 +1290,7 @@ defmodule Espex.Proto.CameraImageResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:data, 2, type: :bytes)
   field(:done, 3, type: :bool)
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -1261,9 +1308,9 @@ defmodule Espex.Proto.ListEntitiesClimateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:supports_current_temperature, 5, type: :bool, json_name: "supportsCurrentTemperature")
 
   field(:supports_two_point_target_temperature, 6,
@@ -1354,7 +1401,7 @@ defmodule Espex.Proto.ClimateStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:mode, 2, type: Espex.Proto.ClimateMode, enum: true)
   field(:current_temperature, 3, type: :float, json_name: "currentTemperature")
   field(:target_temperature, 4, type: :float, json_name: "targetTemperature")
@@ -1376,7 +1423,7 @@ defmodule Espex.Proto.ClimateCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_mode, 2, type: :bool, json_name: "hasMode")
   field(:mode, 3, type: Espex.Proto.ClimateMode, enum: true)
   field(:has_target_temperature, 4, type: :bool, json_name: "hasTargetTemperature")
@@ -1412,9 +1459,9 @@ defmodule Espex.Proto.ListEntitiesWaterHeaterResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 4, type: :string, deprecated: false)
   field(:disabled_by_default, 5, type: :bool, json_name: "disabledByDefault")
 
@@ -1444,7 +1491,7 @@ defmodule Espex.Proto.WaterHeaterStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:current_temperature, 2, type: :float, json_name: "currentTemperature")
   field(:target_temperature, 3, type: :float, json_name: "targetTemperature")
   field(:mode, 4, type: Espex.Proto.WaterHeaterMode, enum: true)
@@ -1458,7 +1505,7 @@ defmodule Espex.Proto.WaterHeaterCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_fields, 2, type: :uint32, json_name: "hasFields")
   field(:mode, 3, type: Espex.Proto.WaterHeaterMode, enum: true)
   field(:target_temperature, 4, type: :float, json_name: "targetTemperature")
@@ -1472,9 +1519,9 @@ defmodule Espex.Proto.ListEntitiesNumberResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:min_value, 6, type: :float, json_name: "minValue")
   field(:max_value, 7, type: :float, json_name: "maxValue")
@@ -1487,9 +1534,9 @@ defmodule Espex.Proto.ListEntitiesNumberResponse do
     enum: true
   )
 
-  field(:unit_of_measurement, 11, type: :string, json_name: "unitOfMeasurement")
+  field(:unit_of_measurement, 11, type: :string, json_name: "unitOfMeasurement", deprecated: false)
   field(:mode, 12, type: Espex.Proto.NumberMode, enum: true)
-  field(:device_class, 13, type: :string, json_name: "deviceClass")
+  field(:device_class, 13, type: :string, json_name: "deviceClass", deprecated: false)
   field(:device_id, 14, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -1497,7 +1544,7 @@ defmodule Espex.Proto.NumberStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :float)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -1507,7 +1554,7 @@ defmodule Espex.Proto.NumberCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :float)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -1516,9 +1563,9 @@ defmodule Espex.Proto.ListEntitiesSelectResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:options, 6, repeated: true, type: :string, deprecated: false)
   field(:disabled_by_default, 7, type: :bool, json_name: "disabledByDefault")
@@ -1536,7 +1583,7 @@ defmodule Espex.Proto.SelectStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :string)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -1546,7 +1593,7 @@ defmodule Espex.Proto.SelectCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :string)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -1555,9 +1602,9 @@ defmodule Espex.Proto.ListEntitiesSirenResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
   field(:tones, 7, repeated: true, type: :string, deprecated: false)
@@ -1577,7 +1624,7 @@ defmodule Espex.Proto.SirenStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -1586,7 +1633,7 @@ defmodule Espex.Proto.SirenCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_state, 2, type: :bool, json_name: "hasState")
   field(:state, 3, type: :bool)
   field(:has_tone, 4, type: :bool, json_name: "hasTone")
@@ -1602,9 +1649,9 @@ defmodule Espex.Proto.ListEntitiesLockResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -1625,7 +1672,7 @@ defmodule Espex.Proto.LockStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: Espex.Proto.LockState, enum: true)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -1634,7 +1681,7 @@ defmodule Espex.Proto.LockCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:command, 2, type: Espex.Proto.LockCommand, enum: true)
   field(:has_code, 3, type: :bool, json_name: "hasCode")
   field(:code, 4, type: :string)
@@ -1645,9 +1692,9 @@ defmodule Espex.Proto.ListEntitiesButtonResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -1657,7 +1704,7 @@ defmodule Espex.Proto.ListEntitiesButtonResponse do
     enum: true
   )
 
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:device_id, 9, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -1665,7 +1712,7 @@ defmodule Espex.Proto.ButtonCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:device_id, 2, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -1684,9 +1731,9 @@ defmodule Espex.Proto.ListEntitiesMediaPlayerResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -1712,7 +1759,7 @@ defmodule Espex.Proto.MediaPlayerStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: Espex.Proto.MediaPlayerState, enum: true)
   field(:volume, 3, type: :float)
   field(:muted, 4, type: :bool)
@@ -1723,7 +1770,7 @@ defmodule Espex.Proto.MediaPlayerCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_command, 2, type: :bool, json_name: "hasCommand")
   field(:command, 3, type: Espex.Proto.MediaPlayerCommand, enum: true)
   field(:has_volume, 4, type: :bool, json_name: "hasVolume")
@@ -1779,9 +1826,9 @@ defmodule Espex.Proto.BluetoothLERawAdvertisement do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:address, 1, type: :uint64)
-  field(:rssi, 2, type: :sint32)
-  field(:address_type, 3, type: :uint32, json_name: "addressType")
+  field(:address, 1, type: :uint64, deprecated: false)
+  field(:rssi, 2, type: :sint32, deprecated: false)
+  field(:address_type, 3, type: :uint32, json_name: "addressType", deprecated: false)
   field(:data, 4, type: :bytes, deprecated: false)
 end
 
@@ -2203,9 +2250,9 @@ defmodule Espex.Proto.ListEntitiesAlarmControlPanelResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2225,7 +2272,7 @@ defmodule Espex.Proto.AlarmControlPanelStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: Espex.Proto.AlarmControlPanelState, enum: true)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2234,7 +2281,7 @@ defmodule Espex.Proto.AlarmControlPanelCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:command, 2, type: Espex.Proto.AlarmControlPanelStateCommand, enum: true)
   field(:code, 3, type: :string)
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -2244,9 +2291,9 @@ defmodule Espex.Proto.ListEntitiesTextResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2267,7 +2314,7 @@ defmodule Espex.Proto.TextStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :string)
   field(:missing_state, 3, type: :bool, json_name: "missingState")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -2277,7 +2324,7 @@ defmodule Espex.Proto.TextCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :string)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2286,9 +2333,9 @@ defmodule Espex.Proto.ListEntitiesDateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2305,7 +2352,7 @@ defmodule Espex.Proto.DateStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:missing_state, 2, type: :bool, json_name: "missingState")
   field(:year, 3, type: :uint32)
   field(:month, 4, type: :uint32)
@@ -2317,7 +2364,7 @@ defmodule Espex.Proto.DateCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:year, 2, type: :uint32)
   field(:month, 3, type: :uint32)
   field(:day, 4, type: :uint32)
@@ -2328,9 +2375,9 @@ defmodule Espex.Proto.ListEntitiesTimeResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2347,7 +2394,7 @@ defmodule Espex.Proto.TimeStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:missing_state, 2, type: :bool, json_name: "missingState")
   field(:hour, 3, type: :uint32)
   field(:minute, 4, type: :uint32)
@@ -2359,7 +2406,7 @@ defmodule Espex.Proto.TimeCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:hour, 2, type: :uint32)
   field(:minute, 3, type: :uint32)
   field(:second, 4, type: :uint32)
@@ -2370,9 +2417,9 @@ defmodule Espex.Proto.ListEntitiesEventResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2382,7 +2429,7 @@ defmodule Espex.Proto.ListEntitiesEventResponse do
     enum: true
   )
 
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:event_types, 9, repeated: true, type: :string, json_name: "eventTypes", deprecated: false)
   field(:device_id, 10, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2391,7 +2438,7 @@ defmodule Espex.Proto.EventResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:event_type, 2, type: :string, json_name: "eventType")
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2400,9 +2447,9 @@ defmodule Espex.Proto.ListEntitiesValveResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2412,7 +2459,7 @@ defmodule Espex.Proto.ListEntitiesValveResponse do
     enum: true
   )
 
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:assumed_state, 9, type: :bool, json_name: "assumedState")
   field(:supports_position, 10, type: :bool, json_name: "supportsPosition")
   field(:supports_stop, 11, type: :bool, json_name: "supportsStop")
@@ -2423,7 +2470,7 @@ defmodule Espex.Proto.ValveStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:position, 2, type: :float)
 
   field(:current_operation, 3,
@@ -2439,7 +2486,7 @@ defmodule Espex.Proto.ValveCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:has_position, 2, type: :bool, json_name: "hasPosition")
   field(:position, 3, type: :float)
   field(:stop, 4, type: :bool)
@@ -2450,9 +2497,9 @@ defmodule Espex.Proto.ListEntitiesDateTimeResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2469,7 +2516,7 @@ defmodule Espex.Proto.DateTimeStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:missing_state, 2, type: :bool, json_name: "missingState")
   field(:epoch_seconds, 3, type: :fixed32, json_name: "epochSeconds")
   field(:device_id, 4, type: :uint32, json_name: "deviceId", deprecated: false)
@@ -2479,7 +2526,7 @@ defmodule Espex.Proto.DateTimeCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:epoch_seconds, 2, type: :fixed32, json_name: "epochSeconds")
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2488,9 +2535,9 @@ defmodule Espex.Proto.ListEntitiesUpdateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 5, type: :string, deprecated: false)
   field(:disabled_by_default, 6, type: :bool, json_name: "disabledByDefault")
 
@@ -2500,7 +2547,7 @@ defmodule Espex.Proto.ListEntitiesUpdateResponse do
     enum: true
   )
 
-  field(:device_class, 8, type: :string, json_name: "deviceClass")
+  field(:device_class, 8, type: :string, json_name: "deviceClass", deprecated: false)
   field(:device_id, 9, type: :uint32, json_name: "deviceId", deprecated: false)
 end
 
@@ -2508,7 +2555,7 @@ defmodule Espex.Proto.UpdateStateResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:missing_state, 2, type: :bool, json_name: "missingState")
   field(:in_progress, 3, type: :bool, json_name: "inProgress")
   field(:has_progress, 4, type: :bool, json_name: "hasProgress")
@@ -2525,7 +2572,7 @@ defmodule Espex.Proto.UpdateCommandRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:key, 1, type: :fixed32)
+  field(:key, 1, type: :fixed32, deprecated: false)
   field(:command, 2, type: Espex.Proto.UpdateCommand, enum: true)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
 end
@@ -2549,9 +2596,9 @@ defmodule Espex.Proto.ListEntitiesInfraredResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
-  field(:object_id, 1, type: :string, json_name: "objectId")
-  field(:key, 2, type: :fixed32)
-  field(:name, 3, type: :string)
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
   field(:icon, 4, type: :string, deprecated: false)
   field(:disabled_by_default, 5, type: :bool, json_name: "disabledByDefault")
 
@@ -2563,6 +2610,7 @@ defmodule Espex.Proto.ListEntitiesInfraredResponse do
 
   field(:device_id, 7, type: :uint32, json_name: "deviceId", deprecated: false)
   field(:capabilities, 8, type: :uint32)
+  field(:receiver_frequency, 9, type: :uint32, json_name: "receiverFrequency")
 end
 
 defmodule Espex.Proto.InfraredRFTransmitRawTimingsRequest do
@@ -2570,7 +2618,7 @@ defmodule Espex.Proto.InfraredRFTransmitRawTimingsRequest do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:device_id, 1, type: :uint32, json_name: "deviceId", deprecated: false)
-  field(:key, 2, type: :fixed32)
+  field(:key, 2, type: :fixed32, deprecated: false)
   field(:carrier_frequency, 3, type: :uint32, json_name: "carrierFrequency")
   field(:repeat_count, 4, type: :uint32, json_name: "repeatCount")
   field(:timings, 5, repeated: true, type: :sint32, packed: true, deprecated: false)
@@ -2581,7 +2629,7 @@ defmodule Espex.Proto.InfraredRFReceiveEvent do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:device_id, 1, type: :uint32, json_name: "deviceId", deprecated: false)
-  field(:key, 2, type: :fixed32)
+  field(:key, 2, type: :fixed32, deprecated: false)
   field(:timings, 3, repeated: true, type: :sint32, packed: true, deprecated: false)
 end
 
@@ -2618,8 +2666,7 @@ defmodule Espex.Proto.SerialProxySetModemPinsRequest do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:instance, 1, type: :uint32)
-  field(:rts, 2, type: :bool)
-  field(:dtr, 3, type: :bool)
+  field(:line_states, 2, type: :uint32, json_name: "lineStates")
 end
 
 defmodule Espex.Proto.SerialProxyGetModemPinsRequest do
@@ -2634,8 +2681,7 @@ defmodule Espex.Proto.SerialProxyGetModemPinsResponse do
   use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
 
   field(:instance, 1, type: :uint32)
-  field(:rts, 2, type: :bool)
-  field(:dtr, 3, type: :bool)
+  field(:line_states, 2, type: :uint32, json_name: "lineStates")
 end
 
 defmodule Espex.Proto.SerialProxyRequest do
@@ -2644,4 +2690,33 @@ defmodule Espex.Proto.SerialProxyRequest do
 
   field(:instance, 1, type: :uint32)
   field(:type, 2, type: Espex.Proto.SerialProxyRequestType, enum: true)
+end
+
+defmodule Espex.Proto.SerialProxyRequestResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:instance, 1, type: :uint32)
+  field(:type, 2, type: Espex.Proto.SerialProxyRequestType, enum: true)
+  field(:status, 3, type: Espex.Proto.SerialProxyStatus, enum: true)
+  field(:error_message, 4, type: :string, json_name: "errorMessage")
+end
+
+defmodule Espex.Proto.BluetoothSetConnectionParamsRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:address, 1, type: :uint64)
+  field(:min_interval, 2, type: :uint32, json_name: "minInterval")
+  field(:max_interval, 3, type: :uint32, json_name: "maxInterval")
+  field(:latency, 4, type: :uint32)
+  field(:timeout, 5, type: :uint32)
+end
+
+defmodule Espex.Proto.BluetoothSetConnectionParamsResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto3
+
+  field(:address, 1, type: :uint64)
+  field(:error, 2, type: :int32)
 end

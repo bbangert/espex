@@ -51,6 +51,20 @@ defmodule Espex.Proto.PbExtension do
     json_name: "baseClass"
   )
 
+  extend(Google.Protobuf.MessageOptions, :inline_encode, 1042,
+    optional: true,
+    type: :bool,
+    json_name: "inlineEncode",
+    default: false
+  )
+
+  extend(Google.Protobuf.MessageOptions, :speed_optimized, 1043,
+    optional: true,
+    type: :bool,
+    json_name: "speedOptimized",
+    default: false
+  )
+
   extend(Google.Protobuf.FieldOptions, :field_ifdef, 1042,
     optional: true,
     type: :string,
@@ -113,6 +127,20 @@ defmodule Espex.Proto.PbExtension do
     type: :bool,
     json_name: "packedBuffer",
     default: false
+  )
+
+  extend(Google.Protobuf.FieldOptions, :force, 50016, optional: true, type: :bool, default: false)
+
+  extend(Google.Protobuf.FieldOptions, :max_value, 50017,
+    optional: true,
+    type: :uint32,
+    json_name: "maxValue"
+  )
+
+  extend(Google.Protobuf.FieldOptions, :max_data_length, 50018,
+    optional: true,
+    type: :uint32,
+    json_name: "maxDataLength"
   )
 end
 

@@ -16,7 +16,14 @@ defmodule Espex.Dispatch do
   handler owns those interactions exclusively.
   """
 
+  import Bitwise
+
   alias Espex.{ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy}
+
+  # Bit positions for Proto.SerialProxy{Set,Get}ModemPins{Request,Response}.line_states,
+  # per ESPHome's SerialProxyLineStateFlag enum in serial_proxy.h.
+  @rts_bit 0x01
+  @dtr_bit 0x02
 
   # Every protobuf struct in this list routes through
   # Espex.EntityProvider.handle_command/1 when a provider is configured.
@@ -51,6 +58,7 @@ defmodule Espex.Dispatch do
           | {:serial_close, instance :: non_neg_integer()}
           | {:serial_modem_pins_set, instance :: non_neg_integer(), rts :: boolean(), dtr :: boolean()}
           | {:serial_modem_pins_get, instance :: non_neg_integer()}
+          | {:serial_request, instance :: non_neg_integer(), SerialProxy.request_type()}
           | :zwave_subscribe
           | :zwave_unsubscribe
           | {:zwave_send_frame, binary()}
@@ -175,7 +183,8 @@ defmodule Espex.Dispatch do
 
   def handle_request(state, %Proto.SerialProxySetModemPinsRequest{} = req) do
     if ConnectionState.port_open?(state, req.instance) do
-      {state, [{:serial_modem_pins_set, req.instance, req.rts, req.dtr}]}
+      {rts, dtr} = unpack_line_states(req.line_states)
+      {state, [{:serial_modem_pins_set, req.instance, rts, dtr}]}
     else
       {state, [{:log, :warning, "set_modem_pins for unopened instance #{req.instance}"}]}
     end
@@ -185,13 +194,35 @@ defmodule Espex.Dispatch do
     if ConnectionState.port_open?(state, req.instance) do
       {state, [{:serial_modem_pins_get, req.instance}]}
     else
-      response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, rts: false, dtr: false}
+      response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, line_states: 0}
       {state, [{:log, :warning, "get_modem_pins for unopened instance #{req.instance}"}, {:send, response}]}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyRequest{} = req) do
-    {state, [{:log, :debug, "serial proxy request instance #{req.instance} type #{inspect(req.type)}"}]}
+    case normalize_request_type(req.type) do
+      nil ->
+        response = serial_request_error(req.instance, req.type, "unknown request type")
+
+        {state,
+         [
+           {:log, :warning, "serial proxy request unknown type: #{inspect(req.type)}"},
+           {:send, response}
+         ]}
+
+      type ->
+        if ConnectionState.port_open?(state, req.instance) do
+          {state, [{:serial_request, req.instance, type}]}
+        else
+          response = serial_request_error(req.instance, req.type, "instance not open")
+
+          {state,
+           [
+             {:log, :warning, "serial proxy request for unopened instance #{req.instance}"},
+             {:send, response}
+           ]}
+        end
+    end
   end
 
   # -- Infrared Proxy --
@@ -329,10 +360,69 @@ defmodule Espex.Dispatch do
   @spec modem_pins_response(non_neg_integer(), {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}) ::
           Proto.SerialProxyGetModemPinsResponse.t()
   def modem_pins_response(instance, {:ok, %{rts: rts, dtr: dtr}}) do
-    %Proto.SerialProxyGetModemPinsResponse{instance: instance, rts: rts, dtr: dtr}
+    %Proto.SerialProxyGetModemPinsResponse{instance: instance, line_states: pack_line_states(rts, dtr)}
   end
 
   def modem_pins_response(instance, {:error, _reason}) do
-    %Proto.SerialProxyGetModemPinsResponse{instance: instance, rts: false, dtr: false}
+    %Proto.SerialProxyGetModemPinsResponse{instance: instance, line_states: 0}
+  end
+
+  @doc """
+  Build a `SerialProxyRequestResponse` from an adapter's return value.
+  The handler calls this after resolving a `:serial_request` action.
+  """
+  @spec serial_request_response(
+          non_neg_integer(),
+          SerialProxy.request_type(),
+          {:ok, SerialProxy.request_status()} | {:error, term()}
+        ) :: Proto.SerialProxyRequestResponse.t()
+  def serial_request_response(instance, type, {:ok, status}) do
+    %Proto.SerialProxyRequestResponse{
+      instance: instance,
+      type: to_wire_request_type(type),
+      status: to_wire_status(status),
+      error_message: ""
+    }
+  end
+
+  def serial_request_response(instance, type, {:error, reason}) do
+    %Proto.SerialProxyRequestResponse{
+      instance: instance,
+      type: to_wire_request_type(type),
+      status: :SERIAL_PROXY_STATUS_ERROR,
+      error_message: inspect(reason)
+    }
+  end
+
+  defp unpack_line_states(bits) do
+    {(bits &&& @rts_bit) != 0, (bits &&& @dtr_bit) != 0}
+  end
+
+  defp pack_line_states(rts, dtr) do
+    if(rts, do: @rts_bit, else: 0) ||| if(dtr, do: @dtr_bit, else: 0)
+  end
+
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE), do: :subscribe
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE), do: :unsubscribe
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_FLUSH), do: :flush
+  defp normalize_request_type(_), do: nil
+
+  defp to_wire_request_type(:subscribe), do: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+  defp to_wire_request_type(:unsubscribe), do: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+  defp to_wire_request_type(:flush), do: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
+
+  defp to_wire_status(:ok), do: :SERIAL_PROXY_STATUS_OK
+  defp to_wire_status(:assumed_success), do: :SERIAL_PROXY_STATUS_ASSUMED_SUCCESS
+  defp to_wire_status(:error), do: :SERIAL_PROXY_STATUS_ERROR
+  defp to_wire_status(:timeout), do: :SERIAL_PROXY_STATUS_TIMEOUT
+  defp to_wire_status(:not_supported), do: :SERIAL_PROXY_STATUS_NOT_SUPPORTED
+
+  defp serial_request_error(instance, wire_type, message) do
+    %Proto.SerialProxyRequestResponse{
+      instance: instance,
+      type: wire_type,
+      status: :SERIAL_PROXY_STATUS_ERROR,
+      error_message: message
+    }
   end
 end

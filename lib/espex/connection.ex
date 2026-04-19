@@ -383,6 +383,18 @@ defmodule Espex.Connection do
     end
   end
 
+  defp interpret_action(socket, state, {:serial_request, instance, type}) do
+    result =
+      state
+      |> ConnectionState.port_handle(instance)
+      |> serial_request(state.adapters.serial_proxy, type)
+
+    case send_protobuf(socket, state, Dispatch.serial_request_response(instance, type, result)) do
+      {:ok, state} -> {:cont, state}
+      {:error, reason} -> {:halt, reason, state}
+    end
+  end
+
   defp interpret_action(socket, state, :zwave_subscribe) do
     case state.adapters.zwave_proxy.subscribe(self()) do
       {:ok, home_id_bytes} ->
@@ -570,6 +582,16 @@ defmodule Espex.Connection do
 
   defp get_modem_pins({:ok, handle}, adapter), do: adapter.get_modem_pins(handle)
   defp get_modem_pins(:error, _adapter), do: {:error, :not_open}
+
+  defp serial_request({:ok, handle}, adapter, type) do
+    if function_exported?(adapter, :request, 2) do
+      adapter.request(handle, type)
+    else
+      {:ok, :not_supported}
+    end
+  end
+
+  defp serial_request(:error, _adapter, _type), do: {:error, :not_open}
 
   @compile {:no_warn_undefined, [SerialProxy, InfraredProxy]}
 end
