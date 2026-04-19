@@ -91,7 +91,9 @@ defmodule Espex.ConnectionStateTest do
 
   describe "subscription flags" do
     test "put_zwave_subscribed / put_infrared_subscribed toggle" do
-      state = base_state() |> ConnectionState.put_zwave_subscribed(true) |> ConnectionState.put_infrared_subscribed(true)
+      state =
+        base_state() |> ConnectionState.put_zwave_subscribed(true) |> ConnectionState.put_infrared_subscribed(true)
+
       assert state.zwave_subscribed
       assert state.infrared_subscribed
       state = state |> ConnectionState.put_zwave_subscribed(false)
@@ -103,9 +105,7 @@ defmodule Espex.ConnectionStateTest do
   describe "adapter lookup" do
     test "adapter/2 returns nil when unconfigured, module when configured" do
       state =
-        base_state(
-          adapters: %{serial_proxy: MyApp.Serial, zwave_proxy: nil, infrared_proxy: nil, entity_provider: nil}
-        )
+        base_state(adapters: %{serial_proxy: MyApp.Serial, zwave_proxy: nil, infrared_proxy: nil, entity_provider: nil})
 
       assert ConnectionState.adapter(state, :serial_proxy) == MyApp.Serial
       assert ConnectionState.adapter(state, :zwave_proxy) == nil

@@ -29,7 +29,18 @@ defmodule Espex.Connection do
 
   require Logger
 
-  alias Espex.{ConnectionState, DeviceConfig, Dispatch, Frame, InfraredProxy, MessageTypes, Noise, Proto, Server, SerialProxy}
+  alias Espex.{
+    ConnectionState,
+    DeviceConfig,
+    Dispatch,
+    Frame,
+    InfraredProxy,
+    MessageTypes,
+    Noise,
+    Proto,
+    Server,
+    SerialProxy
+  }
 
   @noise_prologue "NoiseAPIInit" <> <<0, 0>>
   @noise_proto_selector 0x01
@@ -126,70 +137,39 @@ defmodule Espex.Connection do
         state = ConnectionState.put_buffer(state, rest)
         handle_protobuf(socket, state, type_id, payload)
 
-      {:incomplete, _} ->
-        {:cont, state}
-
-      {:error, reason} ->
-        Logger.warning("Espex client #{state.peer} protocol error: #{inspect(reason)}")
-        {:halt, {:protocol_error, reason}, state}
+      other ->
+        halt_on_frame_error(other, state, :protocol_error)
     end
   end
 
+  # Plaintext client probing an encrypted server. Send a handshake
+  # rejection frame (first byte 0x01) so aioesphomeapi raises
+  # RequiresEncryptionAPIError — that's how Home Assistant's config
+  # flow discovers it needs to prompt the user for the PSK.
+  defp process_buffer(socket, %{encryption: :awaiting_hello, buffer: <<0x00, _::binary>>} = state) do
+    send_handshake_rejection(socket, "Encryption required")
+    Logger.info("Espex #{state.peer} plaintext probe on encrypted server — signalled encryption required")
+    {:halt, :encryption_required, state}
+  end
+
   defp process_buffer(socket, %{encryption: :awaiting_hello} = state) do
-    case state.buffer do
-      <<0x00, _::binary>> ->
-        # Plaintext client probing an encrypted server. Send a handshake
-        # rejection frame (first byte 0x01) so aioesphomeapi raises
-        # RequiresEncryptionAPIError — that's how Home Assistant's config
-        # flow discovers it needs to prompt the user for the PSK.
-        send_handshake_rejection(socket, "Encryption required")
-        Logger.info("Espex #{state.peer} plaintext probe on encrypted server — signalled encryption required")
-        {:halt, :encryption_required, state}
+    case Noise.Frame.decode_outer(state.buffer) do
+      {:ok, _hello_body, rest} ->
+        state = ConnectionState.put_buffer(state, rest)
+        on_server_hello(send_server_hello(socket, state), socket, state)
 
-      _ ->
-        case Noise.Frame.decode_outer(state.buffer) do
-          {:ok, _hello_body, rest} ->
-            state = ConnectionState.put_buffer(state, rest)
-
-            case send_server_hello(socket, state) do
-              {:ok, noise} ->
-                state = ConnectionState.put_encryption(state, {:awaiting_init, noise})
-                process_buffer(socket, state)
-
-              {:error, reason} ->
-                {:halt, reason, state}
-            end
-
-          {:incomplete, _} ->
-            {:cont, state}
-
-          {:error, reason} ->
-            Logger.warning("Espex client #{state.peer} Noise preamble error: #{inspect(reason)}")
-            {:halt, {:noise_preamble, reason}, state}
-        end
+      other ->
+        halt_on_frame_error(other, state, :noise_preamble)
     end
   end
 
   defp process_buffer(socket, %{encryption: {:awaiting_init, noise}} = state) do
     case Noise.Frame.decode_outer(state.buffer) do
-      {:ok, <<@handshake_status_ok, noise_msg::binary>>, rest} ->
-        state = ConnectionState.put_buffer(state, rest)
-        complete_handshake(socket, state, noise, noise_msg)
+      {:ok, body, rest} ->
+        on_handshake_init(body, rest, socket, state, noise)
 
-      {:ok, <<other, _::binary>>, _rest} ->
-        Logger.warning("Espex client #{state.peer} unexpected handshake status byte #{other}")
-        {:halt, {:noise_bad_status, other}, state}
-
-      {:ok, <<>>, _rest} ->
-        Logger.warning("Espex client #{state.peer} empty handshake init frame")
-        {:halt, :noise_empty_init, state}
-
-      {:incomplete, _} ->
-        {:cont, state}
-
-      {:error, reason} ->
-        Logger.warning("Espex client #{state.peer} Noise init decode error: #{inspect(reason)}")
-        {:halt, {:noise_init, reason}, state}
+      other ->
+        halt_on_frame_error(other, state, :noise_init)
     end
   end
 
@@ -198,31 +178,68 @@ defmodule Espex.Connection do
       {:ok, ciphertext, rest} ->
         state = ConnectionState.put_buffer(state, rest)
 
-        case Noise.decrypt(rx, <<>>, ciphertext) do
-          {:ok, new_rx, inner} ->
-            state = advance_rx(state, new_rx)
+        rx
+        |> Noise.decrypt(<<>>, ciphertext)
+        |> on_decrypted(socket, state)
 
-            case Noise.Frame.decode_inner(inner) do
-              {:ok, type_id, payload} ->
-                handle_protobuf(socket, state, type_id, payload)
-
-              {:error, reason} ->
-                Logger.warning("Espex client #{state.peer} inner frame decode error: #{inspect(reason)}")
-                process_buffer(socket, state)
-            end
-
-          {:error, reason} ->
-            Logger.warning("Espex client #{state.peer} noise decrypt failed: #{inspect(reason)}")
-            {:halt, {:noise_decrypt, reason}, state}
-        end
-
-      {:incomplete, _} ->
-        {:cont, state}
-
-      {:error, reason} ->
-        Logger.warning("Espex client #{state.peer} encrypted frame decode error: #{inspect(reason)}")
-        {:halt, {:noise_frame, reason}, state}
+      other ->
+        halt_on_frame_error(other, state, :noise_frame)
     end
+  end
+
+  defp halt_on_frame_error({:incomplete, _}, state, _tag), do: {:cont, state}
+
+  defp halt_on_frame_error({:error, reason}, state, tag) do
+    Logger.warning("Espex client #{state.peer} #{frame_error_label(tag)}: #{inspect(reason)}")
+    {:halt, {tag, reason}, state}
+  end
+
+  defp frame_error_label(:protocol_error), do: "protocol error"
+  defp frame_error_label(:noise_preamble), do: "Noise preamble error"
+  defp frame_error_label(:noise_init), do: "Noise init decode error"
+  defp frame_error_label(:noise_frame), do: "encrypted frame decode error"
+
+  defp on_server_hello({:ok, noise}, socket, state) do
+    state = ConnectionState.put_encryption(state, {:awaiting_init, noise})
+    process_buffer(socket, state)
+  end
+
+  defp on_server_hello({:error, reason}, _socket, state) do
+    {:halt, reason, state}
+  end
+
+  defp on_handshake_init(<<@handshake_status_ok, noise_msg::binary>>, rest, socket, state, noise) do
+    state = ConnectionState.put_buffer(state, rest)
+    complete_handshake(socket, state, noise, noise_msg)
+  end
+
+  defp on_handshake_init(<<>>, _rest, _socket, state, _noise) do
+    Logger.warning("Espex client #{state.peer} empty handshake init frame")
+    {:halt, :noise_empty_init, state}
+  end
+
+  defp on_handshake_init(<<other, _::binary>>, _rest, _socket, state, _noise) do
+    Logger.warning("Espex client #{state.peer} unexpected handshake status byte #{other}")
+    {:halt, {:noise_bad_status, other}, state}
+  end
+
+  defp on_decrypted({:ok, new_rx, inner}, socket, state) do
+    state = advance_rx(state, new_rx)
+    inner |> Noise.Frame.decode_inner() |> dispatch_inner(socket, state)
+  end
+
+  defp on_decrypted({:error, reason}, _socket, state) do
+    Logger.warning("Espex client #{state.peer} noise decrypt failed: #{inspect(reason)}")
+    {:halt, {:noise_decrypt, reason}, state}
+  end
+
+  defp dispatch_inner({:ok, type_id, payload}, socket, state) do
+    handle_protobuf(socket, state, type_id, payload)
+  end
+
+  defp dispatch_inner({:error, reason}, socket, state) do
+    Logger.warning("Espex client #{state.peer} inner frame decode error: #{inspect(reason)}")
+    process_buffer(socket, state)
   end
 
   defp handle_protobuf(socket, state, type_id, payload) do
@@ -327,16 +344,10 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_write, instance, data}) do
-    with {:ok, handle} <- ConnectionState.port_handle(state, instance),
-         :ok <- state.adapters.serial_proxy.write(handle, data) do
-      :ok
-    else
-      :error ->
-        :ok
-
-      {:error, reason} ->
-        Logger.warning("Espex #{state.peer} serial write instance #{instance} failed: #{inspect(reason)}")
-    end
+    state
+    |> ConnectionState.port_handle(instance)
+    |> write_port(state.adapters.serial_proxy, data)
+    |> log_adapter_error(state.peer, "serial write instance #{instance}")
 
     {:cont, state}
   end
@@ -353,20 +364,18 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_modem_pins_set, instance, rts, dtr}) do
-    case ConnectionState.port_handle(state, instance) do
-      {:ok, handle} -> state.adapters.serial_proxy.set_modem_pins(handle, rts, dtr)
-      :error -> :ok
-    end
+    state
+    |> ConnectionState.port_handle(instance)
+    |> set_modem_pins(state.adapters.serial_proxy, rts, dtr)
 
     {:cont, state}
   end
 
   defp interpret_action(socket, state, {:serial_modem_pins_get, instance}) do
     result =
-      case ConnectionState.port_handle(state, instance) do
-        {:ok, handle} -> state.adapters.serial_proxy.get_modem_pins(handle)
-        :error -> {:error, :not_open}
-      end
+      state
+      |> ConnectionState.port_handle(instance)
+      |> get_modem_pins(state.adapters.serial_proxy)
 
     case send_protobuf(socket, state, Dispatch.modem_pins_response(instance, result)) do
       {:ok, state} -> {:cont, state}
@@ -392,10 +401,8 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:zwave_send_frame, data}) do
-    case state.adapters.zwave_proxy.send_frame(data) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("Espex #{state.peer} Z-Wave send_frame failed: #{inspect(reason)}")
-    end
+    state.adapters.zwave_proxy.send_frame(data)
+    |> log_adapter_error(state.peer, "Z-Wave send_frame")
 
     {:cont, state}
   end
@@ -411,19 +418,15 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:infrared_transmit, key, timings, opts}) do
-    case state.adapters.infrared_proxy.transmit_raw(key, timings, opts) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("Espex #{state.peer} IR transmit failed: #{inspect(reason)}")
-    end
+    state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
+    |> log_adapter_error(state.peer, "IR transmit")
 
     {:cont, state}
   end
 
   defp interpret_action(_socket, state, {:entity_command, command}) do
-    case state.adapters.entity_provider.handle_command(command) do
-      :ok -> :ok
-      {:error, reason} -> Logger.warning("Espex #{state.peer} entity command failed: #{inspect(reason)}")
-    end
+    state.adapters.entity_provider.handle_command(command)
+    |> log_adapter_error(state.peer, "entity command")
 
     {:cont, state}
   end
@@ -452,7 +455,7 @@ defmodule Espex.Connection do
 
       {:error, reason} ->
         Logger.warning("Espex encode error: #{inspect(reason)}")
-        {:ok, state}
+        {:error, reason}
     end
   end
 
@@ -486,7 +489,10 @@ defmodule Espex.Connection do
   end
 
   defp send_protobuf(_socket, state, message) do
-    Logger.warning("Espex send attempted in wrong state: #{inspect(state.encryption)}; dropped #{inspect(message.__struct__)}")
+    Logger.warning(
+      "Espex send attempted in wrong state: #{inspect(state.encryption)}; dropped #{inspect(message.__struct__)}"
+    )
+
     {:ok, state}
   end
 
@@ -547,6 +553,23 @@ defmodule Espex.Connection do
       _ -> "unknown"
     end
   end
+
+  # Pattern-matched helpers used by interpret_action/3 above.
+
+  defp log_adapter_error(:ok, _peer, _what), do: :ok
+
+  defp log_adapter_error({:error, reason}, peer, what) do
+    Logger.warning("Espex #{peer} #{what} failed: #{inspect(reason)}")
+  end
+
+  defp write_port({:ok, handle}, adapter, data), do: adapter.write(handle, data)
+  defp write_port(:error, _adapter, _data), do: :ok
+
+  defp set_modem_pins({:ok, handle}, adapter, rts, dtr), do: adapter.set_modem_pins(handle, rts, dtr)
+  defp set_modem_pins(:error, _adapter, _rts, _dtr), do: :ok
+
+  defp get_modem_pins({:ok, handle}, adapter), do: adapter.get_modem_pins(handle)
+  defp get_modem_pins(:error, _adapter), do: {:error, :not_open}
 
   @compile {:no_warn_undefined, [SerialProxy, InfraredProxy]}
 end

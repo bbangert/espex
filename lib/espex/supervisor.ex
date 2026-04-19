@@ -106,10 +106,7 @@ defmodule Espex.Supervisor do
       adapter when is_atom(adapter) and adapter not in [nil, false] ->
         [
           {MdnsAdvertiser,
-           adapter: adapter,
-           device_config: device_config,
-           supervisor_name: supervisor_name,
-           port: opts[:port]}
+           adapter: adapter, device_config: device_config, supervisor_name: supervisor_name, port: opts[:port]}
         ]
 
       _ ->

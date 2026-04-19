@@ -13,6 +13,8 @@ defmodule Espex.Frame do
   bits first.
   """
 
+  import Bitwise
+
   @plaintext_indicator 0x00
 
   @doc """
@@ -28,18 +30,13 @@ defmodule Espex.Frame do
 
   """
   @spec encode_varint(non_neg_integer()) :: binary()
-  def encode_varint(value) when value >= 0 do
-    do_encode_varint(value, <<>>)
-  end
+  def encode_varint(value) when value >= 0, do: do_encode_varint(value)
 
-  defp do_encode_varint(value, acc) when value < 128 do
-    acc <> <<value::8>>
-  end
+  defp do_encode_varint(value) when value < 128, do: <<value>>
 
-  defp do_encode_varint(value, acc) do
-    byte = Bitwise.bor(Bitwise.band(value, 0x7F), 0x80)
-    rest = Bitwise.bsr(value, 7)
-    do_encode_varint(rest, acc <> <<byte::8>>)
+  defp do_encode_varint(value) do
+    byte = (value &&& 0x7F) ||| 0x80
+    <<byte, do_encode_varint(value >>> 7)::binary>>
   end
 
   @doc """
@@ -55,8 +52,6 @@ defmodule Espex.Frame do
 
   """
   @spec decode_varint(binary()) :: {:ok, non_neg_integer(), binary()} | {:incomplete, binary()}
-  def decode_varint(<<>>), do: {:incomplete, <<>>}
-
   def decode_varint(data) when is_binary(data) do
     do_decode_varint(data, 0, 0)
   end
@@ -65,10 +60,10 @@ defmodule Espex.Frame do
     {:incomplete, <<>>}
   end
 
-  defp do_decode_varint(<<byte::8, rest::binary>>, shift, acc) do
-    value = acc + Bitwise.bsl(Bitwise.band(byte, 0x7F), shift)
+  defp do_decode_varint(<<byte, rest::binary>>, shift, acc) do
+    value = acc + ((byte &&& 0x7F) <<< shift)
 
-    if Bitwise.band(byte, 0x80) == 0 do
+    if (byte &&& 0x80) == 0 do
       {:ok, value, rest}
     else
       do_decode_varint(rest, shift + 7, value)
@@ -110,17 +105,13 @@ defmodule Espex.Frame do
           {:ok, non_neg_integer(), binary(), binary()}
           | {:incomplete, binary()}
           | {:error, term()}
-  def decode_frame(<<@plaintext_indicator, rest::binary>> = buffer) do
-    with {:ok, payload_size, rest2} <- decode_varint(rest),
-         {:ok, message_type_id, rest3} <- decode_varint(rest2) do
-      if byte_size(rest3) >= payload_size do
-        <<payload::binary-size(payload_size), remaining::binary>> = rest3
-        {:ok, message_type_id, payload, remaining}
-      else
-        {:incomplete, buffer}
-      end
+  def decode_frame(<<@plaintext_indicator, after_indicator::binary>> = buffer) do
+    with {:ok, payload_size, after_size} <- decode_varint(after_indicator),
+         {:ok, type_id, after_type} <- decode_varint(after_size),
+         <<payload::binary-size(payload_size), rest::binary>> <- after_type do
+      {:ok, type_id, payload, rest}
     else
-      {:incomplete, _} -> {:incomplete, buffer}
+      _ -> {:incomplete, buffer}
     end
   end
 
@@ -130,9 +121,5 @@ defmodule Espex.Frame do
 
   def decode_frame(<<indicator, _rest::binary>>) when indicator != @plaintext_indicator do
     {:error, {:bad_indicator, indicator}}
-  end
-
-  def decode_frame(buffer) when is_binary(buffer) do
-    {:incomplete, buffer}
   end
 end

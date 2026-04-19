@@ -130,6 +130,15 @@ defmodule Espex.ConnectionState do
   end
 
   @doc """
+  Return `true` if `instance` is currently open. Use when you only need
+  existence, not the handle itself.
+  """
+  @spec port_open?(t(), non_neg_integer()) :: boolean()
+  def port_open?(%__MODULE__{opened_ports: ports}, instance) do
+    Map.has_key?(ports, instance)
+  end
+
+  @doc """
   Reverse-lookup the instance id for an adapter-returned handle.
   Returns the first matching instance, or `nil`.
   """

@@ -51,6 +51,9 @@ defmodule Espex.Mdns.Advertiser do
   end
 
   @impl GenServer
+  # mDNS is best-effort discovery — if the adapter or port lookup fails we
+  # log and stay up so the API listener still serves clients that find us
+  # by other means (static IP, prior cache).
   def handle_continue(:advertise, state) do
     case resolve_port(state) do
       {:ok, port} ->

@@ -142,6 +142,7 @@ defmodule Espex.DispatchTest do
 
     test "masks values exceeding 32 bits" do
       huge = 0x1_0000_0042
+
       {_s, [{:send, %Proto.GetTimeResponse{epoch_seconds: seconds}}]} =
         Dispatch.handle_request(state(clock_fun: fn -> huge end), %Proto.GetTimeRequest{})
 
@@ -186,7 +187,9 @@ defmodule Espex.DispatchTest do
   describe "SerialProxyWriteRequest" do
     test "opened instance: emits :serial_write" do
       s = state() |> ConnectionState.put_port(3, :h)
-      {_s, [{:serial_write, 3, "hi"}]} = Dispatch.handle_request(s, %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
+
+      {_s, [{:serial_write, 3, "hi"}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
     end
 
     test "unopened instance: logs warning" do
@@ -198,8 +201,11 @@ defmodule Espex.DispatchTest do
   describe "ZWaveProxyRequest" do
     test "subscribe with adapter: emits :zwave_subscribe" do
       adapters = %{serial_proxy: nil, zwave_proxy: Espex.Test.FakeZWaveProxy, infrared_proxy: nil, entity_provider: nil}
+
       {_s, [:zwave_subscribe]} =
-        Dispatch.handle_request(state(adapters: adapters), %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE})
+        Dispatch.handle_request(state(adapters: adapters), %Proto.ZWaveProxyRequest{
+          type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE
+        })
     end
 
     test "subscribe without adapter: logs only" do
@@ -209,6 +215,7 @@ defmodule Espex.DispatchTest do
 
     test "unsubscribe when subscribed: flips flag and emits action" do
       s = state() |> ConnectionState.put_zwave_subscribed(true)
+
       {new_s, [:zwave_unsubscribe]} =
         Dispatch.handle_request(s, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE})
 
@@ -223,7 +230,9 @@ defmodule Espex.DispatchTest do
   describe "ZWaveProxyFrame" do
     test "with adapter: emits :zwave_send_frame" do
       adapters = %{serial_proxy: nil, zwave_proxy: Espex.Test.FakeZWaveProxy, infrared_proxy: nil, entity_provider: nil}
-      {_s, [{:zwave_send_frame, "abc"}]} = Dispatch.handle_request(state(adapters: adapters), %Proto.ZWaveProxyFrame{data: "abc"})
+
+      {_s, [{:zwave_send_frame, "abc"}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.ZWaveProxyFrame{data: "abc"})
     end
 
     test "without adapter: logs warning" do
@@ -246,7 +255,13 @@ defmodule Espex.DispatchTest do
     test "with adapter, already subscribed: just transmits" do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
       s = state(adapters: adapters) |> ConnectionState.put_infrared_subscribed(true)
-      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [1], carrier_frequency: 40_000, repeat_count: 3}
+
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{
+        key: 99,
+        timings: [1],
+        carrier_frequency: 40_000,
+        repeat_count: 3
+      }
 
       {_s, [{:infrared_transmit, 99, [1], opts}]} = Dispatch.handle_request(s, req)
       assert opts[:carrier_frequency] == 40_000
@@ -275,6 +290,7 @@ defmodule Espex.DispatchTest do
   describe "handle_event/2" do
     test "serial data routed to correct instance" do
       s = state() |> ConnectionState.put_port(4, :my_handle)
+
       {_s, [{:send, %Proto.SerialProxyDataReceived{instance: 4, data: "bytes"}}]} =
         Dispatch.handle_event(s, {:espex_serial_data, :my_handle, "bytes"})
     end
@@ -303,6 +319,7 @@ defmodule Espex.DispatchTest do
 
     test "ir receive sent when subscribed" do
       s = state() |> ConnectionState.put_infrared_subscribed(true)
+
       {_, [{:send, %Proto.InfraredRFReceiveEvent{key: 7, timings: [100]}}]} =
         Dispatch.handle_event(s, {:espex_ir_receive, 7, [100]})
     end

@@ -70,9 +70,8 @@ defmodule Espex.Noise do
         {:error, :invalid_prologue}
 
       true ->
-        h = :crypto.hash(:sha256, @protocol_name)
-        ck = h
-        h = mix_hash_bytes(h, prologue)
+        ck = :crypto.hash(:sha256, @protocol_name)
+        h = mix_hash_bytes(ck, prologue)
 
         state = %__MODULE__{
           role: role,
@@ -104,29 +103,38 @@ defmodule Espex.Noise do
           {:ok, handshake(), binary()} | {:error, term()}
   def write_message(handshake, payload \\ <<>>, opts \\ [])
 
+  # -> psk, e
+  # PSK-extension to the `e` token: on any PSK handshake, MixKey(e.public)
+  # is called in addition to MixHash. See Noise spec §9.2.
   def write_message(%__MODULE__{role: :initiator, step: 0} = state, payload, opts) do
-    # -> psk, e
-    state = mix_key_and_hash(state, state.psk)
     {e_pub, e_priv} = keypair(opts)
+    psk = state.psk
     state = %{state | e_pub: e_pub, e_priv: e_priv}
-    state = mix_hash(state, e_pub)
-    # PSK-extension to the `e` token: on any PSK handshake, MixKey(e.public)
-    # is called in addition to MixHash. See Noise spec §9.2.
-    state = mix_key(state, e_pub)
-    {state, ct} = encrypt_and_hash(state, payload)
+
+    {state, ct} =
+      state
+      |> mix_key_and_hash(psk)
+      |> mix_hash(e_pub)
+      |> mix_key(e_pub)
+      |> encrypt_and_hash(payload)
+
     {:ok, %{state | step: 1}, e_pub <> ct}
   end
 
+  # <- e, ee  (after having read the initiator's first message)
+  # PSK-extension to the `e` token (see Noise spec §9.2).
   def write_message(%__MODULE__{role: :responder, step: 1} = state, payload, opts) do
-    # <- e, ee  (after having read the initiator's first message)
     {e_pub, e_priv} = keypair(opts)
-    state = %{state | e_pub: e_pub, e_priv: e_priv}
-    state = mix_hash(state, e_pub)
-    # PSK-extension to the `e` token (see Noise spec §9.2).
-    state = mix_key(state, e_pub)
     shared = dh(e_priv, state.re)
-    state = mix_key(state, shared)
-    {state, ct} = encrypt_and_hash(state, payload)
+    state = %{state | e_pub: e_pub, e_priv: e_priv}
+
+    {state, ct} =
+      state
+      |> mix_hash(e_pub)
+      |> mix_key(e_pub)
+      |> mix_key(shared)
+      |> encrypt_and_hash(payload)
+
     {:ok, %{state | step: 2}, e_pub <> ct}
   end
 
@@ -141,32 +149,37 @@ defmodule Espex.Noise do
   @spec read_message(handshake(), binary()) :: {:ok, handshake(), binary()} | {:error, term()}
   def read_message(handshake, message)
 
+  # -> psk, e
+  # PSK-extension to the `e` token (see Noise spec §9.2).
   def read_message(%__MODULE__{role: :responder, step: 0} = state, <<re::binary-size(@dh_len), rest::binary>>) do
-    # -> psk, e
-    state = mix_key_and_hash(state, state.psk)
+    psk = state.psk
     state = %{state | re: re}
-    state = mix_hash(state, re)
-    # PSK-extension to the `e` token (see Noise spec §9.2).
-    state = mix_key(state, re)
 
-    case decrypt_and_hash(state, rest) do
-      {:ok, state, payload} -> {:ok, %{state | step: 1}, payload}
-      {:error, reason} -> {:error, reason}
+    state =
+      state
+      |> mix_key_and_hash(psk)
+      |> mix_hash(re)
+      |> mix_key(re)
+
+    with {:ok, state, payload} <- decrypt_and_hash(state, rest) do
+      {:ok, %{state | step: 1}, payload}
     end
   end
 
+  # <- e, ee
+  # PSK-extension to the `e` token (see Noise spec §9.2).
   def read_message(%__MODULE__{role: :initiator, step: 1} = state, <<re::binary-size(@dh_len), rest::binary>>) do
-    # <- e, ee
-    state = %{state | re: re}
-    state = mix_hash(state, re)
-    # PSK-extension to the `e` token (see Noise spec §9.2).
-    state = mix_key(state, re)
     shared = dh(state.e_priv, re)
-    state = mix_key(state, shared)
+    state = %{state | re: re}
 
-    case decrypt_and_hash(state, rest) do
-      {:ok, state, payload} -> {:ok, %{state | step: 2}, payload}
-      {:error, reason} -> {:error, reason}
+    state =
+      state
+      |> mix_hash(re)
+      |> mix_key(re)
+      |> mix_key(shared)
+
+    with {:ok, state, payload} <- decrypt_and_hash(state, rest) do
+      {:ok, %{state | step: 2}, payload}
     end
   end
 
@@ -211,7 +224,8 @@ defmodule Espex.Noise do
   @doc """
   Decrypt a ciphertext with the given cipher state.
   """
-  @spec decrypt(cipher(), iodata(), binary()) :: {:ok, cipher(), binary()} | {:error, :auth_failed | :ciphertext_too_short}
+  @spec decrypt(cipher(), iodata(), binary()) ::
+          {:ok, cipher(), binary()} | {:error, :auth_failed | :ciphertext_too_short}
   def decrypt(%{k: k, n: n} = cipher, ad, ciphertext) when byte_size(ciphertext) >= @tag_len do
     split = byte_size(ciphertext) - @tag_len
     <<ct::binary-size(split), tag::binary-size(@tag_len)>> = ciphertext

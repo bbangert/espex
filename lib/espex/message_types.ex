@@ -202,15 +202,9 @@ defmodule Espex.MessageTypes do
   to `Espex.Frame.encode_frame/2`.
   """
   @spec encode_message(struct()) :: {:ok, binary()} | {:error, term()}
-  def encode_message(%mod{} = message) do
-    case id_for_module(mod) do
-      {:ok, type_id} ->
-        payload = mod.encode(message)
-        frame = Espex.Frame.encode_frame(type_id, payload)
-        {:ok, frame}
-
-      :error ->
-        {:error, {:unknown_module, mod}}
+  def encode_message(%_{} = message) do
+    with {:ok, type_id, payload} <- encode_parts(message) do
+      {:ok, Espex.Frame.encode_frame(type_id, payload)}
     end
   end
 

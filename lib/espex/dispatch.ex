@@ -18,6 +18,30 @@ defmodule Espex.Dispatch do
 
   alias Espex.{ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy}
 
+  # Every protobuf struct in this list routes through
+  # Espex.EntityProvider.handle_command/1 when a provider is configured.
+  @entity_command_types [
+    Proto.CoverCommandRequest,
+    Proto.FanCommandRequest,
+    Proto.LightCommandRequest,
+    Proto.SwitchCommandRequest,
+    Proto.ClimateCommandRequest,
+    Proto.NumberCommandRequest,
+    Proto.SelectCommandRequest,
+    Proto.SirenCommandRequest,
+    Proto.LockCommandRequest,
+    Proto.ButtonCommandRequest,
+    Proto.MediaPlayerCommandRequest,
+    Proto.AlarmControlPanelCommandRequest,
+    Proto.TextCommandRequest,
+    Proto.DateCommandRequest,
+    Proto.TimeCommandRequest,
+    Proto.ValveCommandRequest,
+    Proto.DateTimeCommandRequest,
+    Proto.UpdateCommandRequest,
+    Proto.WaterHeaterCommandRequest
+  ]
+
   @type action ::
           {:send, struct()}
           | {:close, atom()}
@@ -73,11 +97,7 @@ defmodule Espex.Dispatch do
   end
 
   def handle_request(state, %Proto.ListEntitiesRequest{}) do
-    ir_actions =
-      state.infrared_entities
-      |> Enum.map(&InfraredProxy.Entity.to_proto/1)
-      |> Enum.map(&{:send, &1})
-
+    ir_actions = Enum.map(state.infrared_entities, &{:send, InfraredProxy.Entity.to_proto(&1)})
     custom_actions = Enum.map(state.entities, &{:send, &1})
 
     {state, ir_actions ++ custom_actions ++ [{:send, %Proto.ListEntitiesDoneResponse{}}]}
@@ -129,47 +149,44 @@ defmodule Espex.Dispatch do
   # -- Serial Proxy --
 
   def handle_request(state, %Proto.SerialProxyConfigureRequest{} = req) do
-    case ConnectionState.find_serial_proxy(state, req.instance) do
-      nil ->
-        {state, [{:log, :warning, "serial proxy configure for unknown instance #{req.instance}"}]}
+    if ConnectionState.find_serial_proxy(state, req.instance) do
+      opts = SerialProxy.configure_request_to_open_opts(req)
 
-      _info ->
-        opts = SerialProxy.configure_request_to_open_opts(req)
-        close_actions =
-          case ConnectionState.port_handle(state, req.instance) do
-            {:ok, _h} -> [{:serial_close, req.instance}]
-            :error -> []
-          end
+      close_actions =
+        if ConnectionState.port_open?(state, req.instance) do
+          [{:serial_close, req.instance}]
+        else
+          []
+        end
 
-        {state, close_actions ++ [{:serial_open, req.instance, opts}]}
+      {state, close_actions ++ [{:serial_open, req.instance, opts}]}
+    else
+      {state, [{:log, :warning, "serial proxy configure for unknown instance #{req.instance}"}]}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyWriteRequest{} = req) do
-    case ConnectionState.port_handle(state, req.instance) do
-      {:ok, _handle} ->
-        {state, [{:serial_write, req.instance, req.data}]}
-
-      :error ->
-        {state, [{:log, :warning, "serial proxy write for unopened instance #{req.instance}"}]}
+    if ConnectionState.port_open?(state, req.instance) do
+      {state, [{:serial_write, req.instance, req.data}]}
+    else
+      {state, [{:log, :warning, "serial proxy write for unopened instance #{req.instance}"}]}
     end
   end
 
   def handle_request(state, %Proto.SerialProxySetModemPinsRequest{} = req) do
-    case ConnectionState.port_handle(state, req.instance) do
-      {:ok, _h} -> {state, [{:serial_modem_pins_set, req.instance, req.rts, req.dtr}]}
-      :error -> {state, [{:log, :warning, "set_modem_pins for unopened instance #{req.instance}"}]}
+    if ConnectionState.port_open?(state, req.instance) do
+      {state, [{:serial_modem_pins_set, req.instance, req.rts, req.dtr}]}
+    else
+      {state, [{:log, :warning, "set_modem_pins for unopened instance #{req.instance}"}]}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyGetModemPinsRequest{} = req) do
-    case ConnectionState.port_handle(state, req.instance) do
-      {:ok, _h} ->
-        {state, [{:serial_modem_pins_get, req.instance}]}
-
-      :error ->
-        response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, rts: false, dtr: false}
-        {state, [{:log, :warning, "get_modem_pins for unopened instance #{req.instance}"}, {:send, response}]}
+    if ConnectionState.port_open?(state, req.instance) do
+      {state, [{:serial_modem_pins_get, req.instance}]}
+    else
+      response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, rts: false, dtr: false}
+      {state, [{:log, :warning, "get_modem_pins for unopened instance #{req.instance}"}, {:send, response}]}
     end
   end
 
@@ -231,27 +248,7 @@ defmodule Espex.Dispatch do
 
   # -- Entity commands (routed to EntityProvider if configured) --
 
-  def handle_request(state, %type{} = message) when type in [
-         Proto.CoverCommandRequest,
-         Proto.FanCommandRequest,
-         Proto.LightCommandRequest,
-         Proto.SwitchCommandRequest,
-         Proto.ClimateCommandRequest,
-         Proto.NumberCommandRequest,
-         Proto.SelectCommandRequest,
-         Proto.SirenCommandRequest,
-         Proto.LockCommandRequest,
-         Proto.ButtonCommandRequest,
-         Proto.MediaPlayerCommandRequest,
-         Proto.AlarmControlPanelCommandRequest,
-         Proto.TextCommandRequest,
-         Proto.DateCommandRequest,
-         Proto.TimeCommandRequest,
-         Proto.ValveCommandRequest,
-         Proto.DateTimeCommandRequest,
-         Proto.UpdateCommandRequest,
-         Proto.WaterHeaterCommandRequest
-       ] do
+  def handle_request(state, %type{} = message) when type in @entity_command_types do
     if ConnectionState.adapter?(state, :entity_provider) do
       {state, [{:entity_command, message}]}
     else
