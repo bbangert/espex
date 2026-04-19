@@ -10,7 +10,7 @@ lifecycle live here; hardware is plugged in through behaviours.
 ## Status
 
 Early extraction from [`universal_proxy`](https://github.com/bbangert/universal_proxy).
-Not yet published to hex.pm.
+Still being tested and iterated on, this is not a final API.
 
 ## Documentation
 
