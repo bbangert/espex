@@ -1,23 +1,5 @@
 defmodule Espex.Noise.Frame do
-  @moduledoc """
-  Pure helpers for ESPHome's Noise-transport framing.
-
-  Two layers of framing live here:
-
-  1. **Outer frame** — `0x01` preamble byte + big-endian `u16` length
-     + raw payload. This wraps both handshake messages and
-     post-handshake encrypted transport frames.
-
-  2. **Inner frame** (post-handshake only) — after decrypting an outer
-     frame's payload, the result is `<type:be16><length:be16><payload>`
-     where `length` is defined but ignored by the receiver (we use the
-     actual payload length instead).
-
-  The encrypted transport replaces the varint-based plaintext framing
-  (`Espex.Frame`) entirely; once a connection switches to encrypted
-  mode, every inbound/outbound protobuf message flows through the
-  outer+inner frame path.
-  """
+  @moduledoc false
 
   @preamble 0x01
   @header_size 3

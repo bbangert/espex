@@ -1,20 +1,5 @@
 defmodule Espex.Dispatch do
-  @moduledoc """
-  Pure message dispatch for the ESPHome Native API server.
-
-  The `Espex.Connection` handler runs each decoded inbound frame and
-  each adapter-driven event through `handle_request/2` or
-  `handle_event/2`, gets back a new `%ConnectionState{}` plus a list
-  of actions, and interprets those actions against its socket and the
-  configured adapters.
-
-  Adapter module calls (e.g. `InfraredProxy.list_entities/0`) happen
-  inline here — they are just function calls on consumer-provided
-  modules and stay testable through fake adapters. Anything that
-  needs to touch the socket or cross a process boundary (sending
-  frames, opening ports, subscribing) is emitted as an action so the
-  handler owns those interactions exclusively.
-  """
+  @moduledoc false
 
   import Bitwise
 

@@ -1,12 +1,5 @@
 defmodule Espex.ConnectionState do
-  @moduledoc """
-  Pure per-connection state for `Espex.Connection` handlers.
-
-  Built once at connection accept time and passed to `Espex.Dispatch`
-  with every inbound message / adapter event. Contains only inert data
-  — no pids, no process-level concerns other than a clock function that
-  tests can override.
-  """
+  @moduledoc false
 
   alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy}
 

@@ -72,15 +72,22 @@ defmodule Espex.MixProject do
     [
       licenses: ["MIT"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib priv/protos .formatter.exs mix.exs README.md LICENSE)
+      files: ~w(lib guides priv/protos .formatter.exs mix.exs README.md LICENSE)
     ]
   end
 
   defp docs do
     [
-      main: "Espex",
+      main: "readme",
       source_url: @source_url,
-      extras: ["README.md"]
+      extras: [
+        "README.md",
+        "guides/architecture.md",
+        "guides/entity_types.md"
+      ],
+      groups_for_extras: [
+        Guides: ~r"guides/.*"
+      ]
     ]
   end
 end

@@ -1,13 +1,5 @@
 defmodule Espex.ServerState do
-  @moduledoc """
-  Pure state for `Espex.Server`.
-
-  Holds the device config and the adapter registry. Kept deliberately
-  small — the per-connection snapshot work (calling adapter
-  `list_instances/0` / `list_entities/0`) happens in `Espex.Connection`
-  at accept time so each connection sees fresh adapter state without
-  any cache to invalidate.
-  """
+  @moduledoc false
 
   alias Espex.{ConnectionState, DeviceConfig}
 

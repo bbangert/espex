@@ -4,13 +4,16 @@ defmodule Espex.Supervisor do
 
   Starts children in `:rest_for_one` order:
 
-    1. `Espex.Server` — holds the `%ServerState{}` used by every
-       accepted connection.
-    2. `ThousandIsland` — TCP acceptor pool that spawns `Espex.Connection`
-       handler processes per client.
+    1. `Registry` (duplicate keys) — fan-out point for `Espex.push_state/2`.
+    2. A cross-connection state server (internal) — holds the device
+       config and adapter modules.
+    3. `ThousandIsland` — TCP acceptor pool that spawns a per-client
+       connection handler process (internal).
+    4. An mDNS advertiser GenServer (internal) — optional, started
+       only when `:mdns` is configured.
 
-  If `Espex.Server` crashes, the listener restarts too so live
-  connections drop rather than hold stale references.
+  If the server child crashes, the listener and advertiser restart
+  too, so live connections drop rather than hold stale references.
 
   Configuration is passed as keyword options:
 
@@ -23,14 +26,13 @@ defmodule Espex.Supervisor do
         serial_proxy: MyApp.MySerialAdapter,
         zwave_proxy: MyApp.MyZWaveAdapter,
         infrared_proxy: MyApp.MyIRAdapter,
-        entity_provider: MyApp.MyEntities
+        entity_provider: MyApp.MyEntities,
+        mdns: Espex.Mdns.MdnsLite
       )
 
-  Any adapter key omitted → that feature is disabled.
-
-  Pass `:mdns` with the adapter module to advertise the server over
-  mDNS. See `Espex.Mdns` for the behaviour and `Espex.Mdns.MdnsLite`
-  for the shipped adapter over `:mdns_lite`. Omit to skip.
+  Any adapter key omitted disables that feature. Pass `:mdns` with an
+  `Espex.Mdns` adapter module (e.g. `Espex.Mdns.MdnsLite`) to advertise
+  the server over mDNS; omit to skip.
   """
 
   use Supervisor

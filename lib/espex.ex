@@ -2,6 +2,26 @@ defmodule Espex do
   @moduledoc """
   ESPHome Native API server library.
 
+  Espex implements the [ESPHome Native API](https://esphome.io/components/api.html)
+  protocol over TCP, letting an Elixir application expose itself as an
+  ESPHome device to clients such as Home Assistant. The wire protocol,
+  connection lifecycle, and optional Noise-encrypted transport all live
+  here; hardware is plugged in through behaviours.
+
+  ## Documentation map
+
+    * [Architecture](architecture.html) — supervision tree, the
+      connection/dispatch split, wire protocol, encryption, and the
+      `push_state/2` broadcast path
+    * [Entity types](entity_types.html) — per-type cookbook for the
+      common ESPHome entities (Switch, BinarySensor, Sensor, Button,
+      Light, Cover, Climate) with proto structs and example snippets
+    * `Espex.SerialProxy`, `Espex.ZWaveProxy`, `Espex.InfraredProxy`,
+      `Espex.EntityProvider`, `Espex.Mdns` — the five behaviours,
+      each with callback reference and a complete example adapter
+
+  ## Quick start
+
   Start under your own supervision tree:
 
       children = [
@@ -15,20 +35,26 @@ defmodule Espex do
 
       Supervisor.start_link(children, strategy: :one_for_one)
 
-  Any adapter key omitted → that feature is disabled. See
-  `Espex.Supervisor` for the full list of start options.
+  Any adapter key you omit disables that feature. For encrypted
+  transport, set `:psk` on `:device_config`:
 
-  ## Implementing adapters
+      device_config: [
+        name: "my-device",
+        psk: "foIclFXDcBlfzi9oQNegJz/uRG/sgdIc956pX+GrC+A="
+      ]
 
-  Four behaviours define the consumer contract for hardware:
+  For the full start option list see `Espex.Supervisor`.
 
-    * `Espex.SerialProxy` — one or more serial ports exposed over the
-      Native API's serial proxy feature
-    * `Espex.ZWaveProxy` — a Z-Wave Serial API controller proxied to
-      clients (typically Home Assistant)
-    * `Espex.InfraredProxy` — IR transmit/receive devices
-    * `Espex.EntityProvider` — arbitrary ESPHome entities (sensors,
-      switches, etc.)
+  ## Pushing state
+
+  Call `push_state/2` from anywhere in your application to broadcast
+  an entity state update to every currently-connected client:
+
+      Espex.push_state(%Espex.Proto.SensorStateResponse{
+        key: 1003,
+        state: 21.3,
+        missing_state: false
+      })
   """
 
   alias Espex.{DeviceConfig, Server}

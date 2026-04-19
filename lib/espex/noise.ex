@@ -1,29 +1,5 @@
 defmodule Espex.Noise do
-  @moduledoc """
-  Pure implementation of the `Noise_NNpsk0_25519_ChaChaPoly_SHA256`
-  handshake + transport cipher, as used by the ESPHome Native API.
-
-  Everything here is side-effect free except for Curve25519 keypair
-  generation (`:crypto.generate_key/2`) inside `write_message/2` — tests
-  can inject a deterministic keypair via the `:ephemeral` option to
-  `init/3` to get fully reproducible handshakes.
-
-  ## Shape
-
-      {:ok, responder} = Noise.init(:responder, psk, "NoiseAPIInit\\x00\\x00")
-      {:ok, responder, _empty_payload} = Noise.read_message(responder, client_msg1)
-      {:ok, responder, server_msg2} = Noise.write_message(responder, "")
-      {:ok, tx, rx} = Noise.split(responder)
-
-      {:ok, tx, ciphertext} = Noise.encrypt(tx, "", "hello")
-      {:ok, rx, "hello"} = Noise.decrypt(rx, "", ciphertext)
-
-  ## References
-
-  * Noise Protocol Framework revision 34 (https://noiseprotocol.org/noise.html)
-  * ESPHome api noise frame helper (for ESPHome-specific wire integration;
-    that lives in `Espex.Noise.Frame`, not here)
-  """
+  @moduledoc false
 
   @protocol_name "Noise_NNpsk0_25519_ChaChaPoly_SHA256"
   @dh_len 32

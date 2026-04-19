@@ -1,11 +1,5 @@
 defmodule Espex.MessageTypes do
-  @moduledoc """
-  Registry mapping ESPHome Native API message type IDs to their
-  protobuf modules and back.
-
-  Message type IDs are defined via `option (id) = N` in `api.proto`.
-  All modules live under `Espex.Proto`.
-  """
+  @moduledoc false
 
   alias Espex.Proto
 

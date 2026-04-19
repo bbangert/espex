@@ -1,29 +1,5 @@
 defmodule Espex.Connection do
-  @moduledoc """
-  ThousandIsland handler for a single ESPHome Native API client connection.
-
-  Each accepted TCP connection gets its own handler process. The handler
-  is intentionally thin: it buffers incoming bytes, decodes frames via
-  `Espex.Frame` or `Espex.Noise.Frame`, runs them through
-  `Espex.Dispatch` (pure), and interprets the returned actions against
-  this process's socket and the configured adapter modules.
-
-  The handler captures a snapshot of the per-connection inventory
-  (`serial_proxies`, `infrared_entities`, `entities`) at accept time and
-  freezes it for the lifetime of the connection — ESPHome clients
-  cache entity/proxy lists after the first `ListEntitiesRequest` /
-  `DeviceInfoRequest` round, so silently changing them mid-connection
-  would desync the client. A reconnect is required to pick up changes.
-
-  ## Transport
-
-  If `DeviceConfig.psk` is set, the handler expects the Noise-encrypted
-  transport (`Noise_NNpsk0_25519_ChaChaPoly_SHA256`, ESPHome-framed per
-  `Espex.Noise.Frame`). The handshake runs at connection start; if it
-  fails or the client sends plaintext bytes, the connection is dropped.
-  If no PSK is configured the handler operates in plaintext (preamble
-  byte `0x00` + varint framing via `Espex.Frame`).
-  """
+  @moduledoc false
 
   use ThousandIsland.Handler
 

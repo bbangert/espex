@@ -1,17 +1,5 @@
 defmodule Espex.Frame do
-  @moduledoc """
-  Pure functions for encoding and decoding the ESPHome plaintext wire protocol.
-
-  Each plaintext frame has the format:
-  - `0x00` indicator byte
-  - VarInt: payload size (protobuf data bytes only)
-  - VarInt: message type ID
-  - Protobuf-encoded payload bytes
-
-  VarInt encoding follows the Protocol Buffers specification: each byte
-  has a continuation bit (MSB) and 7 bits of data, least significant
-  bits first.
-  """
+  @moduledoc false
 
   import Bitwise
 

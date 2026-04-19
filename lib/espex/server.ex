@@ -1,12 +1,5 @@
 defmodule Espex.Server do
-  @moduledoc """
-  GenServer holding the `%Espex.ServerState{}` for the running server.
-
-  Thin wrapper over `Espex.ServerState` — each `handle_*` unwraps the
-  state, calls a pure function on `ServerState`, and returns. Per-connection
-  snapshot work happens in `Espex.Connection` at accept time rather than
-  here, so this server holds only the stable cross-connection facts.
-  """
+  @moduledoc false
 
   use GenServer
 

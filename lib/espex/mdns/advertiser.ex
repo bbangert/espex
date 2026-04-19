@@ -1,14 +1,5 @@
 defmodule Espex.Mdns.Advertiser do
-  @moduledoc """
-  GenServer that owns one mDNS service advertisement for an
-  `Espex.Supervisor` instance.
-
-  Started as the last child of the supervisor's `:rest_for_one` chain,
-  so by the time `handle_continue/2` runs, `ThousandIsland` has already
-  bound and `Espex.Supervisor.bound_port/1` resolves the ephemeral port
-  (if `port: 0` was requested). The advertisement comes down on
-  supervisor shutdown via `terminate/2`.
-  """
+  @moduledoc false
 
   use GenServer
 

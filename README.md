@@ -12,6 +12,26 @@ lifecycle live here; hardware is plugged in through behaviours.
 Early extraction from [`universal_proxy`](https://github.com/bbangert/universal_proxy).
 Not yet published to hex.pm.
 
+## Documentation
+
+Start here once you're ready to go beyond the quickstart below:
+
+- [Architecture guide](guides/architecture.md) — supervision tree,
+  the connection/dispatch split, wire protocol, encryption, and how
+  `Espex.push_state/2` reaches connected clients.
+- [Entity types guide](guides/entity_types.md) — cookbook for the
+  common ESPHome entities (Switch, BinarySensor, Sensor, Button,
+  Light, Cover, Climate) with proto structs and examples.
+
+Each adapter behaviour's module doc contains a callback reference
+and a complete example:
+
+- `Espex.SerialProxy`
+- `Espex.ZWaveProxy`
+- `Espex.InfraredProxy`
+- `Espex.EntityProvider`
+- `Espex.Mdns`
+
 ## Features
 
 - ESPHome Native API frame encoding/decoding — plaintext and
