@@ -209,6 +209,37 @@ defmodule Espex.IntegrationTest do
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "SUBSCRIBE then CONFIGURE (open fails) then CONFIGURE — pending intent survives", %{port: port} do
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
+
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyRequest{
+        instance: 0,
+        type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      })
+
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest1} = recv_struct(socket)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      # Open failed — no replay this time
+      refute_receive {:request, _, :subscribe}, 250
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+
+      assert_receive {:open, 0, _opts, _subscriber2}
+      # Second open succeeded — preserved intent now replays
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, _rest2} = recv_struct(socket, rest1)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
     test "SUBSCRIBE then CONFIGURE then reconfigure — replay fires exactly once", %{port: port} do
       socket = connect(port)
 

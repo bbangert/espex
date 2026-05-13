@@ -111,20 +111,6 @@ defmodule Espex.ConnectionStateTest do
 
       assert MapSet.size(state.pending_subscriptions) == 1
     end
-
-    test "take_pending_subscription returns {true, cleared} when present" do
-      state = base_state() |> ConnectionState.put_pending_subscription(5)
-      {was_pending?, state} = ConnectionState.take_pending_subscription(state, 5)
-      assert was_pending?
-      refute ConnectionState.pending_subscription?(state, 5)
-    end
-
-    test "take_pending_subscription returns {false, unchanged} when absent" do
-      state = base_state() |> ConnectionState.put_pending_subscription(1)
-      {was_pending?, new_state} = ConnectionState.take_pending_subscription(state, 99)
-      refute was_pending?
-      assert new_state.pending_subscriptions == state.pending_subscriptions
-    end
   end
 
   describe "subscription flags" do

@@ -67,7 +67,15 @@ defmodule Espex.Test.TrackingSerialProxy do
   @impl true
   def open(instance, opts, subscriber) do
     notify({:open, instance, opts, subscriber})
-    {:ok, {:tracking_handle, instance}}
+
+    case :persistent_term.get({__MODULE__, :fail_next_open}, false) do
+      true ->
+        :persistent_term.erase({__MODULE__, :fail_next_open})
+        {:error, :test_induced_failure}
+
+      false ->
+        {:ok, {:tracking_handle, instance}}
+    end
   end
 
   @impl true

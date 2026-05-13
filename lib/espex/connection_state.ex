@@ -179,17 +179,6 @@ defmodule Espex.ConnectionState do
   end
 
   @doc """
-  Pop the pending pre-open subscribe for `instance`. Returns
-  `{was_pending?, new_state}` — the boolean lets callers decide whether
-  to synthesise a follow-up subscribe action at open time.
-  """
-  @spec take_pending_subscription(t(), non_neg_integer()) :: {boolean(), t()}
-  def take_pending_subscription(%__MODULE__{} = state, instance) do
-    pending? = MapSet.member?(state.pending_subscriptions, instance)
-    {pending?, drop_pending_subscription(state, instance)}
-  end
-
-  @doc """
   Mark the Z-Wave proxy subscription state.
   """
   @spec put_zwave_subscribed(t(), boolean()) :: t()
