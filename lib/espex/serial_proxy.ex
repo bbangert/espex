@@ -149,6 +149,17 @@ defmodule Espex.SerialProxy do
   When you don't define `c:request/2` at all, espex responds with
   `:not_supported` to every request type automatically.
 
+  Newer ESPHome clients send `SerialProxyRequest{type: SUBSCRIBE}`
+  *before* the `SerialProxyConfigureRequest` that opens the port. Espex
+  absorbs that ordering itself: a pre-configure `:subscribe` is
+  acknowledged with `OK` and stashed; once `c:open/3` returns a handle,
+  espex calls `c:request/2` with that handle and `:subscribe`. Your
+  adapter therefore never receives `request/2` before `open/3` — the
+  `handle` argument is always one you just returned. A pre-configure
+  `:unsubscribe` clears the stashed intent and is similarly answered
+  with `OK`, with no adapter call. `:flush` keeps its original
+  semantics and returns `"instance not open"` if no port is open.
+
   ## Wiring
 
   Pass your adapter module to `Espex.start_link/1`:

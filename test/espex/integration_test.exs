@@ -128,6 +128,57 @@ defmodule Espex.IntegrationTest do
     end
   end
 
+  describe "serial proxy SUBSCRIBE-before-CONFIGURE" do
+    setup do
+      Application.put_env(:espex, :tracking_serial_pid, self())
+      on_exit(fn -> Application.delete_env(:espex, :tracking_serial_pid) end)
+      :ok
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "client sends SUBSCRIBE then CONFIGURE — adapter sees subscribe against open handle", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyRequest{
+        instance: 0,
+        type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      })
+
+      {:ok, %Proto.SerialProxyRequestResponse{} = ack, rest} = recv_struct(socket)
+      assert ack.instance == 0
+      assert ack.type == :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      assert ack.status == :SERIAL_PROXY_STATUS_OK
+
+      refute_received {:open, _, _, _}
+      refute_received {:request, _, _}
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+
+      assert_receive {:open, 0, _opts, subscriber}
+      assert is_pid(subscriber)
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+
+      {:ok, %Proto.SerialProxyRequestResponse{} = replay, _} = recv_struct(socket, rest)
+      assert replay.instance == 0
+      assert replay.type == :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      assert replay.status == :SERIAL_PROXY_STATUS_OK
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "CONFIGURE without prior SUBSCRIBE — adapter sees open only, no replay request", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      refute_receive {:request, _, :subscribe}, 100
+
+      :gen_tcp.close(socket)
+    end
+  end
+
   describe "push_state/2" do
     test "broadcasts a StateResponse struct to every connected client", context do
       server_name = :"espex_server_#{context.test}"

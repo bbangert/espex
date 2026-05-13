@@ -329,6 +329,8 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_close, instance}) do
+    state = ConnectionState.drop_pending_subscription(state, instance)
+
     case ConnectionState.drop_port(state, instance) do
       {new_state, nil} ->
         {:cont, new_state}
@@ -368,6 +370,22 @@ defmodule Espex.Connection do
     case send_protobuf(socket, state, Dispatch.serial_request_response(instance, type, result)) do
       {:ok, state} -> {:cont, state}
       {:error, reason} -> {:halt, reason, state}
+    end
+  end
+
+  defp interpret_action(socket, state, {:replay_pending_subscribe, instance}) do
+    {was_pending?, state} = ConnectionState.take_pending_subscription(state, instance)
+
+    with true <- was_pending?,
+         {:ok, _handle} = port <- ConnectionState.port_handle(state, instance) do
+      result = serial_request(port, state.adapters.serial_proxy, :subscribe)
+
+      case send_protobuf(socket, state, Dispatch.serial_request_response(instance, :subscribe, result)) do
+        {:ok, state} -> {:cont, state}
+        {:error, reason} -> {:halt, reason, state}
+      end
+    else
+      _ -> {:cont, state}
     end
   end
 

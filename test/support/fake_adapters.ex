@@ -46,6 +46,51 @@ defmodule Espex.Test.FakeSerialProxyWithOne do
   def get_modem_pins(_handle), do: {:ok, %{rts: false, dtr: false}}
 end
 
+defmodule Espex.Test.TrackingSerialProxy do
+  @moduledoc """
+  Test adapter that records open/request/close calls to the pid stored under
+  `Application.get_env(:espex, :tracking_serial_pid)`. Used by integration
+  tests that need to assert adapter callback ordering.
+  """
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances do
+    [Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl)]
+  end
+
+  @impl true
+  def open(instance, opts, subscriber) do
+    notify({:open, instance, opts, subscriber})
+    {:ok, {:tracking_handle, instance}}
+  end
+
+  @impl true
+  def write(handle, data) do
+    notify({:write, handle, data})
+    :ok
+  end
+
+  @impl true
+  def close(handle) do
+    notify({:close, handle})
+    :ok
+  end
+
+  @impl true
+  def request(handle, type) do
+    notify({:request, handle, type})
+    {:ok, :ok}
+  end
+
+  defp notify(event) do
+    case Application.get_env(:espex, :tracking_serial_pid) do
+      pid when is_pid(pid) -> send(pid, event)
+      _ -> :ok
+    end
+  end
+end
+
 defmodule Espex.Test.FakeZWaveProxy do
   @moduledoc false
   @behaviour Espex.ZWaveProxy
