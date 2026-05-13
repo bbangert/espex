@@ -170,17 +170,20 @@ defmodule Espex.DispatchTest do
         flow_control: true
       }
 
-      {_s, [{:serial_open, 0, opts}]} = Dispatch.handle_request(state(serial_proxies: [info]), req)
+      {_s, [{:serial_open, 0, opts}, {:replay_pending_subscribe, 0}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), req)
+
       assert opts[:speed] == 115_200
       assert opts[:parity] == :even
       assert opts[:flow_control] == :hardware
     end
 
-    test "known instance already open: emits :serial_close then :serial_open" do
+    test "known instance already open: emits :serial_close then :serial_open then :replay_pending_subscribe" do
       info = SerialProxy.Info.new(instance: 0, name: "n")
       s = state(serial_proxies: [info]) |> ConnectionState.put_port(0, :existing_handle)
       {_s, actions} = Dispatch.handle_request(s, %Proto.SerialProxyConfigureRequest{instance: 0})
-      assert [{:serial_close, 0}, {:serial_open, 0, _opts}] = actions
+
+      assert [{:serial_close, 0}, {:serial_open, 0, _opts}, {:replay_pending_subscribe, 0}] = actions
     end
   end
 
@@ -218,7 +221,8 @@ defmodule Espex.DispatchTest do
 
   describe "SerialProxyRequest" do
     test "open instance with known type: emits :serial_request action" do
-      s = state() |> ConnectionState.put_port(3, :h)
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+      s = state(serial_proxies: [info]) |> ConnectionState.put_port(3, :h)
 
       {_, [{:serial_request, 3, :subscribe}]} =
         Dispatch.handle_request(s, %Proto.SerialProxyRequest{
@@ -239,7 +243,7 @@ defmodule Espex.DispatchTest do
         })
     end
 
-    test "unopened instance: sends ERROR response" do
+    test "flush for unopened instance: sends ERROR response" do
       {_, [{:log, :warning, _}, {:send, response}]} =
         Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
           instance: 3,
@@ -261,6 +265,71 @@ defmodule Espex.DispatchTest do
         Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: :SERIAL_PROXY_REQUEST_TYPE_UNKNOWN})
 
       assert %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_ERROR} = response
+    end
+
+    test "subscribe before configure: stashes pending and replies OK" do
+      info = SerialProxy.Info.new(instance: 4, name: "n")
+
+      {new_s, [{:send, response}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyRequest{
+          instance: 4,
+          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 4,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+               status: :SERIAL_PROXY_STATUS_OK,
+               error_message: ""
+             } = response
+
+      assert ConnectionState.pending_subscription?(new_s, 4)
+    end
+
+    test "subscribe before configure for unknown instance: ERROR 'unknown instance'" do
+      {_, [{:log, :warning, _}, {:send, response}]} =
+        Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
+          instance: 9,
+          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 9,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+               status: :SERIAL_PROXY_STATUS_ERROR,
+               error_message: "unknown instance"
+             } = response
+    end
+
+    test "unsubscribe before configure: drops pending and replies OK" do
+      info = SerialProxy.Info.new(instance: 4, name: "n")
+      s = state(serial_proxies: [info]) |> ConnectionState.put_pending_subscription(4)
+
+      {new_s, [{:send, response}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
+          instance: 4,
+          type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+        })
+
+      assert response.status == :SERIAL_PROXY_STATUS_OK
+      refute ConnectionState.pending_subscription?(new_s, 4)
+    end
+
+    test "subscribe + configure pair: configure emits :replay_pending_subscribe alongside :serial_open" do
+      info = SerialProxy.Info.new(instance: 4, name: "n")
+
+      {after_sub, _} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyRequest{
+          instance: 4,
+          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+        })
+
+      {after_cfg, actions} =
+        Dispatch.handle_request(after_sub, %Proto.SerialProxyConfigureRequest{instance: 4})
+
+      assert [{:serial_open, 4, _opts}, {:replay_pending_subscribe, 4}] = actions
+      # dispatch doesn't clear pending — the replay interpreter does
+      assert ConnectionState.pending_subscription?(after_cfg, 4)
     end
   end
 

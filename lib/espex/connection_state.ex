@@ -36,6 +36,7 @@ defmodule Espex.ConnectionState do
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
           opened_ports: %{non_neg_integer() => term()},
+          pending_subscriptions: MapSet.t(non_neg_integer()),
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
           adapters: adapters(),
@@ -52,6 +53,7 @@ defmodule Espex.ConnectionState do
     infrared_entities: [],
     entities: [],
     opened_ports: %{},
+    pending_subscriptions: MapSet.new(),
     zwave_subscribed: false,
     infrared_subscribed: false,
     adapters: %{
@@ -149,6 +151,31 @@ defmodule Espex.ConnectionState do
   @spec find_serial_proxy(t(), non_neg_integer()) :: SerialProxy.Info.t() | nil
   def find_serial_proxy(%__MODULE__{serial_proxies: list}, instance) do
     Enum.find(list, &(&1.instance == instance))
+  end
+
+  @doc """
+  Record that the client subscribed to `instance` before the port was open.
+  The intent is replayed once the matching configure/open succeeds.
+  """
+  @spec put_pending_subscription(t(), non_neg_integer()) :: t()
+  def put_pending_subscription(%__MODULE__{} = state, instance) do
+    %{state | pending_subscriptions: MapSet.put(state.pending_subscriptions, instance)}
+  end
+
+  @doc """
+  Forget any pending pre-open subscribe for `instance`.
+  """
+  @spec drop_pending_subscription(t(), non_neg_integer()) :: t()
+  def drop_pending_subscription(%__MODULE__{} = state, instance) do
+    %{state | pending_subscriptions: MapSet.delete(state.pending_subscriptions, instance)}
+  end
+
+  @doc """
+  Return `true` if `instance` has a pending pre-open subscribe.
+  """
+  @spec pending_subscription?(t(), non_neg_integer()) :: boolean()
+  def pending_subscription?(%__MODULE__{pending_subscriptions: set}, instance) do
+    MapSet.member?(set, instance)
   end
 
   @doc """

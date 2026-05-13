@@ -329,6 +329,8 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_close, instance}) do
+    state = ConnectionState.drop_pending_subscription(state, instance)
+
     case ConnectionState.drop_port(state, instance) do
       {new_state, nil} ->
         {:cont, new_state}
@@ -368,6 +370,21 @@ defmodule Espex.Connection do
     case send_protobuf(socket, state, Dispatch.serial_request_response(instance, type, result)) do
       {:ok, state} -> {:cont, state}
       {:error, reason} -> {:halt, reason, state}
+    end
+  end
+
+  defp interpret_action(socket, state, {:replay_pending_subscribe, instance}) do
+    with true <- ConnectionState.pending_subscription?(state, instance),
+         {:ok, handle} <- ConnectionState.port_handle(state, instance) do
+      state = ConnectionState.drop_pending_subscription(state, instance)
+      result = serial_request({:ok, handle}, state.adapters.serial_proxy, :subscribe)
+
+      case send_protobuf(socket, state, Dispatch.serial_request_response(instance, :subscribe, result)) do
+        {:ok, state} -> {:cont, state}
+        {:error, reason} -> {:halt, reason, state}
+      end
+    else
+      _ -> {:cont, state}
     end
   end
 
@@ -553,10 +570,24 @@ defmodule Espex.Connection do
   defp write_port({:ok, handle}, adapter, data), do: adapter.write(handle, data)
   defp write_port(:error, _adapter, _data), do: :ok
 
-  defp set_modem_pins({:ok, handle}, adapter, rts, dtr), do: adapter.set_modem_pins(handle, rts, dtr)
+  defp set_modem_pins({:ok, handle}, adapter, rts, dtr) do
+    if function_exported?(adapter, :set_modem_pins, 3) do
+      adapter.set_modem_pins(handle, rts, dtr)
+    else
+      :ok
+    end
+  end
+
   defp set_modem_pins(:error, _adapter, _rts, _dtr), do: :ok
 
-  defp get_modem_pins({:ok, handle}, adapter), do: adapter.get_modem_pins(handle)
+  defp get_modem_pins({:ok, handle}, adapter) do
+    if function_exported?(adapter, :get_modem_pins, 1) do
+      adapter.get_modem_pins(handle)
+    else
+      {:error, :not_supported}
+    end
+  end
+
   defp get_modem_pins(:error, _adapter), do: {:error, :not_open}
 
   defp serial_request({:ok, handle}, adapter, type) do

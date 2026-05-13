@@ -44,6 +44,7 @@ defmodule Espex.Dispatch do
           | {:serial_modem_pins_set, instance :: non_neg_integer(), rts :: boolean(), dtr :: boolean()}
           | {:serial_modem_pins_get, instance :: non_neg_integer()}
           | {:serial_request, instance :: non_neg_integer(), SerialProxy.request_type()}
+          | {:replay_pending_subscribe, instance :: non_neg_integer()}
           | :zwave_subscribe
           | :zwave_unsubscribe
           | {:zwave_send_frame, binary()}
@@ -152,7 +153,12 @@ defmodule Espex.Dispatch do
           []
         end
 
-      {state, close_actions ++ [{:serial_open, req.instance, opts}]}
+      open_actions = [
+        {:serial_open, req.instance, opts},
+        {:replay_pending_subscribe, req.instance}
+      ]
+
+      {state, close_actions ++ open_actions}
     else
       {state, [{:log, :warning, "serial proxy configure for unknown instance #{req.instance}"}]}
     end
@@ -195,18 +201,11 @@ defmodule Espex.Dispatch do
            {:send, response}
          ]}
 
-      type ->
-        if ConnectionState.port_open?(state, req.instance) do
-          {state, [{:serial_request, req.instance, type}]}
-        else
-          response = serial_request_error(req.instance, req.type, "instance not open")
+      :flush ->
+        handle_flush_request(state, req)
 
-          {state,
-           [
-             {:log, :warning, "serial proxy request for unopened instance #{req.instance}"},
-             {:send, response}
-           ]}
-        end
+      type when type in [:subscribe, :unsubscribe] ->
+        handle_subscription_request(state, req, type)
     end
   end
 
@@ -409,5 +408,52 @@ defmodule Espex.Dispatch do
       status: :SERIAL_PROXY_STATUS_ERROR,
       error_message: message
     }
+  end
+
+  defp serial_request_ok(instance, wire_type) do
+    %Proto.SerialProxyRequestResponse{
+      instance: instance,
+      type: wire_type,
+      status: :SERIAL_PROXY_STATUS_OK,
+      error_message: ""
+    }
+  end
+
+  defp handle_flush_request(state, req) do
+    if ConnectionState.port_open?(state, req.instance) do
+      {state, [{:serial_request, req.instance, :flush}]}
+    else
+      response = serial_request_error(req.instance, req.type, "instance not open")
+
+      {state,
+       [
+         {:log, :warning, "serial proxy flush for unopened instance #{req.instance}"},
+         {:send, response}
+       ]}
+    end
+  end
+
+  defp handle_subscription_request(state, req, type) do
+    cond do
+      ConnectionState.find_serial_proxy(state, req.instance) == nil ->
+        response = serial_request_error(req.instance, req.type, "unknown instance")
+
+        {state,
+         [
+           {:log, :warning, "serial proxy #{type} for unknown instance #{req.instance}"},
+           {:send, response}
+         ]}
+
+      ConnectionState.port_open?(state, req.instance) ->
+        {state, [{:serial_request, req.instance, type}]}
+
+      type == :subscribe ->
+        {ConnectionState.put_pending_subscription(state, req.instance),
+         [{:send, serial_request_ok(req.instance, req.type)}]}
+
+      type == :unsubscribe ->
+        {ConnectionState.drop_pending_subscription(state, req.instance),
+         [{:send, serial_request_ok(req.instance, req.type)}]}
+    end
   end
 end
