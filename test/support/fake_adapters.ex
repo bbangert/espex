@@ -48,9 +48,14 @@ end
 
 defmodule Espex.Test.TrackingSerialProxy do
   @moduledoc """
-  Test adapter that records open/request/close calls to the pid stored under
-  `Application.get_env(:espex, :tracking_serial_pid)`. Used by integration
-  tests that need to assert adapter callback ordering.
+  Test adapter that records open/request/close/modem-pins calls. Listeners
+  register themselves under a per-test key in `:persistent_term` shaped
+  `{__MODULE__, test_name}`; this adapter forwards every callback to every
+  registered pid.
+
+  Tests using this adapter MUST run `async: false` — the adapter sends to
+  every registered listener, so true parallel isolation would also require
+  threading the listener pid through the connection state.
   """
   @behaviour Espex.SerialProxy
 
@@ -78,16 +83,29 @@ defmodule Espex.Test.TrackingSerialProxy do
   end
 
   @impl true
+  def set_modem_pins(handle, rts, dtr) do
+    notify({:set_modem_pins, handle, rts, dtr})
+    :ok
+  end
+
+  @impl true
+  def get_modem_pins(handle) do
+    notify({:get_modem_pins, handle})
+    {:ok, %{rts: false, dtr: false}}
+  end
+
+  @impl true
   def request(handle, type) do
     notify({:request, handle, type})
     {:ok, :ok}
   end
 
   defp notify(event) do
-    case Application.get_env(:espex, :tracking_serial_pid) do
-      pid when is_pid(pid) -> send(pid, event)
-      _ -> :ok
+    for {{__MODULE__, _test}, pid} <- :persistent_term.get(), is_pid(pid) do
+      send(pid, event)
     end
+
+    :ok
   end
 end
 

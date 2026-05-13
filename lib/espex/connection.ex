@@ -377,8 +377,8 @@ defmodule Espex.Connection do
     {was_pending?, state} = ConnectionState.take_pending_subscription(state, instance)
 
     with true <- was_pending?,
-         {:ok, _handle} = port <- ConnectionState.port_handle(state, instance) do
-      result = serial_request(port, state.adapters.serial_proxy, :subscribe)
+         {:ok, handle} <- ConnectionState.port_handle(state, instance) do
+      result = serial_request({:ok, handle}, state.adapters.serial_proxy, :subscribe)
 
       case send_protobuf(socket, state, Dispatch.serial_request_response(instance, :subscribe, result)) do
         {:ok, state} -> {:cont, state}
@@ -571,10 +571,24 @@ defmodule Espex.Connection do
   defp write_port({:ok, handle}, adapter, data), do: adapter.write(handle, data)
   defp write_port(:error, _adapter, _data), do: :ok
 
-  defp set_modem_pins({:ok, handle}, adapter, rts, dtr), do: adapter.set_modem_pins(handle, rts, dtr)
+  defp set_modem_pins({:ok, handle}, adapter, rts, dtr) do
+    if function_exported?(adapter, :set_modem_pins, 3) do
+      adapter.set_modem_pins(handle, rts, dtr)
+    else
+      :ok
+    end
+  end
+
   defp set_modem_pins(:error, _adapter, _rts, _dtr), do: :ok
 
-  defp get_modem_pins({:ok, handle}, adapter), do: adapter.get_modem_pins(handle)
+  defp get_modem_pins({:ok, handle}, adapter) do
+    if function_exported?(adapter, :get_modem_pins, 1) do
+      adapter.get_modem_pins(handle)
+    else
+      {:error, :not_supported}
+    end
+  end
+
   defp get_modem_pins(:error, _adapter), do: {:error, :not_open}
 
   defp serial_request({:ok, handle}, adapter, type) do
