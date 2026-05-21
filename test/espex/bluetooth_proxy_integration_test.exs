@@ -73,6 +73,24 @@ defmodule Espex.BluetoothProxyIntegrationTest do
     })
   end
 
+  defp wait_until(check, deadline_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_wait_until(check, deadline)
+  end
+
+  defp do_wait_until(check, deadline) do
+    if check.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("wait_until timed out")
+      else
+        Process.sleep(5)
+        do_wait_until(check, deadline)
+      end
+    end
+  end
+
   describe "feature flags" do
     test "TrackingBluetoothProxy exports every optional → all four active bits set", %{port: port} do
       socket = connect(port)
@@ -147,6 +165,29 @@ defmodule Espex.BluetoothProxyIntegrationTest do
       :gen_tcp.close(socket)
     end
 
+    test "sync {:error, _} from adapter.connect releases ownership inline", %{
+      port: port,
+      server_name: server_name
+    } do
+      :persistent_term.put({TrackingBluetoothProxy, :fail_next_connect}, true)
+      on_exit(fn -> :persistent_term.erase({TrackingBluetoothProxy, :fail_next_connect}) end)
+
+      socket = connect(port)
+      issue_connect(socket, 0xAABB)
+
+      # Adapter notified, then rejected synchronously.
+      assert_receive {:connect, 0xAABB, _, _handler}, 1_000
+
+      {:ok, %Proto.BluetoothDeviceConnectionResponse{connected: false, error: -1}, _} =
+        recv_struct(socket)
+
+      # The handler's interpreter writes the wire response BEFORE calling
+      # Server.release_ble_owner, so recv_struct can complete a hair
+      # before the release lands. Poll for ownership to clear.
+      wait_until(fn -> Server.ble_owner(server_name, 0xAABB) == nil end)
+      :gen_tcp.close(socket)
+    end
+
     test "failed connect releases ownership so a second client can claim the address", %{
       port: port,
       server_name: server_name
@@ -163,7 +204,11 @@ defmodule Espex.BluetoothProxyIntegrationTest do
       {:ok, %Proto.BluetoothDeviceConnectionResponse{connected: false, error: -1}, _} =
         recv_struct(socket_a)
 
-      # A second client should now be able to claim the same address.
+      # Wait for handler_a to finish processing the action list
+      # (send_response → release_ownership → maybe_push) before the
+      # second client races on Server.claim_ble_owner.
+      wait_until(fn -> Server.ble_owner(server_name, 0xAABB) == nil end)
+
       socket_b = connect(port)
       issue_connect(socket_b, 0xAABB)
       assert_receive {:connect, 0xAABB, _, handler_b}, 1_000

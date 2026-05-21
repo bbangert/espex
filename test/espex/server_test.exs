@@ -73,17 +73,33 @@ defmodule Espex.ServerTest do
       :ok = Server.claim_ble_owner(server, 0x3344, owner)
       assert Server.ble_owner(server, 0x1122) == owner
 
-      # Monitor the owner ourselves so we observe its death deterministically.
-      # The Server has its own monitor (set in claim_ble_owner) and will get
-      # its own :DOWN delivered to its mailbox. Once we see :DOWN, we issue a
-      # GenServer.call — FIFO mailbox semantics guarantee the Server has
-      # processed its :DOWN before our call returns.
       ref = Process.monitor(owner)
       Process.exit(owner, :kill)
       assert_receive {:DOWN, ^ref, :process, ^owner, _}, 1_000
 
-      assert Server.ble_owner(server, 0x1122) == nil
-      assert Server.ble_owner(server, 0x3344) == nil
+      # Poll for the Server's `:DOWN` handler to drop ownership.
+      # Observing our own `:DOWN` doesn't guarantee the Server's
+      # handler has run yet — different scheduler, different mailbox.
+      wait_until(fn -> Server.ble_owner(server, 0x1122) == nil end)
+      wait_until(fn -> Server.ble_owner(server, 0x3344) == nil end)
+    end
+  end
+
+  defp wait_until(check, deadline_ms \\ 1_000) do
+    deadline = System.monotonic_time(:millisecond) + deadline_ms
+    do_wait_until(check, deadline)
+  end
+
+  defp do_wait_until(check, deadline) do
+    if check.() do
+      :ok
+    else
+      if System.monotonic_time(:millisecond) >= deadline do
+        flunk("wait_until timed out")
+      else
+        Process.sleep(5)
+        do_wait_until(check, deadline)
+      end
     end
   end
 end

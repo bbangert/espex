@@ -461,14 +461,7 @@ defmodule Espex.Connection do
   defp interpret_action(socket, state, {:ble_connect, address, opts}) do
     case Server.claim_ble_owner(state.server_name, address, self()) do
       :ok ->
-        adapter = state.adapters.bluetooth_proxy
-        state = ConnectionState.add_bluetooth_owned(state, address)
-        adapter.connect(address, opts, self()) |> log_adapter_error(state.peer, "BLE connect")
-        # connections_free push is deferred until the adapter's
-        # {:espex_ble_connection, address, {:ok, _}} event lands —
-        # Dispatch.handle_event appends :ble_push_connections_free
-        # there when the client is subscribed.
-        {:cont, state}
+        ble_connect_after_claim(socket, state, address, opts)
 
       {:busy, _other_pid} ->
         response = %Proto.BluetoothDeviceConnectionResponse{
@@ -826,6 +819,33 @@ defmodule Espex.Connection do
   # CONNECT) — see scratchpad note from PR 3.
   defp ble_optional?(adapter, fun, arity) do
     Code.ensure_loaded?(adapter) and function_exported?(adapter, fun, arity)
+  end
+
+  defp ble_connect_after_claim(socket, state, address, opts) do
+    adapter = state.adapters.bluetooth_proxy
+    state = ConnectionState.add_bluetooth_owned(state, address)
+
+    case adapter.connect(address, opts, self()) do
+      :ok ->
+        # Async path. The eventual `{:espex_ble_connection, ...}` event
+        # carries the success/failure reply; Dispatch.handle_event
+        # appends :ble_push_connections_free when subscribed.
+        {:cont, state}
+
+      {:error, reason} ->
+        # Adapter rejected the call synchronously — no event will come
+        # back, so release ownership now and tell the client.
+        Logger.warning("Espex #{state.peer} BLE connect failed sync: #{inspect(reason)}")
+        state = ConnectionState.drop_bluetooth_owned(state, address)
+        _ = Server.release_ble_owner(state.server_name, address, self())
+
+        send_or_halt(socket, state, %Proto.BluetoothDeviceConnectionResponse{
+          address: address,
+          connected: false,
+          mtu: 0,
+          error: BluetoothProxy.ErrorCodes.generic_error()
+        })
+    end
   end
 
   # Send a protobuf and thread the encryption-advanced state forward.

@@ -237,7 +237,15 @@ defmodule Espex.Test.TrackingBluetoothProxy do
   @impl true
   def connect(address, opts, subscriber) do
     notify({:connect, address, opts, subscriber})
-    :ok
+
+    case :persistent_term.get({__MODULE__, :fail_next_connect}, false) do
+      true ->
+        :persistent_term.erase({__MODULE__, :fail_next_connect})
+        {:error, :test_induced_failure}
+
+      false ->
+        :ok
+    end
   end
 
   @impl true
