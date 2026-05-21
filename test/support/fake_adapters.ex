@@ -174,3 +174,123 @@ defmodule Espex.Test.FakeEntityProvider do
   @impl true
   def handle_command(_message), do: :ok
 end
+
+defmodule Espex.Test.FakeBluetoothScanner do
+  @moduledoc """
+  No-op `Espex.BluetoothScanner` adapter that implements every callback
+  (including optional `set_scanner_mode/1`). Use
+  `Espex.Test.MinimalBluetoothScanner` for the "optional callback
+  omitted" path.
+  """
+  @behaviour Espex.BluetoothScanner
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+
+  @impl true
+  def set_scanner_mode(_mode), do: :ok
+end
+
+defmodule Espex.Test.MinimalBluetoothScanner do
+  @moduledoc """
+  `Espex.BluetoothScanner` adapter implementing only required callbacks —
+  no `set_scanner_mode/1`. Used to exercise the feature-flag path where
+  the `STATE_AND_MODE` bit must NOT be set.
+  """
+  @behaviour Espex.BluetoothScanner
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
+defmodule Espex.Test.FakeBluetoothProxy do
+  @moduledoc """
+  No-op `Espex.BluetoothProxy` adapter for compile-time wiring tests.
+  Exports every optional callback so feature-flag computation tests can
+  exercise the "all flags set" path. Use `Espex.Test.MinimalBluetoothProxy`
+  for the "no optional callbacks" path.
+  """
+  @behaviour Espex.BluetoothProxy
+
+  @impl true
+  def connect(_address, _opts, _subscriber), do: :ok
+
+  @impl true
+  def disconnect(_address), do: :ok
+
+  @impl true
+  def gatt_get_services(_address), do: :ok
+
+  @impl true
+  def gatt_read(_address, _handle), do: :ok
+
+  @impl true
+  def gatt_write(_address, _handle, _data, _response?), do: :ok
+
+  @impl true
+  def gatt_read_descriptor(_address, _handle), do: :ok
+
+  @impl true
+  def gatt_write_descriptor(_address, _handle, _data), do: :ok
+
+  @impl true
+  def gatt_notify(_address, _handle, _enable?), do: :ok
+
+  @impl true
+  def connections_free, do: {3, 3}
+
+  @impl true
+  def pair(_address), do: :ok
+
+  @impl true
+  def unpair(_address), do: :ok
+
+  @impl true
+  def clear_cache(_address), do: :ok
+
+  @impl true
+  def set_connection_params(_address, _params), do: :ok
+end
+
+defmodule Espex.Test.MinimalBluetoothProxy do
+  @moduledoc """
+  `Espex.BluetoothProxy` adapter implementing only required callbacks —
+  no `pair/unpair/clear_cache/set_connection_params`. Used to exercise
+  the `:not_supported` dispatch paths and the feature-flag bits that
+  toggle based on `function_exported?/3` checks.
+  """
+  @behaviour Espex.BluetoothProxy
+
+  @impl true
+  def connect(_address, _opts, _subscriber), do: :ok
+
+  @impl true
+  def disconnect(_address), do: :ok
+
+  @impl true
+  def gatt_get_services(_address), do: :ok
+
+  @impl true
+  def gatt_read(_address, _handle), do: :ok
+
+  @impl true
+  def gatt_write(_address, _handle, _data, _response?), do: :ok
+
+  @impl true
+  def gatt_read_descriptor(_address, _handle), do: :ok
+
+  @impl true
+  def gatt_write_descriptor(_address, _handle, _data), do: :ok
+
+  @impl true
+  def gatt_notify(_address, _handle, _enable?), do: :ok
+
+  @impl true
+  def connections_free, do: {3, 3}
+end
