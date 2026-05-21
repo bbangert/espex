@@ -231,7 +231,7 @@ defmodule Espex.ConnectionState do
   Replace the set of BLE peripheral addresses this connection owns.
   """
   @spec put_bluetooth_owned(t(), MapSet.t(non_neg_integer())) :: t()
-  def put_bluetooth_owned(%__MODULE__{} = state, owned) do
+  def put_bluetooth_owned(%__MODULE__{} = state, owned) when is_struct(owned, MapSet) do
     %{state | bluetooth_owned: owned}
   end
 

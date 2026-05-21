@@ -7,9 +7,13 @@ defmodule Espex.DeviceConfig do
   queries the device over the ESPHome Native API, plus the TCP port the
   server listens on.
 
-  `zwave_feature_flags` and `zwave_home_id` are populated by the consumer
-  (typically from an `Espex.ZWaveProxy.Adapter`) before building a
-  `DeviceInfoResponse` — the struct itself is pure.
+  `zwave_feature_flags`, `zwave_home_id`, and `bluetooth_feature_flags`
+  are populated by the consumer before building a `DeviceInfoResponse` —
+  the struct itself is pure. `zwave_*` is set from a configured
+  `Espex.ZWaveProxy` adapter; `bluetooth_feature_flags` is computed by
+  `Espex.Connection` from the configured `Espex.BluetoothScanner` /
+  `Espex.BluetoothProxy` adapters and their optional callbacks (and
+  defaults to `0` when no BLE adapters are configured).
 
   ## `project_name` format
 

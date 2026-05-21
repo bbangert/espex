@@ -19,6 +19,8 @@ defmodule Espex.ServerStateTest do
              serial_proxy: nil,
              zwave_proxy: nil,
              infrared_proxy: nil,
+             bluetooth_scanner: nil,
+             bluetooth_proxy: nil,
              entity_provider: nil
            }
   end
