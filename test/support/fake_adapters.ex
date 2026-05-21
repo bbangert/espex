@@ -209,6 +209,112 @@ defmodule Espex.Test.MinimalBluetoothScanner do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.TrackingBluetoothProxy do
+  @moduledoc """
+  Test adapter recording the active-proxy lifecycle callbacks (connect /
+  disconnect / pair / unpair / clear_cache / set_connection_params) and
+  `connections_free/0`. GATT callbacks are deferred to PR 5.
+
+  Implements every optional callback so feature-flag computation sees
+  `PAIRING | CACHE_CLEARING` set. Listener-pid fan-out mirrors
+  `TrackingBluetoothScanner` / `TrackingSerialProxy`; tests push
+  `{:espex_ble_*, ...}` events directly to the captured handler pid
+  after grabbing it from the `{:connect, address, opts, handler_pid}`
+  notification.
+
+  Tests using this adapter MUST run `async: false` — listener fan-out
+  shares process-wide state. `connections_free/0` returns `{3, 3}` by
+  default; override per-test by setting `{__MODULE__, :connections_free}`
+  in `:persistent_term`.
+  """
+  @behaviour Espex.BluetoothProxy
+
+  @impl true
+  def connect(address, opts, subscriber) do
+    notify({:connect, address, opts, subscriber})
+    :ok
+  end
+
+  @impl true
+  def disconnect(address) do
+    notify({:disconnect, address})
+    :ok
+  end
+
+  @impl true
+  def gatt_get_services(address) do
+    notify({:gatt_get_services, address})
+    :ok
+  end
+
+  @impl true
+  def gatt_read(address, handle) do
+    notify({:gatt_read, address, handle})
+    :ok
+  end
+
+  @impl true
+  def gatt_write(address, handle, data, response?) do
+    notify({:gatt_write, address, handle, data, response?})
+    :ok
+  end
+
+  @impl true
+  def gatt_read_descriptor(address, handle) do
+    notify({:gatt_read_descriptor, address, handle})
+    :ok
+  end
+
+  @impl true
+  def gatt_write_descriptor(address, handle, data) do
+    notify({:gatt_write_descriptor, address, handle, data})
+    :ok
+  end
+
+  @impl true
+  def gatt_notify(address, handle, enable?) do
+    notify({:gatt_notify, address, handle, enable?})
+    :ok
+  end
+
+  @impl true
+  def connections_free do
+    :persistent_term.get({__MODULE__, :connections_free}, {3, 3})
+  end
+
+  @impl true
+  def pair(address) do
+    notify({:pair, address})
+    :ok
+  end
+
+  @impl true
+  def unpair(address) do
+    notify({:unpair, address})
+    :ok
+  end
+
+  @impl true
+  def clear_cache(address) do
+    notify({:clear_cache, address})
+    :ok
+  end
+
+  @impl true
+  def set_connection_params(address, params) do
+    notify({:set_connection_params, address, params})
+    :ok
+  end
+
+  defp notify(event) do
+    for {{__MODULE__, _test}, pid} <- :persistent_term.get(), is_pid(pid) do
+      send(pid, event)
+    end
+
+    :ok
+  end
+end
+
 defmodule Espex.Test.TrackingBluetoothScanner do
   @moduledoc """
   Test adapter that records subscribe/unsubscribe/set_scanner_mode calls

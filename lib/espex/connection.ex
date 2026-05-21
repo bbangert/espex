@@ -6,6 +6,7 @@ defmodule Espex.Connection do
   require Logger
 
   alias Espex.{
+    BluetoothProxy,
     ConnectionState,
     DeviceConfig,
     Dispatch,
@@ -457,6 +458,108 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
+  defp interpret_action(socket, state, {:ble_connect, address, opts}) do
+    case Server.claim_ble_owner(state.server_name, address, self()) do
+      :ok ->
+        adapter = state.adapters.bluetooth_proxy
+        state = ConnectionState.add_bluetooth_owned(state, address)
+        adapter.connect(address, opts, self()) |> log_adapter_error(state.peer, "BLE connect")
+        # connections_free push is deferred until the adapter's
+        # {:espex_ble_connection, address, {:ok, _}} event lands —
+        # Dispatch.handle_event appends :ble_push_connections_free
+        # there when the client is subscribed.
+        {:cont, state}
+
+      {:busy, _other_pid} ->
+        response = %Proto.BluetoothDeviceConnectionResponse{
+          address: address,
+          connected: false,
+          mtu: 0,
+          error: BluetoothProxy.ErrorCodes.busy()
+        }
+
+        send_or_halt(socket, state, response)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_disconnect, address}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      adapter = state.adapters.bluetooth_proxy
+      adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE disconnect")
+      state = ConnectionState.drop_bluetooth_owned(state, address)
+      _ = Server.release_ble_owner(state.server_name, address, self())
+      maybe_push_connections_free(socket, state)
+    else
+      Logger.debug("Espex #{state.peer} BLE disconnect #{inspect(address)} ignored — not owner")
+      {:cont, state}
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_pair, address}) do
+    adapter = state.adapters.bluetooth_proxy
+
+    if ble_optional?(adapter, :pair, 1) do
+      adapter.pair(address) |> log_adapter_error(state.peer, "BLE pair")
+      {:cont, state}
+    else
+      send_or_halt(socket, state, %Proto.BluetoothDevicePairingResponse{
+        address: address,
+        paired: false,
+        error: BluetoothProxy.ErrorCodes.not_supported()
+      })
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_unpair, address}) do
+    adapter = state.adapters.bluetooth_proxy
+
+    if ble_optional?(adapter, :unpair, 1) do
+      adapter.unpair(address) |> log_adapter_error(state.peer, "BLE unpair")
+      {:cont, state}
+    else
+      send_or_halt(socket, state, %Proto.BluetoothDeviceUnpairingResponse{
+        address: address,
+        success: false,
+        error: BluetoothProxy.ErrorCodes.not_supported()
+      })
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_clear_cache, address}) do
+    adapter = state.adapters.bluetooth_proxy
+
+    if ble_optional?(adapter, :clear_cache, 1) do
+      adapter.clear_cache(address) |> log_adapter_error(state.peer, "BLE clear_cache")
+      {:cont, state}
+    else
+      send_or_halt(socket, state, %Proto.BluetoothDeviceClearCacheResponse{
+        address: address,
+        success: false,
+        error: BluetoothProxy.ErrorCodes.not_supported()
+      })
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_set_connection_params, address, params}) do
+    adapter = state.adapters.bluetooth_proxy
+
+    if ble_optional?(adapter, :set_connection_params, 2) do
+      adapter.set_connection_params(address, params)
+      |> log_adapter_error(state.peer, "BLE set_connection_params")
+
+      {:cont, state}
+    else
+      send_or_halt(socket, state, %Proto.BluetoothSetConnectionParamsResponse{
+        address: address,
+        error: BluetoothProxy.ErrorCodes.not_supported()
+      })
+    end
+  end
+
+  defp interpret_action(socket, state, :ble_push_connections_free) do
+    push_connections_free(socket, state)
+  end
+
   defp interpret_action(_socket, state, {:entity_command, command}) do
     state.adapters.entity_provider.handle_command(command)
     |> log_adapter_error(state.peer, "entity command")
@@ -561,15 +664,20 @@ defmodule Espex.Connection do
   defp zwave_value(%{zwave_proxy: nil}, _fun), do: 0
   defp zwave_value(%{zwave_proxy: module}, fun), do: apply(module, fun, [])
 
-  # ESPHome bluetooth_proxy_feature_flags bitfield. Active-side bits
-  # (ACTIVE_CONNECTIONS, REMOTE_CACHING, PAIRING, CACHE_CLEARING) are
-  # added in a later PR when the active proxy ships.
+  # ESPHome bluetooth_proxy_feature_flags bitfield.
   @bluetooth_passive_scan 0x01
+  @bluetooth_active_connections 0x02
+  @bluetooth_remote_caching 0x04
+  @bluetooth_pairing 0x08
+  @bluetooth_cache_clearing 0x10
   @bluetooth_raw_advertisements 0x20
   @bluetooth_state_and_mode 0x40
 
   defp compute_bluetooth_feature_flags(adapters) do
-    scanner_bits(adapters[:bluetooth_scanner])
+    Bitwise.bor(
+      scanner_bits(adapters[:bluetooth_scanner]),
+      active_bits(adapters[:bluetooth_proxy])
+    )
   end
 
   defp scanner_bits(nil), do: 0
@@ -588,6 +696,28 @@ defmodule Espex.Connection do
     end
   end
 
+  defp active_bits(nil), do: 0
+
+  defp active_bits(adapter) do
+    loaded? = Code.ensure_loaded?(adapter)
+
+    base = Bitwise.bor(@bluetooth_active_connections, @bluetooth_remote_caching)
+
+    base
+    |> maybe_set_bit(loaded? and pairing_exported?(adapter), @bluetooth_pairing)
+    |> maybe_set_bit(
+      loaded? and function_exported?(adapter, :clear_cache, 1),
+      @bluetooth_cache_clearing
+    )
+  end
+
+  defp pairing_exported?(adapter) do
+    function_exported?(adapter, :pair, 1) and function_exported?(adapter, :unpair, 1)
+  end
+
+  defp maybe_set_bit(acc, true, bit), do: Bitwise.bor(acc, bit)
+  defp maybe_set_bit(acc, false, _bit), do: acc
+
   defp load_serial_proxies(%{serial_proxy: nil}), do: []
   defp load_serial_proxies(%{serial_proxy: module}), do: module.list_instances()
 
@@ -602,11 +732,35 @@ defmodule Espex.Connection do
     if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
     if state.bluetooth_scanner_subscribed, do: interpret_action(nil, state, :ble_scanner_unsubscribe)
 
+    cleanup_bluetooth_owners(state)
+
     if adapter = state.adapters.serial_proxy do
       Enum.each(state.opened_ports, fn {_instance, handle} -> adapter.close(handle) end)
     end
 
     :ok
+  end
+
+  defp cleanup_bluetooth_owners(%{server_name: nil}), do: :ok
+
+  defp cleanup_bluetooth_owners(state) do
+    case state.adapters.bluetooth_proxy do
+      nil ->
+        :ok
+
+      adapter ->
+        # Release everything we own atomically on the Server, then ask
+        # the adapter to disconnect. `release_all_ble_owners/2` returns
+        # the addresses so we can disconnect even if the per-connection
+        # MapSet has drifted (defence in depth — server is the truth).
+        addresses = Server.release_all_ble_owners(state.server_name, self())
+
+        Enum.each(addresses, fn address ->
+          adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")
+        end)
+
+        :ok
+    end
   end
 
   defp peer_label(socket) do
@@ -656,6 +810,44 @@ defmodule Espex.Connection do
   end
 
   defp serial_request(:error, _adapter, _type), do: {:error, :not_open}
+
+  # Optional-callback check. Pairs `Code.ensure_loaded?/1` with
+  # `function_exported?/3` because BLE interpreter clauses can fire on
+  # an adapter the BEAM hasn't auto-loaded yet (e.g. PAIR before any
+  # CONNECT) — see scratchpad note from PR 3.
+  defp ble_optional?(adapter, fun, arity) do
+    Code.ensure_loaded?(adapter) and function_exported?(adapter, fun, arity)
+  end
+
+  # Send a protobuf and thread the encryption-advanced state forward.
+  # On send failure (encode or transport), halt so the connection is
+  # torn down — silently dropping the result would leave the Noise tx
+  # counter ahead of the wire and break every subsequent encrypted
+  # send.
+  defp send_or_halt(socket, state, message) do
+    case send_protobuf(socket, state, message) do
+      {:ok, state} -> {:cont, state}
+      {:error, reason} -> {:halt, reason, state}
+    end
+  end
+
+  defp push_connections_free(socket, state) do
+    {free, limit} = state.adapters.bluetooth_proxy.connections_free()
+
+    response = %Proto.BluetoothConnectionsFreeResponse{
+      free: free,
+      limit: limit,
+      allocated: MapSet.to_list(state.bluetooth_owned)
+    }
+
+    send_or_halt(socket, state, response)
+  end
+
+  defp maybe_push_connections_free(socket, %{bluetooth_connections_free_subscribed: true} = state) do
+    push_connections_free(socket, state)
+  end
+
+  defp maybe_push_connections_free(_socket, state), do: {:cont, state}
 
   @compile {:no_warn_undefined, [SerialProxy, InfraredProxy]}
 end
