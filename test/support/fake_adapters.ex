@@ -212,13 +212,17 @@ end
 defmodule Espex.Test.TrackingBluetoothScanner do
   @moduledoc """
   Test adapter that records subscribe/unsubscribe/set_scanner_mode calls
-  and exposes a helper for tests to push advertisements / scanner-state
-  events back through to a known subscriber pid.
+  by fanning them out to listener pids registered in `:persistent_term`.
 
-  Listeners register themselves under a per-test key in `:persistent_term`
-  shaped `{__MODULE__, test_name}`; every callback fans out to every
-  registered pid. Tests using this adapter MUST run `async: false` — the
-  fan-out shares process-wide state.
+  Listeners register themselves under a per-test key shaped
+  `{__MODULE__, test_name}`; every callback notifies every registered
+  pid. Tests inject advertisements and scanner-state events by capturing
+  the per-connection handler pid from the `{:subscribe, handler_pid}`
+  notification and `send/2`-ing the `:espex_ble_*` tuples directly —
+  same pattern as `Espex.Test.TrackingSerialProxy`.
+
+  Tests using this adapter MUST run `async: false` — the fan-out shares
+  process-wide state.
   """
   @behaviour Espex.BluetoothScanner
 
