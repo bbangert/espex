@@ -73,12 +73,14 @@ defmodule Espex.ServerTest do
       :ok = Server.claim_ble_owner(server, 0x3344, owner)
       assert Server.ble_owner(server, 0x1122) == owner
 
+      # Monitor the owner ourselves so we observe its death deterministically.
+      # The Server has its own monitor (set in claim_ble_owner) and will get
+      # its own :DOWN delivered to its mailbox. Once we see :DOWN, we issue a
+      # GenServer.call — FIFO mailbox semantics guarantee the Server has
+      # processed its :DOWN before our call returns.
+      ref = Process.monitor(owner)
       Process.exit(owner, :kill)
-
-      # Give the Server's handle_info({:DOWN, ...}) a chance to fire.
-      # ble_owner/2 is a GenServer.call so by the time it returns nil
-      # any prior :DOWN has been processed.
-      Process.sleep(20)
+      assert_receive {:DOWN, ^ref, :process, ^owner, _}, 1_000
 
       assert Server.ble_owner(server, 0x1122) == nil
       assert Server.ble_owner(server, 0x3344) == nil

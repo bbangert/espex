@@ -56,6 +56,7 @@ defmodule Espex.Dispatch do
           | {:ble_scanner_set_mode, :passive | :active}
           | {:ble_connect, address :: non_neg_integer(), opts :: keyword()}
           | {:ble_disconnect, address :: non_neg_integer()}
+          | {:ble_release_ownership, address :: non_neg_integer()}
           | {:ble_pair, address :: non_neg_integer()}
           | {:ble_unpair, address :: non_neg_integer()}
           | {:ble_clear_cache, address :: non_neg_integer()}
@@ -475,7 +476,13 @@ defmodule Espex.Dispatch do
       error: error_code
     }
 
-    {state, [{:send, response} | maybe_push_connections_free(state)]}
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state = ConnectionState.drop_bluetooth_owned(state, address)
+
+      {state, [{:send, response}, {:ble_release_ownership, address} | maybe_push_connections_free(state)]}
+    else
+      {state, [{:send, response}]}
+    end
   end
 
   def handle_event(state, {:espex_ble_pair, address, paired?, error}) do

@@ -495,6 +495,15 @@ defmodule Espex.Connection do
     end
   end
 
+  defp interpret_action(_socket, state, {:ble_release_ownership, address}) do
+    # Emitted by Dispatch on a failed-connect event so the Server side
+    # of the ownership record matches the per-connection state, which
+    # has already dropped the address. Without this, a failed CONNECT
+    # would leave the address permanently busy for other clients.
+    _ = Server.release_ble_owner(state.server_name, address, self())
+    {:cont, state}
+  end
+
   defp interpret_action(socket, state, {:ble_pair, address}) do
     adapter = state.adapters.bluetooth_proxy
 

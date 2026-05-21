@@ -817,6 +817,15 @@ defmodule Espex.DispatchTest do
       assert %Proto.BluetoothDeviceConnectionResponse{connected: false, error: -1} = response
     end
 
+    test "failed connect for an owned address drops bluetooth_owned + emits :ble_release_ownership" do
+      s = state() |> ConnectionState.add_bluetooth_owned(0xAABB)
+
+      {new_s, actions} = Dispatch.handle_event(s, {:espex_ble_connection, 0xAABB, {:error, -1}})
+
+      refute ConnectionState.bluetooth_owns?(new_s, 0xAABB)
+      assert {:ble_release_ownership, 0xAABB} in actions
+    end
+
     test "successful connect re-pushes connections_free when client is subscribed" do
       s =
         state()

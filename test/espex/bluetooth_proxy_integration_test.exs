@@ -147,6 +147,33 @@ defmodule Espex.BluetoothProxyIntegrationTest do
       :gen_tcp.close(socket)
     end
 
+    test "failed connect releases ownership so a second client can claim the address", %{
+      port: port,
+      server_name: server_name
+    } do
+      socket_a = connect(port)
+      issue_connect(socket_a, 0xAABB)
+      assert_receive {:connect, 0xAABB, _, handler_a}, 1_000
+      assert Server.ble_owner(server_name, 0xAABB) == handler_a
+
+      # Adapter reports failure — espex must release the address so
+      # another client isn't permanently locked out.
+      send(handler_a, {:espex_ble_connection, 0xAABB, {:error, -1}})
+
+      {:ok, %Proto.BluetoothDeviceConnectionResponse{connected: false, error: -1}, _} =
+        recv_struct(socket_a)
+
+      # A second client should now be able to claim the same address.
+      socket_b = connect(port)
+      issue_connect(socket_b, 0xAABB)
+      assert_receive {:connect, 0xAABB, _, handler_b}, 1_000
+      refute handler_a == handler_b
+      assert Server.ble_owner(server_name, 0xAABB) == handler_b
+
+      :gen_tcp.close(socket_a)
+      :gen_tcp.close(socket_b)
+    end
+
     test "DISCONNECT releases ownership and forwards to adapter", %{port: port, server_name: server_name} do
       socket = connect(port)
       issue_connect(socket, 0xAABB)
@@ -179,10 +206,12 @@ defmodule Espex.BluetoothProxyIntegrationTest do
 
       :gen_tcp.close(socket)
 
+      # cleanup_bluetooth_owners/1 calls Server.release_all_ble_owners
+      # BEFORE firing adapter.disconnect/1, so receiving both
+      # :disconnect notifications already implies the release has
+      # completed — no Process.sleep needed.
       assert_receive {:disconnect, 0xAABB}, 1_000
       assert_receive {:disconnect, 0xCCDD}, 1_000
-
-      Process.sleep(20)
       assert Server.ble_owner(server_name, 0xAABB) == nil
       assert Server.ble_owner(server_name, 0xCCDD) == nil
     end

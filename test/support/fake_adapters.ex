@@ -211,9 +211,14 @@ end
 
 defmodule Espex.Test.TrackingBluetoothProxy do
   @moduledoc """
-  Test adapter recording the active-proxy lifecycle callbacks (connect /
-  disconnect / pair / unpair / clear_cache / set_connection_params) and
-  `connections_free/0`. GATT callbacks are deferred to PR 5.
+  Test adapter recording every `Espex.BluetoothProxy` callback — the
+  full lifecycle (connect, disconnect, pair, unpair, clear_cache,
+  set_connection_params), every GATT call (read, write, notify,
+  get_services, read_descriptor, write_descriptor), and
+  `connections_free/0`. PR 4 wires the lifecycle in `Espex.Dispatch`
+  and `Espex.Connection`; GATT wiring lands in PR 5, but the adapter
+  stubs are ready now so the GATT integration tests can drop in
+  without churning this file.
 
   Implements every optional callback so feature-flag computation sees
   `PAIRING | CACHE_CLEARING` set. Listener-pid fan-out mirrors
