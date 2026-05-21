@@ -209,6 +209,50 @@ defmodule Espex.Test.MinimalBluetoothScanner do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.TrackingBluetoothScanner do
+  @moduledoc """
+  Test adapter that records subscribe/unsubscribe/set_scanner_mode calls
+  by fanning them out to listener pids registered in `:persistent_term`.
+
+  Listeners register themselves under a per-test key shaped
+  `{__MODULE__, test_name}`; every callback notifies every registered
+  pid. Tests inject advertisements and scanner-state events by capturing
+  the per-connection handler pid from the `{:subscribe, handler_pid}`
+  notification and `send/2`-ing the `:espex_ble_*` tuples directly —
+  same pattern as `Espex.Test.TrackingSerialProxy`.
+
+  Tests using this adapter MUST run `async: false` — the fan-out shares
+  process-wide state.
+  """
+  @behaviour Espex.BluetoothScanner
+
+  @impl true
+  def subscribe(pid) do
+    notify({:subscribe, pid})
+    :ok
+  end
+
+  @impl true
+  def unsubscribe(pid) do
+    notify({:unsubscribe, pid})
+    :ok
+  end
+
+  @impl true
+  def set_scanner_mode(mode) do
+    notify({:set_scanner_mode, mode})
+    :ok
+  end
+
+  defp notify(event) do
+    for {{__MODULE__, _test}, pid} <- :persistent_term.get(), is_pid(pid) do
+      send(pid, event)
+    end
+
+    :ok
+  end
+end
+
 defmodule Espex.Test.FakeBluetoothProxy do
   @moduledoc """
   No-op `Espex.BluetoothProxy` adapter for compile-time wiring tests.

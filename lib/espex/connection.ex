@@ -430,6 +430,33 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
+  defp interpret_action(_socket, state, :ble_scanner_subscribe) do
+    state.adapters.bluetooth_scanner.subscribe(self())
+    |> log_adapter_error(state.peer, "BLE scanner subscribe")
+
+    {:cont, state}
+  end
+
+  defp interpret_action(_socket, state, :ble_scanner_unsubscribe) do
+    if adapter = state.adapters.bluetooth_scanner, do: adapter.unsubscribe(self())
+    {:cont, state}
+  end
+
+  defp interpret_action(_socket, state, {:ble_scanner_set_mode, mode}) do
+    adapter = state.adapters.bluetooth_scanner
+
+    if function_exported?(adapter, :set_scanner_mode, 1) do
+      adapter.set_scanner_mode(mode)
+      |> log_adapter_error(state.peer, "BLE scanner set_scanner_mode")
+    else
+      Logger.debug(
+        "Espex #{state.peer} BLE scanner set_scanner_mode #{inspect(mode)} ignored — not supported by adapter"
+      )
+    end
+
+    {:cont, state}
+  end
+
   defp interpret_action(_socket, state, {:entity_command, command}) do
     state.adapters.entity_provider.handle_command(command)
     |> log_adapter_error(state.peer, "entity command")
@@ -526,12 +553,40 @@ defmodule Espex.Connection do
     %{
       base
       | zwave_feature_flags: zwave_value(adapters, :feature_flags),
-        zwave_home_id: zwave_value(adapters, :home_id)
+        zwave_home_id: zwave_value(adapters, :home_id),
+        bluetooth_feature_flags: compute_bluetooth_feature_flags(adapters)
     }
   end
 
   defp zwave_value(%{zwave_proxy: nil}, _fun), do: 0
   defp zwave_value(%{zwave_proxy: module}, fun), do: apply(module, fun, [])
+
+  # ESPHome bluetooth_proxy_feature_flags bitfield. Active-side bits
+  # (ACTIVE_CONNECTIONS, REMOTE_CACHING, PAIRING, CACHE_CLEARING) are
+  # added in a later PR when the active proxy ships.
+  @bluetooth_passive_scan 0x01
+  @bluetooth_raw_advertisements 0x20
+  @bluetooth_state_and_mode 0x40
+
+  defp compute_bluetooth_feature_flags(adapters) do
+    scanner_bits(adapters[:bluetooth_scanner])
+  end
+
+  defp scanner_bits(nil), do: 0
+
+  defp scanner_bits(adapter) do
+    base = Bitwise.bor(@bluetooth_passive_scan, @bluetooth_raw_advertisements)
+
+    # `Code.ensure_loaded?/1` precedes `function_exported?/3` because
+    # this check fires at TCP-accept time, before any adapter call has
+    # auto-loaded the module. Without it, CI's fresh BEAM reports the
+    # optional callback as missing even when it's defined.
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :set_scanner_mode, 1) do
+      Bitwise.bor(base, @bluetooth_state_and_mode)
+    else
+      base
+    end
+  end
 
   defp load_serial_proxies(%{serial_proxy: nil}), do: []
   defp load_serial_proxies(%{serial_proxy: module}), do: module.list_instances()
@@ -545,6 +600,7 @@ defmodule Espex.Connection do
   defp cleanup(state) do
     if state.zwave_subscribed, do: interpret_action(nil, state, :zwave_unsubscribe)
     if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
+    if state.bluetooth_scanner_subscribed, do: interpret_action(nil, state, :ble_scanner_unsubscribe)
 
     if adapter = state.adapters.serial_proxy do
       Enum.each(state.opened_ports, fn {_instance, handle} -> adapter.close(handle) end)

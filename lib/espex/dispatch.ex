@@ -51,6 +51,9 @@ defmodule Espex.Dispatch do
           | :infrared_subscribe
           | :infrared_unsubscribe
           | {:infrared_transmit, key :: non_neg_integer(), timings :: [integer()], SerialProxy.open_opts()}
+          | :ble_scanner_subscribe
+          | :ble_scanner_unsubscribe
+          | {:ble_scanner_set_mode, :passive | :active}
           | {:entity_command, struct()}
 
   @type result :: {ConnectionState.t(), [action()]}
@@ -261,6 +264,46 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # -- Bluetooth scanner subscribe / unsubscribe / set-mode --
+
+  def handle_request(state, %Proto.SubscribeBluetoothLEAdvertisementsRequest{flags: flags}) do
+    cond do
+      not ConnectionState.adapter?(state, :bluetooth_scanner) ->
+        {state, [{:log, :info, "BLE scanner subscribe ignored — no adapter configured"}]}
+
+      state.bluetooth_scanner_subscribed ->
+        {state, scanner_flag_log(flags)}
+
+      true ->
+        state = ConnectionState.put_bluetooth_scanner_subscribed(state, true)
+        {state, [:ble_scanner_subscribe | scanner_flag_log(flags)]}
+    end
+  end
+
+  def handle_request(state, %Proto.UnsubscribeBluetoothLEAdvertisementsRequest{}) do
+    if state.bluetooth_scanner_subscribed do
+      {ConnectionState.put_bluetooth_scanner_subscribed(state, false), [:ble_scanner_unsubscribe]}
+    else
+      {state, []}
+    end
+  end
+
+  def handle_request(state, %Proto.BluetoothScannerSetModeRequest{mode: wire_mode}) do
+    cond do
+      not ConnectionState.adapter?(state, :bluetooth_scanner) ->
+        {state, [{:log, :info, "BLE scanner set-mode ignored — no adapter configured"}]}
+
+      true ->
+        case scanner_mode_from_wire(wire_mode) do
+          nil ->
+            {state, [{:log, :warning, "BLE scanner set-mode ignored — unknown wire mode #{inspect(wire_mode)}"}]}
+
+          mode ->
+            {state, [{:ble_scanner_set_mode, mode}]}
+        end
+    end
+  end
+
   # -- Entity commands (routed to EntityProvider if configured) --
 
   def handle_request(state, %type{} = message) when type in @entity_command_types do
@@ -321,6 +364,31 @@ defmodule Espex.Dispatch do
     else
       {state, []}
     end
+  end
+
+  def handle_event(state, {:espex_ble_advertisement, address, rssi, address_type, data}) do
+    if state.bluetooth_scanner_subscribed do
+      advertisement = %Proto.BluetoothLERawAdvertisement{
+        address: address,
+        rssi: rssi,
+        address_type: address_type,
+        data: data
+      }
+
+      {state, [{:send, %Proto.BluetoothLERawAdvertisementsResponse{advertisements: [advertisement]}}]}
+    else
+      {state, []}
+    end
+  end
+
+  def handle_event(state, {:espex_ble_scanner_state, scanner_state, mode, configured_mode}) do
+    response = %Proto.BluetoothScannerStateResponse{
+      state: scanner_state_to_wire(scanner_state),
+      mode: scanner_mode_to_wire(mode),
+      configured_mode: scanner_mode_to_wire(configured_mode)
+    }
+
+    {state, [{:send, response}]}
   end
 
   def handle_event(state, {:espex_state_update, %_{} = struct}) do
@@ -456,4 +524,24 @@ defmodule Espex.Dispatch do
          [{:send, serial_request_ok(req.instance, req.type)}]}
     end
   end
+
+  defp scanner_flag_log(0), do: []
+
+  defp scanner_flag_log(flags) do
+    [{:log, :debug, "BLE scanner subscribe flags=#{flags} ignored — no flags are defined yet"}]
+  end
+
+  defp scanner_mode_from_wire(:BLUETOOTH_SCANNER_MODE_PASSIVE), do: :passive
+  defp scanner_mode_from_wire(:BLUETOOTH_SCANNER_MODE_ACTIVE), do: :active
+  defp scanner_mode_from_wire(_unknown), do: nil
+
+  defp scanner_mode_to_wire(:passive), do: :BLUETOOTH_SCANNER_MODE_PASSIVE
+  defp scanner_mode_to_wire(:active), do: :BLUETOOTH_SCANNER_MODE_ACTIVE
+
+  defp scanner_state_to_wire(:idle), do: :BLUETOOTH_SCANNER_STATE_IDLE
+  defp scanner_state_to_wire(:starting), do: :BLUETOOTH_SCANNER_STATE_STARTING
+  defp scanner_state_to_wire(:running), do: :BLUETOOTH_SCANNER_STATE_RUNNING
+  defp scanner_state_to_wire(:failed), do: :BLUETOOTH_SCANNER_STATE_FAILED
+  defp scanner_state_to_wire(:stopping), do: :BLUETOOTH_SCANNER_STATE_STOPPING
+  defp scanner_state_to_wire(:stopped), do: :BLUETOOTH_SCANNER_STATE_STOPPED
 end

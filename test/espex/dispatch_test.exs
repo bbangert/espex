@@ -14,6 +14,17 @@ defmodule Espex.DispatchTest do
     ConnectionState.new(Keyword.merge(defaults, overrides))
   end
 
+  defp ble_scanner_adapters(scanner) do
+    %{
+      serial_proxy: nil,
+      zwave_proxy: nil,
+      infrared_proxy: nil,
+      bluetooth_scanner: scanner,
+      bluetooth_proxy: nil,
+      entity_provider: nil
+    }
+  end
+
   describe "HelloRequest" do
     test "sends HelloResponse with API version and server info" do
       {_state, actions} = Dispatch.handle_request(state(), %Proto.HelloRequest{client_info: "test-client"})
@@ -484,6 +495,148 @@ defmodule Espex.DispatchTest do
 
       {_, [{:send, %Proto.InfraredRFReceiveEvent{key: 7, timings: [100]}}]} =
         Dispatch.handle_event(s, {:espex_ir_receive, 7, [100]})
+    end
+  end
+
+  describe "SubscribeBluetoothLEAdvertisementsRequest" do
+    test "without adapter: logs and does not subscribe" do
+      {s, [{:log, :info, _}]} =
+        Dispatch.handle_request(state(), %Proto.SubscribeBluetoothLEAdvertisementsRequest{})
+
+      refute s.bluetooth_scanner_subscribed
+    end
+
+    test "with adapter: emits :ble_scanner_subscribe and flips the flag" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+
+      {new_s, [:ble_scanner_subscribe]} =
+        Dispatch.handle_request(
+          state(adapters: adapters),
+          %Proto.SubscribeBluetoothLEAdvertisementsRequest{}
+        )
+
+      assert new_s.bluetooth_scanner_subscribed
+    end
+
+    test "already subscribed: no-op (no adapter call)" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+      s = state(adapters: adapters) |> ConnectionState.put_bluetooth_scanner_subscribed(true)
+
+      {^s, []} = Dispatch.handle_request(s, %Proto.SubscribeBluetoothLEAdvertisementsRequest{})
+    end
+
+    test "non-zero flags are logged at debug (no defined flag bits yet)" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+
+      {_s, actions} =
+        Dispatch.handle_request(
+          state(adapters: adapters),
+          %Proto.SubscribeBluetoothLEAdvertisementsRequest{flags: 0x02}
+        )
+
+      assert :ble_scanner_subscribe in actions
+      assert Enum.any?(actions, &match?({:log, :debug, _}, &1))
+    end
+  end
+
+  describe "UnsubscribeBluetoothLEAdvertisementsRequest" do
+    test "not subscribed: no action" do
+      {_s, []} =
+        Dispatch.handle_request(state(), %Proto.UnsubscribeBluetoothLEAdvertisementsRequest{})
+    end
+
+    test "subscribed: emits :ble_scanner_unsubscribe and clears the flag" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+      s = state(adapters: adapters) |> ConnectionState.put_bluetooth_scanner_subscribed(true)
+
+      {new_s, [:ble_scanner_unsubscribe]} =
+        Dispatch.handle_request(s, %Proto.UnsubscribeBluetoothLEAdvertisementsRequest{})
+
+      refute new_s.bluetooth_scanner_subscribed
+    end
+  end
+
+  describe "BluetoothScannerSetModeRequest" do
+    test "without adapter: logs and emits no action" do
+      {_s, [{:log, :info, _}]} =
+        Dispatch.handle_request(state(), %Proto.BluetoothScannerSetModeRequest{
+          mode: :BLUETOOTH_SCANNER_MODE_ACTIVE
+        })
+    end
+
+    test "with adapter: emits {:ble_scanner_set_mode, atom} mapping wire enum" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+
+      {_s, [{:ble_scanner_set_mode, :passive}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothScannerSetModeRequest{
+          mode: :BLUETOOTH_SCANNER_MODE_PASSIVE
+        })
+
+      {_s, [{:ble_scanner_set_mode, :active}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothScannerSetModeRequest{
+          mode: :BLUETOOTH_SCANNER_MODE_ACTIVE
+        })
+    end
+
+    test "unknown wire mode (forward-compat): logs warning, no adapter action" do
+      adapters = ble_scanner_adapters(Espex.Test.FakeBluetoothScanner)
+
+      {_s, [{:log, :warning, msg}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothScannerSetModeRequest{
+          mode: 99
+        })
+
+      assert msg =~ "unknown wire mode"
+    end
+  end
+
+  describe "BluetoothScanner events" do
+    test "advertisement dropped when not subscribed" do
+      {_s, []} =
+        Dispatch.handle_event(state(), {:espex_ble_advertisement, 0xAABBCC, -55, 0, <<1, 2>>})
+    end
+
+    test "advertisement wrapped one-per-response when subscribed" do
+      s = state() |> ConnectionState.put_bluetooth_scanner_subscribed(true)
+
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(s, {:espex_ble_advertisement, 0xAABBCC, -55, 1, "payload"})
+
+      assert %Proto.BluetoothLERawAdvertisementsResponse{
+               advertisements: [
+                 %Proto.BluetoothLERawAdvertisement{
+                   address: 0xAABBCC,
+                   rssi: -55,
+                   address_type: 1,
+                   data: "payload"
+                 }
+               ]
+             } = response
+    end
+
+    test "scanner_state event always emitted (no gating on subscribed flag)" do
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(state(), {:espex_ble_scanner_state, :running, :passive, :active})
+
+      assert %Proto.BluetoothScannerStateResponse{
+               state: :BLUETOOTH_SCANNER_STATE_RUNNING,
+               mode: :BLUETOOTH_SCANNER_MODE_PASSIVE,
+               configured_mode: :BLUETOOTH_SCANNER_MODE_ACTIVE
+             } = response
+    end
+
+    test "scanner_state maps every documented state atom to its wire enum" do
+      for {atom, wire} <- [
+            {:idle, :BLUETOOTH_SCANNER_STATE_IDLE},
+            {:starting, :BLUETOOTH_SCANNER_STATE_STARTING},
+            {:running, :BLUETOOTH_SCANNER_STATE_RUNNING},
+            {:failed, :BLUETOOTH_SCANNER_STATE_FAILED},
+            {:stopping, :BLUETOOTH_SCANNER_STATE_STOPPING},
+            {:stopped, :BLUETOOTH_SCANNER_STATE_STOPPED}
+          ] do
+        {_s, [{:send, %Proto.BluetoothScannerStateResponse{state: ^wire}}]} =
+          Dispatch.handle_event(state(), {:espex_ble_scanner_state, atom, :passive, :passive})
+      end
     end
   end
 
