@@ -17,7 +17,8 @@ defmodule Espex do
       common ESPHome entities (Switch, BinarySensor, Sensor, Button,
       Light, Cover, Climate) with proto structs and example snippets
     * `Espex.SerialProxy`, `Espex.ZWaveProxy`, `Espex.InfraredProxy`,
-      `Espex.EntityProvider`, `Espex.Mdns` — the five behaviours,
+      `Espex.BluetoothScanner`, `Espex.BluetoothProxy`,
+      `Espex.EntityProvider`, `Espex.Mdns` — the seven behaviours,
       each with callback reference and a complete example adapter
 
   ## Quick start
