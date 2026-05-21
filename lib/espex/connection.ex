@@ -42,6 +42,7 @@ defmodule Espex.Connection do
       ConnectionState.new(
         device_config: device_config,
         peer: peer,
+        server_name: server_name,
         adapters: adapters,
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),

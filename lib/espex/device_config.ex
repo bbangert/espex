@@ -7,9 +7,13 @@ defmodule Espex.DeviceConfig do
   queries the device over the ESPHome Native API, plus the TCP port the
   server listens on.
 
-  `zwave_feature_flags` and `zwave_home_id` are populated by the consumer
-  (typically from an `Espex.ZWaveProxy.Adapter`) before building a
-  `DeviceInfoResponse` — the struct itself is pure.
+  `zwave_feature_flags`, `zwave_home_id`, and `bluetooth_feature_flags`
+  are populated by the consumer before building a `DeviceInfoResponse` —
+  the struct itself is pure. `zwave_*` is set from a configured
+  `Espex.ZWaveProxy` adapter; `bluetooth_feature_flags` is computed by
+  `Espex.Connection` from the configured `Espex.BluetoothScanner` /
+  `Espex.BluetoothProxy` adapters and their optional callbacks (and
+  defaults to `0` when no BLE adapters are configured).
 
   ## `project_name` format
 
@@ -64,6 +68,7 @@ defmodule Espex.DeviceConfig do
           port: non_neg_integer(),
           zwave_feature_flags: non_neg_integer(),
           zwave_home_id: non_neg_integer(),
+          bluetooth_feature_flags: non_neg_integer(),
           devices: [Device.t()],
           psk: <<_::256>> | nil
         }
@@ -81,6 +86,7 @@ defmodule Espex.DeviceConfig do
             port: @default_port,
             zwave_feature_flags: 0,
             zwave_home_id: 0,
+            bluetooth_feature_flags: 0,
             devices: [],
             psk: nil
 
@@ -165,6 +171,7 @@ defmodule Espex.DeviceConfig do
       api_encryption_supported: encrypted?(config),
       zwave_proxy_feature_flags: config.zwave_feature_flags,
       zwave_home_id: config.zwave_home_id,
+      bluetooth_proxy_feature_flags: config.bluetooth_feature_flags,
       serial_proxies: serial_proxies,
       devices: Enum.map(config.devices, &Device.to_proto/1)
     }

@@ -57,5 +57,18 @@ defmodule Espex.DeviceConfigTest do
       with_key = DeviceConfig.new(psk: :crypto.hash(:sha256, "x"))
       assert DeviceConfig.to_device_info_response(with_key).api_encryption_supported == true
     end
+
+    test "bluetooth_proxy_feature_flags defaults to 0" do
+      config = DeviceConfig.new()
+      assert config.bluetooth_feature_flags == 0
+
+      assert DeviceConfig.to_device_info_response(config).bluetooth_proxy_feature_flags == 0
+    end
+
+    test "bluetooth_proxy_feature_flags reflects the config bitfield" do
+      config = DeviceConfig.new() |> Map.put(:bluetooth_feature_flags, 0x63)
+
+      assert DeviceConfig.to_device_info_response(config).bluetooth_proxy_feature_flags == 0x63
+    end
   end
 end
