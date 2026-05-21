@@ -22,6 +22,10 @@ defmodule Espex.ConnectionStateTest do
       assert state.entities == []
       refute state.zwave_subscribed
       refute state.infrared_subscribed
+      refute state.bluetooth_scanner_subscribed
+      refute state.bluetooth_connections_free_subscribed
+      assert state.bluetooth_owned == MapSet.new()
+      assert state.server_name == nil
     end
 
     test "entity lists are frozen at construction time (passed via new/1)" do
@@ -33,7 +37,20 @@ defmodule Espex.ConnectionStateTest do
 
     test "adapter map has all features defaulting to nil" do
       state = base_state()
-      assert state.adapters == %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: nil, entity_provider: nil}
+
+      assert state.adapters == %{
+               serial_proxy: nil,
+               zwave_proxy: nil,
+               infrared_proxy: nil,
+               bluetooth_scanner: nil,
+               bluetooth_proxy: nil,
+               entity_provider: nil
+             }
+    end
+
+    test "server_name can be set via new/1" do
+      state = base_state(server_name: MyApp.EspexServer)
+      assert state.server_name == MyApp.EspexServer
     end
   end
 
@@ -124,17 +141,84 @@ defmodule Espex.ConnectionStateTest do
       refute state.zwave_subscribed
       assert state.infrared_subscribed
     end
+
+    test "put_bluetooth_scanner_subscribed toggles" do
+      state = base_state() |> ConnectionState.put_bluetooth_scanner_subscribed(true)
+      assert state.bluetooth_scanner_subscribed
+      state = ConnectionState.put_bluetooth_scanner_subscribed(state, false)
+      refute state.bluetooth_scanner_subscribed
+    end
+
+    test "put_bluetooth_connections_free_subscribed toggles" do
+      state = base_state() |> ConnectionState.put_bluetooth_connections_free_subscribed(true)
+      assert state.bluetooth_connections_free_subscribed
+      state = ConnectionState.put_bluetooth_connections_free_subscribed(state, false)
+      refute state.bluetooth_connections_free_subscribed
+    end
+  end
+
+  describe "bluetooth_owned" do
+    test "add / bluetooth_owns? / drop round-trip" do
+      address_a = 0x0000_AABB_CCDD_EE01
+      address_b = 0x0000_AABB_CCDD_EE02
+
+      state = base_state() |> ConnectionState.add_bluetooth_owned(address_a)
+      assert ConnectionState.bluetooth_owns?(state, address_a)
+      refute ConnectionState.bluetooth_owns?(state, address_b)
+
+      state = ConnectionState.drop_bluetooth_owned(state, address_a)
+      refute ConnectionState.bluetooth_owns?(state, address_a)
+    end
+
+    test "add_bluetooth_owned is idempotent" do
+      address = 0x0000_AABB_CCDD_EE01
+
+      state =
+        base_state()
+        |> ConnectionState.add_bluetooth_owned(address)
+        |> ConnectionState.add_bluetooth_owned(address)
+
+      assert MapSet.size(state.bluetooth_owned) == 1
+    end
+
+    test "put_bluetooth_owned replaces the entire set" do
+      replacement = MapSet.new([1, 2, 3])
+
+      state =
+        base_state()
+        |> ConnectionState.add_bluetooth_owned(0xDEAD)
+        |> ConnectionState.put_bluetooth_owned(replacement)
+
+      assert state.bluetooth_owned == replacement
+    end
+
+    test "drop_bluetooth_owned for an unowned address is a no-op" do
+      state = base_state() |> ConnectionState.drop_bluetooth_owned(0xCAFE)
+      assert state.bluetooth_owned == MapSet.new()
+    end
   end
 
   describe "adapter lookup" do
     test "adapter/2 returns nil when unconfigured, module when configured" do
-      state =
-        base_state(adapters: %{serial_proxy: MyApp.Serial, zwave_proxy: nil, infrared_proxy: nil, entity_provider: nil})
+      adapters = %{
+        serial_proxy: MyApp.Serial,
+        zwave_proxy: nil,
+        infrared_proxy: nil,
+        bluetooth_scanner: MyApp.BLEScanner,
+        bluetooth_proxy: nil,
+        entity_provider: nil
+      }
+
+      state = base_state(adapters: adapters)
 
       assert ConnectionState.adapter(state, :serial_proxy) == MyApp.Serial
       assert ConnectionState.adapter(state, :zwave_proxy) == nil
+      assert ConnectionState.adapter(state, :bluetooth_scanner) == MyApp.BLEScanner
+      assert ConnectionState.adapter(state, :bluetooth_proxy) == nil
       assert ConnectionState.adapter?(state, :serial_proxy)
       refute ConnectionState.adapter?(state, :zwave_proxy)
+      assert ConnectionState.adapter?(state, :bluetooth_scanner)
+      refute ConnectionState.adapter?(state, :bluetooth_proxy)
     end
   end
 

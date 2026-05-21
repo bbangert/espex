@@ -3,7 +3,13 @@ defmodule Espex.ConnectionState do
 
   alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy}
 
-  @type feature :: :serial_proxy | :zwave_proxy | :infrared_proxy | :entity_provider
+  @type feature ::
+          :serial_proxy
+          | :zwave_proxy
+          | :infrared_proxy
+          | :bluetooth_scanner
+          | :bluetooth_proxy
+          | :entity_provider
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -32,6 +38,7 @@ defmodule Espex.ConnectionState do
           buffer: binary(),
           device_config: DeviceConfig.t(),
           peer: String.t(),
+          server_name: atom() | nil,
           serial_proxies: [SerialProxy.Info.t()],
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
@@ -39,6 +46,9 @@ defmodule Espex.ConnectionState do
           pending_subscriptions: MapSet.t(non_neg_integer()),
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
+          bluetooth_scanner_subscribed: boolean(),
+          bluetooth_connections_free_subscribed: boolean(),
+          bluetooth_owned: MapSet.t(non_neg_integer()),
           adapters: adapters(),
           clock_fun: (-> non_neg_integer()),
           encryption: encryption()
@@ -48,6 +58,7 @@ defmodule Espex.ConnectionState do
   defstruct [
     :device_config,
     :peer,
+    server_name: nil,
     buffer: <<>>,
     serial_proxies: [],
     infrared_entities: [],
@@ -56,10 +67,15 @@ defmodule Espex.ConnectionState do
     pending_subscriptions: MapSet.new(),
     zwave_subscribed: false,
     infrared_subscribed: false,
+    bluetooth_scanner_subscribed: false,
+    bluetooth_connections_free_subscribed: false,
+    bluetooth_owned: MapSet.new(),
     adapters: %{
       serial_proxy: nil,
       zwave_proxy: nil,
       infrared_proxy: nil,
+      bluetooth_scanner: nil,
+      bluetooth_proxy: nil,
       entity_provider: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
@@ -192,6 +208,55 @@ defmodule Espex.ConnectionState do
   @spec put_infrared_subscribed(t(), boolean()) :: t()
   def put_infrared_subscribed(%__MODULE__{} = state, subscribed?) do
     %{state | infrared_subscribed: subscribed?}
+  end
+
+  @doc """
+  Mark whether the client is subscribed to BLE raw advertisements.
+  """
+  @spec put_bluetooth_scanner_subscribed(t(), boolean()) :: t()
+  def put_bluetooth_scanner_subscribed(%__MODULE__{} = state, subscribed?) do
+    %{state | bluetooth_scanner_subscribed: subscribed?}
+  end
+
+  @doc """
+  Mark whether the client is subscribed to
+  `BluetoothConnectionsFreeResponse` updates.
+  """
+  @spec put_bluetooth_connections_free_subscribed(t(), boolean()) :: t()
+  def put_bluetooth_connections_free_subscribed(%__MODULE__{} = state, subscribed?) do
+    %{state | bluetooth_connections_free_subscribed: subscribed?}
+  end
+
+  @doc """
+  Replace the set of BLE peripheral addresses this connection owns.
+  """
+  @spec put_bluetooth_owned(t(), MapSet.t(non_neg_integer())) :: t()
+  def put_bluetooth_owned(%__MODULE__{} = state, owned) do
+    %{state | bluetooth_owned: owned}
+  end
+
+  @doc """
+  Record that this connection now owns the given peripheral address.
+  """
+  @spec add_bluetooth_owned(t(), non_neg_integer()) :: t()
+  def add_bluetooth_owned(%__MODULE__{} = state, address) do
+    %{state | bluetooth_owned: MapSet.put(state.bluetooth_owned, address)}
+  end
+
+  @doc """
+  Forget that this connection owns the given peripheral address.
+  """
+  @spec drop_bluetooth_owned(t(), non_neg_integer()) :: t()
+  def drop_bluetooth_owned(%__MODULE__{} = state, address) do
+    %{state | bluetooth_owned: MapSet.delete(state.bluetooth_owned, address)}
+  end
+
+  @doc """
+  Return `true` if this connection owns the given peripheral address.
+  """
+  @spec bluetooth_owns?(t(), non_neg_integer()) :: boolean()
+  def bluetooth_owns?(%__MODULE__{bluetooth_owned: owned}, address) do
+    MapSet.member?(owned, address)
   end
 
   @doc """

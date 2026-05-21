@@ -26,6 +26,8 @@ defmodule Espex.Supervisor do
         serial_proxy: MyApp.MySerialAdapter,
         zwave_proxy: MyApp.MyZWaveAdapter,
         infrared_proxy: MyApp.MyIRAdapter,
+        bluetooth_scanner: MyApp.MyBLEScanner,
+        bluetooth_proxy: MyApp.MyBLEProxy,
         entity_provider: MyApp.MyEntities,
         mdns: Espex.Mdns.MdnsLite
       )
@@ -40,7 +42,14 @@ defmodule Espex.Supervisor do
   alias Espex.{Connection, DeviceConfig, Server}
   alias Espex.Mdns.Advertiser, as: MdnsAdvertiser
 
-  @adapter_keys [:serial_proxy, :zwave_proxy, :infrared_proxy, :entity_provider]
+  @adapter_keys [
+    :serial_proxy,
+    :zwave_proxy,
+    :infrared_proxy,
+    :bluetooth_scanner,
+    :bluetooth_proxy,
+    :entity_provider
+  ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
