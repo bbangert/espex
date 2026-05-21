@@ -11,9 +11,7 @@ defmodule Espex.BluetoothScanner do
 
   This behaviour is independent of `Espex.BluetoothProxy`: a device may
   expose only a scanner (passive sniffing, no outbound connections), or
-  pair this with the active behaviour for full proxy capability. See
-  the [Bluetooth Proxy section](#bluetooth-proxy) of the architecture
-  guide for the split.
+  pair this with the active behaviour for full proxy capability.
 
   ## Callbacks
 
