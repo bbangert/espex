@@ -577,7 +577,11 @@ defmodule Espex.Connection do
   defp scanner_bits(adapter) do
     base = Bitwise.bor(@bluetooth_passive_scan, @bluetooth_raw_advertisements)
 
-    if function_exported?(adapter, :set_scanner_mode, 1) do
+    # `Code.ensure_loaded?/1` precedes `function_exported?/3` because
+    # this check fires at TCP-accept time, before any adapter call has
+    # auto-loaded the module. Without it, CI's fresh BEAM reports the
+    # optional callback as missing even when it's defined.
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :set_scanner_mode, 1) do
       Bitwise.bor(base, @bluetooth_state_and_mode)
     else
       base
