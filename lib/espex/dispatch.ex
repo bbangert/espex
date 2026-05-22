@@ -54,6 +54,14 @@ defmodule Espex.Dispatch do
           | :ble_scanner_subscribe
           | :ble_scanner_unsubscribe
           | {:ble_scanner_set_mode, :passive | :active}
+          | {:ble_connect, address :: non_neg_integer(), opts :: keyword()}
+          | {:ble_disconnect, address :: non_neg_integer()}
+          | {:ble_release_ownership, address :: non_neg_integer()}
+          | {:ble_pair, address :: non_neg_integer()}
+          | {:ble_unpair, address :: non_neg_integer()}
+          | {:ble_clear_cache, address :: non_neg_integer()}
+          | {:ble_set_connection_params, address :: non_neg_integer(), params :: map()}
+          | :ble_push_connections_free
           | {:entity_command, struct()}
 
   @type result :: {ConnectionState.t(), [action()]}
@@ -304,6 +312,56 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # -- Bluetooth active proxy: device requests + connection_params --
+
+  def handle_request(state, %Proto.BluetoothDeviceRequest{} = req) do
+    cond do
+      not ConnectionState.adapter?(state, :bluetooth_proxy) ->
+        {state, [{:log, :info, "BLE device request ignored — no adapter configured"}]}
+
+      true ->
+        case ble_device_action(req) do
+          nil ->
+            {state,
+             [
+               {:log, :warning, "BLE device request ignored — unknown request_type #{inspect(req.request_type)}"}
+             ]}
+
+          action ->
+            {state, [action]}
+        end
+    end
+  end
+
+  def handle_request(state, %Proto.BluetoothSetConnectionParamsRequest{} = req) do
+    if ConnectionState.adapter?(state, :bluetooth_proxy) do
+      params = %{
+        min_interval: req.min_interval,
+        max_interval: req.max_interval,
+        latency: req.latency,
+        timeout: req.timeout
+      }
+
+      {state, [{:ble_set_connection_params, req.address, params}]}
+    else
+      {state, [{:log, :info, "BLE set_connection_params ignored — no adapter configured"}]}
+    end
+  end
+
+  def handle_request(state, %Proto.SubscribeBluetoothConnectionsFreeRequest{}) do
+    cond do
+      not ConnectionState.adapter?(state, :bluetooth_proxy) ->
+        {state, [{:log, :info, "BLE connections_free subscribe ignored — no adapter configured"}]}
+
+      state.bluetooth_connections_free_subscribed ->
+        {state, [:ble_push_connections_free]}
+
+      true ->
+        state = ConnectionState.put_bluetooth_connections_free_subscribed(state, true)
+        {state, [:ble_push_connections_free]}
+    end
+  end
+
   # -- Entity commands (routed to EntityProvider if configured) --
 
   def handle_request(state, %type{} = message) when type in @entity_command_types do
@@ -386,6 +444,81 @@ defmodule Espex.Dispatch do
       state: scanner_state_to_wire(scanner_state),
       mode: scanner_mode_to_wire(mode),
       configured_mode: scanner_mode_to_wire(configured_mode)
+    }
+
+    {state, [{:send, response}]}
+  end
+
+  def handle_event(state, {:espex_ble_connection, address, {:ok, mtu}}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      response = %Proto.BluetoothDeviceConnectionResponse{
+        address: address,
+        connected: true,
+        mtu: mtu,
+        error: Espex.BluetoothProxy.ErrorCodes.ok()
+      }
+
+      {state, [{:send, response} | maybe_push_connections_free(state)]}
+    else
+      # Adapter reported a connection for an address we don't own —
+      # probably a late event after release. Drop silently rather than
+      # confuse the client with a successful connection it didn't ask
+      # for.
+      {state, []}
+    end
+  end
+
+  def handle_event(state, {:espex_ble_connection, address, {:error, error_code}}) do
+    response = %Proto.BluetoothDeviceConnectionResponse{
+      address: address,
+      connected: false,
+      mtu: 0,
+      error: error_code
+    }
+
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state = ConnectionState.drop_bluetooth_owned(state, address)
+
+      {state, [{:send, response}, {:ble_release_ownership, address} | maybe_push_connections_free(state)]}
+    else
+      {state, [{:send, response}]}
+    end
+  end
+
+  def handle_event(state, {:espex_ble_pair, address, paired?, error}) do
+    response = %Proto.BluetoothDevicePairingResponse{
+      address: address,
+      paired: paired?,
+      error: error
+    }
+
+    {state, [{:send, response}]}
+  end
+
+  def handle_event(state, {:espex_ble_unpair, address, success?, error}) do
+    response = %Proto.BluetoothDeviceUnpairingResponse{
+      address: address,
+      success: success?,
+      error: error
+    }
+
+    {state, [{:send, response}]}
+  end
+
+  def handle_event(state, {:espex_ble_clear_cache, address, success?, error}) do
+    response = %Proto.BluetoothDeviceClearCacheResponse{
+      address: address,
+      success: success?,
+      error: error
+    }
+
+    {state, [{:send, response}]}
+  end
+
+  def handle_event(state, {:espex_ble_connection_params, address, error}) do
+    response = %Proto.BluetoothSetConnectionParamsResponse{
+      address: address,
+      error: error
     }
 
     {state, [{:send, response}]}
@@ -544,4 +677,50 @@ defmodule Espex.Dispatch do
   defp scanner_state_to_wire(:failed), do: :BLUETOOTH_SCANNER_STATE_FAILED
   defp scanner_state_to_wire(:stopping), do: :BLUETOOTH_SCANNER_STATE_STOPPING
   defp scanner_state_to_wire(:stopped), do: :BLUETOOTH_SCANNER_STATE_STOPPED
+
+  defp ble_device_action(%Proto.BluetoothDeviceRequest{request_type: type, address: address} = req) do
+    case type do
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT ->
+        {:ble_connect, address, ble_connect_opts(req, :default)}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITH_CACHE ->
+        {:ble_connect, address, ble_connect_opts(req, :with_cache)}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITHOUT_CACHE ->
+        {:ble_connect, address, ble_connect_opts(req, :without_cache)}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_DISCONNECT ->
+        {:ble_disconnect, address}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_PAIR ->
+        {:ble_pair, address}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_UNPAIR ->
+        {:ble_unpair, address}
+
+      :BLUETOOTH_DEVICE_REQUEST_TYPE_CLEAR_CACHE ->
+        {:ble_clear_cache, address}
+
+      _other ->
+        nil
+    end
+  end
+
+  defp ble_connect_opts(%Proto.BluetoothDeviceRequest{has_address_type: true, address_type: t}, cache_mode) do
+    [address_type: t, cache_mode: cache_mode]
+  end
+
+  defp ble_connect_opts(%Proto.BluetoothDeviceRequest{}, cache_mode) do
+    [address_type: nil, cache_mode: cache_mode]
+  end
+
+  # Returns the connections_free push action when the client has
+  # subscribed, otherwise an empty list. Used after any event that
+  # changes the `allocated` set (connect succeeded, connection failed
+  # and released ownership, disconnect, cleanup sweep).
+  defp maybe_push_connections_free(%ConnectionState{bluetooth_connections_free_subscribed: true}) do
+    [:ble_push_connections_free]
+  end
+
+  defp maybe_push_connections_free(%ConnectionState{}), do: []
 end

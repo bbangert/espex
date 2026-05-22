@@ -25,6 +25,17 @@ defmodule Espex.DispatchTest do
     }
   end
 
+  defp ble_proxy_adapters(proxy) do
+    %{
+      serial_proxy: nil,
+      zwave_proxy: nil,
+      infrared_proxy: nil,
+      bluetooth_scanner: nil,
+      bluetooth_proxy: proxy,
+      entity_provider: nil
+    }
+  end
+
   describe "HelloRequest" do
     test "sends HelloResponse with API version and server info" do
       {_state, actions} = Dispatch.handle_request(state(), %Proto.HelloRequest{client_info: "test-client"})
@@ -637,6 +648,220 @@ defmodule Espex.DispatchTest do
         {_s, [{:send, %Proto.BluetoothScannerStateResponse{state: ^wire}}]} =
           Dispatch.handle_event(state(), {:espex_ble_scanner_state, atom, :passive, :passive})
       end
+    end
+  end
+
+  describe "BluetoothDeviceRequest" do
+    test "without adapter: logs and emits no action" do
+      {_s, [{:log, :info, _}]} =
+        Dispatch.handle_request(state(), %Proto.BluetoothDeviceRequest{
+          request_type: :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT,
+          address: 0xAABB
+        })
+    end
+
+    test "CONNECT emits {:ble_connect, address, opts} with default cache mode" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {_s, [{:ble_connect, 0xAABB, opts}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+          request_type: :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT,
+          address: 0xAABB
+        })
+
+      assert opts[:cache_mode] == :default
+      assert opts[:address_type] == nil
+    end
+
+    test "CONNECT carries address_type when has_address_type is true" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {_s, [{:ble_connect, _addr, opts}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+          request_type: :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT,
+          address: 1,
+          has_address_type: true,
+          address_type: 1
+        })
+
+      assert opts[:address_type] == 1
+    end
+
+    test "CONNECT_V3_WITH_CACHE / WITHOUT_CACHE pass the cache mode through" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {_s, [{:ble_connect, _, opts_with}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+          request_type: :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITH_CACHE,
+          address: 1
+        })
+
+      assert opts_with[:cache_mode] == :with_cache
+
+      {_s, [{:ble_connect, _, opts_without}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+          request_type: :BLUETOOTH_DEVICE_REQUEST_TYPE_CONNECT_V3_WITHOUT_CACHE,
+          address: 1
+        })
+
+      assert opts_without[:cache_mode] == :without_cache
+    end
+
+    test "DISCONNECT / PAIR / UNPAIR / CLEAR_CACHE emit the matching action atom" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      for {wire, action} <- [
+            {:BLUETOOTH_DEVICE_REQUEST_TYPE_DISCONNECT, :ble_disconnect},
+            {:BLUETOOTH_DEVICE_REQUEST_TYPE_PAIR, :ble_pair},
+            {:BLUETOOTH_DEVICE_REQUEST_TYPE_UNPAIR, :ble_unpair},
+            {:BLUETOOTH_DEVICE_REQUEST_TYPE_CLEAR_CACHE, :ble_clear_cache}
+          ] do
+        {_s, [{^action, 99}]} =
+          Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+            request_type: wire,
+            address: 99
+          })
+      end
+    end
+
+    test "unknown request_type logs warning, no action" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {_s, [{:log, :warning, msg}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothDeviceRequest{
+          request_type: 42,
+          address: 1
+        })
+
+      assert msg =~ "unknown request_type"
+    end
+  end
+
+  describe "BluetoothSetConnectionParamsRequest" do
+    test "without adapter: logs and emits no action" do
+      {_s, [{:log, :info, _}]} =
+        Dispatch.handle_request(state(), %Proto.BluetoothSetConnectionParamsRequest{address: 1})
+    end
+
+    test "with adapter: emits {:ble_set_connection_params, address, %{params}}" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {_s, [{:ble_set_connection_params, 1, params}]} =
+        Dispatch.handle_request(state(adapters: adapters), %Proto.BluetoothSetConnectionParamsRequest{
+          address: 1,
+          min_interval: 6,
+          max_interval: 16,
+          latency: 0,
+          timeout: 400
+        })
+
+      assert params == %{min_interval: 6, max_interval: 16, latency: 0, timeout: 400}
+    end
+  end
+
+  describe "SubscribeBluetoothConnectionsFreeRequest" do
+    test "without adapter: logs and does not subscribe" do
+      {s, [{:log, :info, _}]} =
+        Dispatch.handle_request(state(), %Proto.SubscribeBluetoothConnectionsFreeRequest{})
+
+      refute s.bluetooth_connections_free_subscribed
+    end
+
+    test "with adapter: flips the flag and pushes once" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      {new_s, [:ble_push_connections_free]} =
+        Dispatch.handle_request(
+          state(adapters: adapters),
+          %Proto.SubscribeBluetoothConnectionsFreeRequest{}
+        )
+
+      assert new_s.bluetooth_connections_free_subscribed
+    end
+
+    test "already subscribed: still emits a push (refresh on resubscribe)" do
+      adapters = ble_proxy_adapters(Espex.Test.FakeBluetoothProxy)
+
+      s =
+        state(adapters: adapters)
+        |> ConnectionState.put_bluetooth_connections_free_subscribed(true)
+
+      {^s, [:ble_push_connections_free]} =
+        Dispatch.handle_request(s, %Proto.SubscribeBluetoothConnectionsFreeRequest{})
+    end
+  end
+
+  describe "BluetoothProxy events" do
+    test "{:espex_ble_connection, address, {:ok, mtu}} sends connected response when owned" do
+      s = state() |> ConnectionState.add_bluetooth_owned(0xAABB)
+
+      {_s, [{:send, response} | _]} =
+        Dispatch.handle_event(s, {:espex_ble_connection, 0xAABB, {:ok, 247}})
+
+      assert %Proto.BluetoothDeviceConnectionResponse{
+               address: 0xAABB,
+               connected: true,
+               mtu: 247,
+               error: 0
+             } = response
+    end
+
+    test "{:espex_ble_connection, address, {:ok, _}} is dropped when not owned (late event)" do
+      {_s, []} = Dispatch.handle_event(state(), {:espex_ble_connection, 0xAABB, {:ok, 247}})
+    end
+
+    test "{:espex_ble_connection, _, {:error, code}} always sends (no ownership gate on failure)" do
+      {_s, [{:send, response} | _]} =
+        Dispatch.handle_event(state(), {:espex_ble_connection, 0xAABB, {:error, -1}})
+
+      assert %Proto.BluetoothDeviceConnectionResponse{connected: false, error: -1} = response
+    end
+
+    test "failed connect for an owned address drops bluetooth_owned + emits :ble_release_ownership" do
+      s = state() |> ConnectionState.add_bluetooth_owned(0xAABB)
+
+      {new_s, actions} = Dispatch.handle_event(s, {:espex_ble_connection, 0xAABB, {:error, -1}})
+
+      refute ConnectionState.bluetooth_owns?(new_s, 0xAABB)
+      assert {:ble_release_ownership, 0xAABB} in actions
+    end
+
+    test "successful connect re-pushes connections_free when client is subscribed" do
+      s =
+        state()
+        |> ConnectionState.add_bluetooth_owned(0xAABB)
+        |> ConnectionState.put_bluetooth_connections_free_subscribed(true)
+
+      {_s, actions} = Dispatch.handle_event(s, {:espex_ble_connection, 0xAABB, {:ok, 247}})
+      assert :ble_push_connections_free in actions
+    end
+
+    test "{:espex_ble_pair, ...} → BluetoothDevicePairingResponse" do
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(state(), {:espex_ble_pair, 0xAABB, true, 0})
+
+      assert %Proto.BluetoothDevicePairingResponse{address: 0xAABB, paired: true, error: 0} = response
+    end
+
+    test "{:espex_ble_unpair, ...} → BluetoothDeviceUnpairingResponse" do
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(state(), {:espex_ble_unpair, 0xAABB, true, 0})
+
+      assert %Proto.BluetoothDeviceUnpairingResponse{address: 0xAABB, success: true, error: 0} = response
+    end
+
+    test "{:espex_ble_clear_cache, ...} → BluetoothDeviceClearCacheResponse" do
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(state(), {:espex_ble_clear_cache, 0xAABB, true, 0})
+
+      assert %Proto.BluetoothDeviceClearCacheResponse{address: 0xAABB, success: true, error: 0} = response
+    end
+
+    test "{:espex_ble_connection_params, ...} → BluetoothSetConnectionParamsResponse" do
+      {_s, [{:send, response}]} =
+        Dispatch.handle_event(state(), {:espex_ble_connection_params, 0xAABB, 0})
+
+      assert %Proto.BluetoothSetConnectionParamsResponse{address: 0xAABB, error: 0} = response
     end
   end
 
