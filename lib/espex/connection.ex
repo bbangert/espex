@@ -849,10 +849,13 @@ defmodule Espex.Connection do
   end
 
   # Send a protobuf and thread the encryption-advanced state forward.
-  # On send failure (encode or transport), halt so the connection is
-  # torn down — silently dropping the result would leave the Noise tx
-  # counter ahead of the wire and break every subsequent encrypted
-  # send.
+  # On encode failure, halt so the connection is torn down — silently
+  # dropping the result would leave the Noise tx counter ahead of the
+  # wire and break every subsequent encrypted send. (Transport errors
+  # bubble through `:ok = ThousandIsland.Socket.send/2` in
+  # `send_protobuf/3` as a match failure; the handler crashes and
+  # `terminate/2` runs `cleanup/1`. That's fine — the connection is
+  # already dead.)
   defp send_or_halt(socket, state, message) do
     case send_protobuf(socket, state, message) do
       {:ok, state} -> {:cont, state}
@@ -866,7 +869,7 @@ defmodule Espex.Connection do
     response = %Proto.BluetoothConnectionsFreeResponse{
       free: free,
       limit: limit,
-      allocated: MapSet.to_list(state.bluetooth_owned)
+      allocated: state.bluetooth_owned |> MapSet.to_list() |> Enum.sort()
     }
 
     send_or_halt(socket, state, response)
