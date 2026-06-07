@@ -204,7 +204,7 @@ defmodule Espex.Noise do
           {:ok, cipher(), binary()} | {:error, :auth_failed | :ciphertext_too_short}
   def decrypt(%{k: k, n: n} = cipher, ad, ciphertext) when byte_size(ciphertext) >= @tag_len do
     split = byte_size(ciphertext) - @tag_len
-    <<ct::binary-size(split), tag::binary-size(@tag_len)>> = ciphertext
+    <<ct::binary-size(^split), tag::binary-size(@tag_len)>> = ciphertext
 
     case :crypto.crypto_one_time_aead(:chacha20_poly1305, k, nonce_bytes(n), ct, ad, tag, false) do
       plaintext when is_binary(plaintext) -> {:ok, %{cipher | n: n + 1}, plaintext}
@@ -249,7 +249,7 @@ defmodule Espex.Noise do
   defp decrypt_and_hash(%__MODULE__{k: k, n: n, h: h} = state, ciphertext)
        when byte_size(ciphertext) >= @tag_len do
     split = byte_size(ciphertext) - @tag_len
-    <<ct::binary-size(split), tag::binary-size(@tag_len)>> = ciphertext
+    <<ct::binary-size(^split), tag::binary-size(@tag_len)>> = ciphertext
 
     case :crypto.crypto_one_time_aead(:chacha20_poly1305, k, nonce_bytes(n), ct, h, tag, false) do
       pt when is_binary(pt) ->

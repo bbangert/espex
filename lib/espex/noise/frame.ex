@@ -17,7 +17,7 @@ defmodule Espex.Noise.Frame do
           {:ok, binary(), binary()} | {:incomplete, binary()} | {:error, term()}
   def decode_outer(<<@preamble, len::unsigned-big-16, rest::binary>> = buffer) do
     if byte_size(rest) >= len do
-      <<payload::binary-size(len), remaining::binary>> = rest
+      <<payload::binary-size(^len), remaining::binary>> = rest
       {:ok, payload, remaining}
     else
       {:incomplete, buffer}
