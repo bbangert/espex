@@ -2,6 +2,7 @@ defmodule Espex.BluetoothProxyIntegrationTest do
   use ExUnit.Case, async: false
 
   alias Espex.{Frame, MessageTypes, Proto, Server}
+  alias Espex.BluetoothProxy.{Characteristic, Descriptor, Service}
   alias Espex.Test.{MinimalBluetoothProxy, TrackingBluetoothProxy}
 
   setup context do
@@ -371,6 +372,153 @@ defmodule Espex.BluetoothProxyIntegrationTest do
       {:ok, response, _} = recv_struct(socket)
 
       assert %Proto.BluetoothSetConnectionParamsResponse{address: 0xAABB, error: -1} = response
+
+      :gen_tcp.close(socket)
+    end
+  end
+
+  describe "GATT" do
+    defp connect_and_own(port, address) do
+      socket = connect(port)
+      issue_connect(socket, address)
+      assert_receive {:connect, ^address, _opts, handler_pid}, 1_000
+      send(handler_pid, {:espex_ble_connection, address, {:ok, 247}})
+      {:ok, %Proto.BluetoothDeviceConnectionResponse{connected: true}, buf} = recv_struct(socket)
+      {socket, handler_pid, buf}
+    end
+
+    test "GetServices streams one service per response and a terminal Done", %{port: port} do
+      {socket, handler_pid, buf} = connect_and_own(port, 0xAABB)
+
+      send_struct(socket, %Proto.BluetoothGATTGetServicesRequest{address: 0xAABB})
+      assert_receive {:gatt_get_services, 0xAABB}, 1_000
+
+      service_a = Service.new(uuid: 0x180D, handle: 1)
+
+      service_b =
+        Service.new(
+          uuid: 0x180F,
+          handle: 4,
+          characteristics: [
+            Characteristic.new(
+              uuid: 0x2A19,
+              handle: 5,
+              properties: 0x12,
+              descriptors: [Descriptor.new(uuid: 0x2902, handle: 6)]
+            )
+          ]
+        )
+
+      send(handler_pid, {:espex_ble_gatt_service, 0xAABB, service_a})
+      send(handler_pid, {:espex_ble_gatt_service, 0xAABB, service_b})
+      send(handler_pid, {:espex_ble_gatt_services_done, 0xAABB})
+
+      {:ok, %Proto.BluetoothGATTGetServicesResponse{services: [svc_a]}, buf} = recv_struct(socket, buf)
+      assert %Proto.BluetoothGATTService{handle: 1, short_uuid: 0x180D} = svc_a
+
+      {:ok, %Proto.BluetoothGATTGetServicesResponse{services: [svc_b]}, buf} = recv_struct(socket, buf)
+      assert %Proto.BluetoothGATTService{handle: 4, short_uuid: 0x180F, characteristics: [c]} = svc_b
+      assert %Proto.BluetoothGATTCharacteristic{handle: 5, descriptors: [d]} = c
+      assert %Proto.BluetoothGATTDescriptor{handle: 6, short_uuid: 0x2902} = d
+
+      {:ok, %Proto.BluetoothGATTGetServicesDoneResponse{address: 0xAABB}, _} = recv_struct(socket, buf)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "Read success and error map to ReadResponse / ErrorResponse", %{port: port} do
+      {socket, handler_pid, buf} = connect_and_own(port, 0xAABB)
+
+      send_struct(socket, %Proto.BluetoothGATTReadRequest{address: 0xAABB, handle: 7})
+      assert_receive {:gatt_read, 0xAABB, 7}, 1_000
+
+      send(handler_pid, {:espex_ble_gatt_read, 0xAABB, 7, {:ok, "hello"}})
+
+      {:ok, %Proto.BluetoothGATTReadResponse{address: 0xAABB, handle: 7, data: "hello"}, buf} =
+        recv_struct(socket, buf)
+
+      send_struct(socket, %Proto.BluetoothGATTReadRequest{address: 0xAABB, handle: 8})
+      assert_receive {:gatt_read, 0xAABB, 8}, 1_000
+      send(handler_pid, {:espex_ble_gatt_read, 0xAABB, 8, {:error, -5}})
+
+      {:ok, %Proto.BluetoothGATTErrorResponse{address: 0xAABB, handle: 8, error: -5}, _} =
+        recv_struct(socket, buf)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "Write with response=true forwards the flag to the adapter and emits WriteResponse", %{port: port} do
+      {socket, handler_pid, buf} = connect_and_own(port, 0xAABB)
+
+      send_struct(socket, %Proto.BluetoothGATTWriteRequest{
+        address: 0xAABB,
+        handle: 7,
+        data: "abc",
+        response: true
+      })
+
+      assert_receive {:gatt_write, 0xAABB, 7, "abc", true}, 1_000
+      send(handler_pid, {:espex_ble_gatt_write, 0xAABB, 7, {:ok, :ack}})
+
+      {:ok, %Proto.BluetoothGATTWriteResponse{address: 0xAABB, handle: 7}, _} = recv_struct(socket, buf)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "Notify enable + multiple notify-data frames + disable", %{port: port} do
+      {socket, handler_pid, buf} = connect_and_own(port, 0xAABB)
+
+      send_struct(socket, %Proto.BluetoothGATTNotifyRequest{address: 0xAABB, handle: 9, enable: true})
+      assert_receive {:gatt_notify, 0xAABB, 9, true}, 1_000
+
+      send(handler_pid, {:espex_ble_gatt_notify, 0xAABB, 9, {:ok, :enabled}})
+
+      {:ok, %Proto.BluetoothGATTNotifyResponse{address: 0xAABB, handle: 9}, buf} =
+        recv_struct(socket, buf)
+
+      send(handler_pid, {:espex_ble_gatt_notify_data, 0xAABB, 9, "tick1"})
+      send(handler_pid, {:espex_ble_gatt_notify_data, 0xAABB, 9, "tick2"})
+
+      {:ok, %Proto.BluetoothGATTNotifyDataResponse{handle: 9, data: "tick1"}, buf} =
+        recv_struct(socket, buf)
+
+      {:ok, %Proto.BluetoothGATTNotifyDataResponse{handle: 9, data: "tick2"}, buf} =
+        recv_struct(socket, buf)
+
+      send_struct(socket, %Proto.BluetoothGATTNotifyRequest{address: 0xAABB, handle: 9, enable: false})
+      assert_receive {:gatt_notify, 0xAABB, 9, false}, 1_000
+      send(handler_pid, {:espex_ble_gatt_notify, 0xAABB, 9, {:ok, :disabled}})
+
+      {:ok, %Proto.BluetoothGATTNotifyResponse{handle: 9}, _} = recv_struct(socket, buf)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "GATT request from a non-owning connection gets BluetoothGATTErrorResponse with not_connected (-2)",
+         %{port: port} do
+      socket = connect(port)
+
+      # Did NOT issue a CONNECT first — connection doesn't own the address.
+      send_struct(socket, %Proto.BluetoothGATTReadRequest{address: 0xAABB, handle: 7})
+
+      {:ok, response, _} = recv_struct(socket)
+
+      assert %Proto.BluetoothGATTErrorResponse{address: 0xAABB, handle: 7, error: -2} = response
+      # And the adapter must NOT have seen the call.
+      refute_receive {:gatt_read, 0xAABB, 7}, 100
+
+      :gen_tcp.close(socket)
+    end
+
+    test "GATT request from a connection that owns a DIFFERENT address still gets not_connected", %{port: port} do
+      {socket, _handler_pid, buf} = connect_and_own(port, 0xAABB)
+
+      # Owned 0xAABB, but asking about 0xCCDD.
+      send_struct(socket, %Proto.BluetoothGATTReadRequest{address: 0xCCDD, handle: 7})
+
+      {:ok, response, _} = recv_struct(socket, buf)
+      assert %Proto.BluetoothGATTErrorResponse{address: 0xCCDD, handle: 7, error: -2} = response
+      refute_receive {:gatt_read, 0xCCDD, _}, 100
 
       :gen_tcp.close(socket)
     end

@@ -29,6 +29,8 @@ and a complete example:
 - `Espex.SerialProxy`
 - `Espex.ZWaveProxy`
 - `Espex.InfraredProxy`
+- `Espex.BluetoothScanner`
+- `Espex.BluetoothProxy`
 - `Espex.EntityProvider`
 - `Espex.Mdns`
 
@@ -38,8 +40,11 @@ and a complete example:
   `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports
 - TCP server with one process per client connection
 - Sub-device support — advertise multiple logical devices under one node
-- Built-in message handling for the Serial Proxy, Z-Wave Proxy, and Infrared
-  Proxy feature sets
+- Built-in message handling for the Serial Proxy, Z-Wave Proxy, Infrared
+  Proxy, and Bluetooth Proxy feature sets — the BLE side covers passive
+  raw-advertisement scanning, active connections with cross-connection
+  ownership locking, GATT read / write / notify, pairing, and
+  `connections_free` reporting
 - Server-side state push via `Espex.push_state/2` so adapters and
   `EntityProvider` implementations can update live values
 - Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
@@ -50,6 +55,8 @@ and a complete example:
   - `Espex.SerialProxy`
   - `Espex.ZWaveProxy`
   - `Espex.InfraredProxy`
+  - `Espex.BluetoothScanner` (passive raw advertisements)
+  - `Espex.BluetoothProxy` (active connect/disconnect, GATT, pairing)
   - `Espex.EntityProvider`
 
 ## Installation

@@ -562,6 +562,72 @@ defmodule Espex.Connection do
     push_connections_free(socket, state)
   end
 
+  defp interpret_action(socket, state, {:ble_gatt_get_services, address}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_get_services(address)
+      |> log_adapter_error(state.peer, "BLE gatt_get_services")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, 0)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_gatt_read, address, handle}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_read(address, handle)
+      |> log_adapter_error(state.peer, "BLE gatt_read")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, handle)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_gatt_write, address, handle, data, response?}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_write(address, handle, data, response?)
+      |> log_adapter_error(state.peer, "BLE gatt_write")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, handle)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_gatt_read_descriptor, address, handle}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_read_descriptor(address, handle)
+      |> log_adapter_error(state.peer, "BLE gatt_read_descriptor")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, handle)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_gatt_write_descriptor, address, handle, data}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_write_descriptor(address, handle, data)
+      |> log_adapter_error(state.peer, "BLE gatt_write_descriptor")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, handle)
+    end
+  end
+
+  defp interpret_action(socket, state, {:ble_gatt_notify, address, handle, enable?}) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      state.adapters.bluetooth_proxy.gatt_notify(address, handle, enable?)
+      |> log_adapter_error(state.peer, "BLE gatt_notify")
+
+      {:cont, state}
+    else
+      gatt_not_connected(socket, state, address, handle)
+    end
+  end
+
   defp interpret_action(_socket, state, {:entity_command, command}) do
     state.adapters.entity_provider.handle_command(command)
     |> log_adapter_error(state.peer, "entity command")
@@ -819,6 +885,25 @@ defmodule Espex.Connection do
   # CONNECT) — see scratchpad note from PR 3.
   defp ble_optional?(adapter, fun, arity) do
     Code.ensure_loaded?(adapter) and function_exported?(adapter, fun, arity)
+  end
+
+  # Non-owner GATT request — send the proto's error envelope rather
+  # than calling the adapter. Used by every interpret_action GATT
+  # clause when the address isn't in this connection's
+  # `bluetooth_owned` set (i.e. a stale request, or a client
+  # mis-routing).
+  defp gatt_not_connected(socket, state, address, handle) do
+    Logger.debug(
+      "Espex #{state.peer} GATT request for unowned address #{inspect(address)} (handle #{handle}) — sending error envelope"
+    )
+
+    response = %Proto.BluetoothGATTErrorResponse{
+      address: address,
+      handle: handle,
+      error: BluetoothProxy.ErrorCodes.not_connected()
+    }
+
+    send_or_halt(socket, state, response)
   end
 
   defp ble_connect_after_claim(socket, state, address, opts) do
