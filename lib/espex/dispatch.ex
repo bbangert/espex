@@ -557,55 +557,82 @@ defmodule Espex.Dispatch do
     {state, [{:send, response}]}
   end
 
-  def handle_event(state, {:espex_ble_gatt_service, address, %BluetoothProxy.Service{} = service}) do
-    # Spec allows multiple services per response; we stream one per frame
-    # for adapter simplicity (the proto field is `repeated` so any count
-    # is wire-valid).
-    response = %Proto.BluetoothGATTGetServicesResponse{
-      address: address,
-      services: [BluetoothProxy.Service.to_proto(service)]
-    }
+  # GATT event handlers gate every outbound proto on
+  # `ConnectionState.bluetooth_owns?/2`. A late event (e.g. an
+  # in-flight read response that arrives after the client issued
+  # DISCONNECT) is dropped silently so we don't forward stale GATT
+  # frames for a peripheral the connection no longer owns. Mirrors the
+  # `{:espex_ble_connection, _, {:ok, _}}` pattern.
 
-    {state, [{:send, response}]}
+  def handle_event(state, {:espex_ble_gatt_service, address, %BluetoothProxy.Service{} = service}) do
+    if_gatt_owned(state, address, fn ->
+      # Spec allows multiple services per response; we stream one per frame
+      # for adapter simplicity (the proto field is `repeated` so any count
+      # is wire-valid).
+      [
+        {:send,
+         %Proto.BluetoothGATTGetServicesResponse{
+           address: address,
+           services: [BluetoothProxy.Service.to_proto(service)]
+         }}
+      ]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_services_done, address}) do
-    {state, [{:send, %Proto.BluetoothGATTGetServicesDoneResponse{address: address}}]}
+    if_gatt_owned(state, address, fn ->
+      [{:send, %Proto.BluetoothGATTGetServicesDoneResponse{address: address}}]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_read, address, handle, {:ok, data}}) do
-    response = %Proto.BluetoothGATTReadResponse{address: address, handle: handle, data: data}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [{:send, %Proto.BluetoothGATTReadResponse{address: address, handle: handle, data: data}}]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_read, address, handle, {:error, error_code}}) do
-    response = %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [
+        {:send, %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}}
+      ]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_write, address, handle, {:ok, _}}) do
-    response = %Proto.BluetoothGATTWriteResponse{address: address, handle: handle}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [{:send, %Proto.BluetoothGATTWriteResponse{address: address, handle: handle}}]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_write, address, handle, {:error, error_code}}) do
-    response = %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [
+        {:send, %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}}
+      ]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_notify, address, handle, {:ok, _}}) do
-    response = %Proto.BluetoothGATTNotifyResponse{address: address, handle: handle}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [{:send, %Proto.BluetoothGATTNotifyResponse{address: address, handle: handle}}]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_notify, address, handle, {:error, error_code}}) do
-    response = %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [
+        {:send, %Proto.BluetoothGATTErrorResponse{address: address, handle: handle, error: error_code}}
+      ]
+    end)
   end
 
   def handle_event(state, {:espex_ble_gatt_notify_data, address, handle, data}) do
-    response = %Proto.BluetoothGATTNotifyDataResponse{address: address, handle: handle, data: data}
-    {state, [{:send, response}]}
+    if_gatt_owned(state, address, fn ->
+      [
+        {:send, %Proto.BluetoothGATTNotifyDataResponse{address: address, handle: handle, data: data}}
+      ]
+    end)
   end
 
   def handle_event(state, {:espex_state_update, %_{} = struct}) do
@@ -806,6 +833,17 @@ defmodule Espex.Dispatch do
       {state, [action]}
     else
       {state, [{:log, :info, "BLE GATT request ignored — no adapter configured"}]}
+    end
+  end
+
+  # Drop GATT events for addresses this connection doesn't own (late
+  # arrivals after disconnect/release). Called by every GATT
+  # handle_event clause.
+  defp if_gatt_owned(state, address, build_actions) do
+    if ConnectionState.bluetooth_owns?(state, address) do
+      {state, build_actions.()}
+    else
+      {state, []}
     end
   end
 

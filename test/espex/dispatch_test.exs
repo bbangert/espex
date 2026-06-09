@@ -930,6 +930,13 @@ defmodule Espex.DispatchTest do
   describe "BluetoothGATT events" do
     alias Espex.BluetoothProxy.{Characteristic, Descriptor, Service}
 
+    # All GATT events are gated on ownership — a late event after
+    # disconnect would otherwise leak to the client. Each test
+    # pre-owns the address through ConnectionState.add_bluetooth_owned/2.
+    defp owning_state(address \\ 0xAABB) do
+      state() |> ConnectionState.add_bluetooth_owned(address)
+    end
+
     test "{:espex_ble_gatt_service, ...} wraps one service per GetServicesResponse" do
       service =
         Service.new(
@@ -946,7 +953,7 @@ defmodule Espex.DispatchTest do
         )
 
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_service, 0xAABB, service})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_service, 0xAABB, service})
 
       assert %Proto.BluetoothGATTGetServicesResponse{
                address: 0xAABB,
@@ -956,59 +963,78 @@ defmodule Espex.DispatchTest do
 
     test "{:espex_ble_gatt_services_done, address} → GetServicesDoneResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_services_done, 0xAABB})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_services_done, 0xAABB})
 
       assert %Proto.BluetoothGATTGetServicesDoneResponse{address: 0xAABB} = response
     end
 
     test "{:espex_ble_gatt_read, _, _, {:ok, data}} → ReadResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_read, 0xAABB, 7, {:ok, "hello"}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_read, 0xAABB, 7, {:ok, "hello"}})
 
       assert %Proto.BluetoothGATTReadResponse{address: 0xAABB, handle: 7, data: "hello"} = response
     end
 
     test "{:espex_ble_gatt_read, _, _, {:error, code}} → ErrorResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_read, 0xAABB, 7, {:error, -5}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_read, 0xAABB, 7, {:error, -5}})
 
       assert %Proto.BluetoothGATTErrorResponse{address: 0xAABB, handle: 7, error: -5} = response
     end
 
     test "{:espex_ble_gatt_write, _, _, {:ok, _}} → WriteResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_write, 0xAABB, 7, {:ok, :ack}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_write, 0xAABB, 7, {:ok, :ack}})
 
       assert %Proto.BluetoothGATTWriteResponse{address: 0xAABB, handle: 7} = response
     end
 
     test "{:espex_ble_gatt_write, _, _, {:error, code}} → ErrorResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_write, 0xAABB, 7, {:error, -6}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_write, 0xAABB, 7, {:error, -6}})
 
       assert %Proto.BluetoothGATTErrorResponse{address: 0xAABB, handle: 7, error: -6} = response
     end
 
     test "{:espex_ble_gatt_notify, _, _, {:ok, _}} → NotifyResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_notify, 0xAABB, 7, {:ok, :ack}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_notify, 0xAABB, 7, {:ok, :ack}})
 
       assert %Proto.BluetoothGATTNotifyResponse{address: 0xAABB, handle: 7} = response
     end
 
     test "{:espex_ble_gatt_notify, _, _, {:error, code}} → ErrorResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_notify, 0xAABB, 9, {:error, -7}})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_notify, 0xAABB, 9, {:error, -7}})
 
       assert %Proto.BluetoothGATTErrorResponse{address: 0xAABB, handle: 9, error: -7} = response
     end
 
     test "{:espex_ble_gatt_notify_data, ...} → NotifyDataResponse" do
       {_s, [{:send, response}]} =
-        Dispatch.handle_event(state(), {:espex_ble_gatt_notify_data, 0xAABB, 7, "tick"})
+        Dispatch.handle_event(owning_state(), {:espex_ble_gatt_notify_data, 0xAABB, 7, "tick"})
 
       assert %Proto.BluetoothGATTNotifyDataResponse{address: 0xAABB, handle: 7, data: "tick"} =
                response
+    end
+
+    test "GATT events for an unowned address are dropped silently" do
+      # Late event after disconnect/release: ownership cleared but the
+      # adapter's in-flight read response still arrives. Mustn't forward.
+      events = [
+        {:espex_ble_gatt_read, 0xCCDD, 7, {:ok, "stale"}},
+        {:espex_ble_gatt_write, 0xCCDD, 7, {:ok, :ack}},
+        {:espex_ble_gatt_notify, 0xCCDD, 7, {:ok, :enabled}},
+        {:espex_ble_gatt_notify_data, 0xCCDD, 7, "tick"},
+        {:espex_ble_gatt_services_done, 0xCCDD}
+      ]
+
+      # State owns 0xAABB but not 0xCCDD.
+      s = owning_state(0xAABB)
+
+      for event <- events do
+        assert {^s, []} = Dispatch.handle_event(s, event)
+      end
     end
   end
 
