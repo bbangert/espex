@@ -96,7 +96,7 @@ defmodule Espex.Frame do
   def decode_frame(<<@plaintext_indicator, after_indicator::binary>> = buffer) do
     with {:ok, payload_size, after_size} <- decode_varint(after_indicator),
          {:ok, type_id, after_type} <- decode_varint(after_size),
-         <<payload::binary-size(payload_size), rest::binary>> <- after_type do
+         <<payload::binary-size(^payload_size), rest::binary>> <- after_type do
       {:ok, type_id, payload, rest}
     else
       _ -> {:incomplete, buffer}
