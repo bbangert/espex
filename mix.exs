@@ -2,7 +2,7 @@ defmodule Espex.MixProject do
   use Mix.Project
 
   @app :espex
-  @version "0.1.2"
+  @version "0.2.0"
   @source_url "https://github.com/bbangert/espex"
 
   def project do
