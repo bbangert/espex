@@ -107,11 +107,13 @@ defmodule Espex.KeepaliveTest do
 
   test "inbound traffic resets the idle clock", %{port: port} do
     socket = connect(port)
+    send_struct(socket, %Proto.HelloRequest{client_info: "keepalive-test"})
+    {:ok, %Proto.HelloResponse{}, hello_rest} = recv_struct(socket)
 
     # Send a request every 100 ms (well inside the 300 ms idle window) and
     # drain its response: no PingRequest may interleave while we are active.
     rest =
-      Enum.reduce(1..6, <<>>, fn _i, buffer ->
+      Enum.reduce(1..6, hello_rest, fn _i, buffer ->
         send_struct(socket, %Proto.DeviceInfoRequest{})
         {:ok, response, rest} = recv_struct(socket, buffer)
         assert %Proto.DeviceInfoResponse{} = response

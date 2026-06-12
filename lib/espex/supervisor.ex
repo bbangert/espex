@@ -48,9 +48,13 @@ defmodule Espex.Supervisor do
   own client→device pings whenever it is *receiving* data — a device that
   streams (e.g. BLE advertisements) therefore sees a permanently silent
   inbound side on a healthy connection, and any naive read timeout will
-  cycle it. `read_timeout` (passed through to ThousandIsland) stays as a
-  hard backstop well above idle + grace, reaping connections wedged at
-  the transport level.
+  cycle it. `read_timeout` (passed through to ThousandIsland) is a hard
+  backstop that reaps connections wedged at the transport level. Keep it
+  above `keepalive_idle_ms + keepalive_grace_ms` so a healthy-but-idle
+  client always gets its full ping-and-grace window before ThousandIsland
+  times out — the 180 s default clears the 60 s + 60 s keepalive defaults;
+  if you shorten `read_timeout` or lengthen the keepalive intervals, raise
+  it to match.
   """
 
   use Supervisor
