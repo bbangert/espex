@@ -231,9 +231,11 @@ defmodule Espex.BluetoothProxyIntegrationTest do
       })
 
       assert_receive {:disconnect, 0xAABB}, 1_000
-      # Server.ble_owner is a sync call so by the time it returns, the
-      # release has been processed.
-      assert Server.ble_owner(server_name, 0xAABB) == nil
+      # The handler notifies the adapter (which sends us :disconnect) *before*
+      # it calls Server.release_ble_owner, and that release runs in a different
+      # process — so receiving :disconnect doesn't mean the release has landed.
+      # Poll instead of assuming it has.
+      wait_until(fn -> Server.ble_owner(server_name, 0xAABB) == nil end)
 
       :gen_tcp.close(socket)
     end
