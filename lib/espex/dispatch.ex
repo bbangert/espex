@@ -102,6 +102,13 @@ defmodule Espex.Dispatch do
     {state, [{:send, %Proto.PingResponse{}}]}
   end
 
+  # The client answering one of OUR keepalive pings (see Espex.Connection).
+  # The bytes themselves already reset the idle clock in handle_data; the
+  # message needs no further action.
+  def handle_request(state, %Proto.PingResponse{}) do
+    {state, []}
+  end
+
   def handle_request(state, %Proto.DeviceInfoRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
     response = DeviceConfig.to_device_info_response(state.device_config, serial_protos)

@@ -29,12 +29,28 @@ defmodule Espex.Supervisor do
         bluetooth_scanner: MyApp.MyBLEScanner,
         bluetooth_proxy: MyApp.MyBLEProxy,
         entity_provider: MyApp.MyEntities,
-        mdns: Espex.Mdns.MdnsLite
+        mdns: Espex.Mdns.MdnsLite,
+        keepalive_idle_ms: 60_000,            # inbound silence before we ping
+        keepalive_grace_ms: 60_000,           # further silence before we close
+        read_timeout: 180_000                 # hard transport-level backstop
       )
 
   Any adapter key omitted disables that feature. Pass `:mdns` with an
   `Espex.Mdns` adapter module (e.g. `Espex.Mdns.MdnsLite`) to advertise
   the server over mDNS; omit to skip.
+
+  ## Keepalive
+
+  The server pings idle clients the way real ESPHome firmware does:
+  after `keepalive_idle_ms` without inbound bytes it sends a
+  `PingRequest`, and closes only after `keepalive_grace_ms` more of
+  silence. This matters because aioesphomeapi (Home Assistant) skips its
+  own client→device pings whenever it is *receiving* data — a device that
+  streams (e.g. BLE advertisements) therefore sees a permanently silent
+  inbound side on a healthy connection, and any naive read timeout will
+  cycle it. `read_timeout` (passed through to ThousandIsland) stays as a
+  hard backstop well above idle + grace, reaping connections wedged at
+  the transport level.
   """
 
   use Supervisor
@@ -99,13 +115,25 @@ defmodule Espex.Supervisor do
       [
         {Registry, keys: :duplicate, name: registry_name},
         {Server, name: server_name, device_config: device_config, adapters: adapters},
-        {ThousandIsland,
-         port: port,
-         handler_module: Connection,
-         handler_options: [server_name: server_name, registry_name: registry_name],
-         transport_module: ThousandIsland.Transports.TCP,
-         transport_options: [nodelay: true],
-         num_acceptors: num_acceptors}
+        {
+          ThousandIsland,
+          # Hard backstop only: the Connection-level keepalive ping keeps the
+          # inbound side of healthy connections audible well inside this
+          # (ThousandIsland's default of 60s would reap busy-but-quiet
+          # clients — see "Keepalive" in the moduledoc).
+          port: port,
+          handler_module: Connection,
+          handler_options: [
+            server_name: server_name,
+            registry_name: registry_name,
+            keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
+            keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000
+          ],
+          transport_module: ThousandIsland.Transports.TCP,
+          transport_options: [nodelay: true],
+          read_timeout: opts[:read_timeout] || 180_000,
+          num_acceptors: num_acceptors
+        }
       ] ++ mdns_children(opts, device_config, supervisor_name)
 
     Supervisor.init(children, strategy: :rest_for_one)

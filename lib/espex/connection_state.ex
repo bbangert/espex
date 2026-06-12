@@ -51,7 +51,11 @@ defmodule Espex.ConnectionState do
           bluetooth_owned: MapSet.t(non_neg_integer()),
           adapters: adapters(),
           clock_fun: (-> non_neg_integer()),
-          encryption: encryption()
+          encryption: encryption(),
+          keepalive_idle_ms: pos_integer(),
+          keepalive_grace_ms: pos_integer(),
+          keepalive_timer: reference() | nil,
+          keepalive_outstanding: boolean()
         }
 
   @enforce_keys [:device_config, :peer]
@@ -79,7 +83,17 @@ defmodule Espex.ConnectionState do
       entity_provider: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
-    encryption: :disabled
+    encryption: :disabled,
+    # Device-initiated keepalive (see Espex.Connection): after
+    # keepalive_idle_ms of inbound silence we send a PingRequest; after
+    # keepalive_grace_ms more of silence we close. Clients like
+    # aioesphomeapi skip their own pings while they're RECEIVING data, so
+    # a busy device (e.g. a BLE advert stream) sees a totally silent
+    # inbound side on a healthy connection — the device must initiate.
+    keepalive_idle_ms: 60_000,
+    keepalive_grace_ms: 60_000,
+    keepalive_timer: nil,
+    keepalive_outstanding: false
   ]
 
   @doc false

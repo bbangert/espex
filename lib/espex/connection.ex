@@ -48,17 +48,21 @@ defmodule Espex.Connection do
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
         entities: load_entities(adapters),
-        encryption: encryption
+        encryption: encryption,
+        keepalive_idle_ms: Keyword.get(handler_options, :keepalive_idle_ms, 60_000),
+        keepalive_grace_ms: Keyword.get(handler_options, :keepalive_grace_ms, 60_000)
       )
 
     {:ok, _} = Registry.register(registry_name, :subscribers, nil)
     Logger.info("Espex client connected from #{peer} (encryption=#{inspect(encryption)})")
-    {:continue, state}
+    {:continue, reset_keepalive(state)}
   end
 
   @impl ThousandIsland.Handler
   def handle_data(data, socket, state) do
-    state = ConnectionState.append_buffer(state, data)
+    # Any inbound bytes prove the client is alive — restart the keepalive
+    # idle clock and forget an outstanding ping.
+    state = state |> reset_keepalive() |> ConnectionState.append_buffer(data)
 
     case process_buffer(socket, state) do
       {:cont, state} ->
@@ -91,7 +95,33 @@ defmodule Espex.Connection do
     :ok
   end
 
+  # Device-initiated keepalive tick. aioesphomeapi only sends its own pings
+  # when it is NOT receiving data, so on a busy device (BLE advert stream)
+  # the inbound side of a healthy connection is permanently silent — without
+  # this, any inbound read timeout kills perfectly good connections (observed
+  # as Home Assistant reconnecting on an exact 60 s cycle). Mirror real
+  # ESPHome firmware instead: ping the client after `keepalive_idle_ms` of
+  # inbound silence, and close only if `keepalive_grace_ms` more passes
+  # without any inbound bytes (clients answer PingRequest immediately).
   @impl GenServer
+  def handle_info(:espex_keepalive, {socket, state}) do
+    if state.keepalive_outstanding do
+      cleanup(state)
+      Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
+      {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
+    else
+      case send_protobuf(socket, state, %Proto.PingRequest{}) do
+        {:ok, state} ->
+          state = arm_keepalive(%{state | keepalive_outstanding: true}, state.keepalive_grace_ms)
+          {:noreply, {socket, state}}
+
+        {:error, reason} ->
+          cleanup(state)
+          {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
+      end
+    end
+  end
+
   def handle_info(event, {socket, state}) do
     {state, actions} = Dispatch.handle_event(state, event)
 
@@ -103,6 +133,18 @@ defmodule Espex.Connection do
         cleanup(state)
         {:stop, reason, {socket, state}}
     end
+  end
+
+  # Restart the idle clock: cancel any pending tick, clear an outstanding
+  # ping, and arm a fresh idle timer. A cancel/fire race only yields a
+  # premature ping (benign — the client answers and the clock resets).
+  defp reset_keepalive(state) do
+    arm_keepalive(%{state | keepalive_outstanding: false}, state.keepalive_idle_ms)
+  end
+
+  defp arm_keepalive(state, ms) do
+    if state.keepalive_timer, do: Process.cancel_timer(state.keepalive_timer)
+    %{state | keepalive_timer: Process.send_after(self(), :espex_keepalive, ms)}
   end
 
   # ---------------------------------------------------------------------------
