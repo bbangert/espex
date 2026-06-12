@@ -105,20 +105,30 @@ defmodule Espex.Connection do
   # without any inbound bytes (clients answer PingRequest immediately).
   @impl GenServer
   def handle_info(:espex_keepalive, {socket, state}) do
-    if state.keepalive_outstanding do
-      cleanup(state)
-      Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
-      {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
-    else
-      case send_protobuf(socket, state, %Proto.PingRequest{}) do
-        {:ok, state} ->
-          state = arm_keepalive(%{state | keepalive_outstanding: true}, state.keepalive_grace_ms)
-          {:noreply, {socket, state}}
+    cond do
+      state.keepalive_outstanding ->
+        cleanup(state)
+        Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
+        {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
 
-        {:error, reason} ->
-          cleanup(state)
-          {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
-      end
+      # Mid-handshake (:awaiting_hello / {:awaiting_init, _}) send_protobuf
+      # drops the frame but still reports {:ok, state}; marking it "outstanding"
+      # would close the connection a grace period later for a ping the client
+      # never received. Re-arm the idle clock and let read_timeout backstop a
+      # stalled handshake instead.
+      not keepalive_sendable?(state) ->
+        {:noreply, {socket, reset_keepalive(state)}}
+
+      true ->
+        case send_protobuf(socket, state, %Proto.PingRequest{}) do
+          {:ok, state} ->
+            state = arm_keepalive(%{state | keepalive_outstanding: true}, state.keepalive_grace_ms)
+            {:noreply, {socket, state}}
+
+          {:error, reason} ->
+            cleanup(state)
+            {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
+        end
     end
   end
 
@@ -146,6 +156,12 @@ defmodule Espex.Connection do
     if state.keepalive_timer, do: Process.cancel_timer(state.keepalive_timer)
     %{state | keepalive_timer: Process.send_after(self(), :espex_keepalive, ms)}
   end
+
+  # A PingRequest can only be transmitted once the channel is established;
+  # these mirror the two send_protobuf/3 clauses that actually emit a frame.
+  defp keepalive_sendable?(%{encryption: :disabled}), do: true
+  defp keepalive_sendable?(%{encryption: {:active, _, _}}), do: true
+  defp keepalive_sendable?(_), do: false
 
   # ---------------------------------------------------------------------------
   # process_buffer — per-encryption-state frame decoding
