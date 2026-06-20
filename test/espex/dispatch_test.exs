@@ -39,11 +39,20 @@ defmodule Espex.DispatchTest do
   describe "HelloRequest" do
     test "sends HelloResponse with API version and server info" do
       {_state, actions} = Dispatch.handle_request(state(), %Proto.HelloRequest{client_info: "test-client"})
-      assert [{:log, :info, _}, {:send, response}] = actions
+      assert [{:log, :info, _}, {:send, response}, :client_connected] = actions
       assert response.api_version_major == DeviceConfig.api_version_major()
       assert response.api_version_minor == DeviceConfig.api_version_minor()
       assert response.name == "test"
       assert response.server_info =~ "test_proj"
+    end
+
+    test "records client_info/api_version and emits :client_connected" do
+      req = %Proto.HelloRequest{client_info: "HA 2026.1.0", api_version_major: 1, api_version_minor: 9}
+      {new_state, actions} = Dispatch.handle_request(state(), req)
+
+      assert new_state.client_info == "HA 2026.1.0"
+      assert new_state.api_version == {1, 9}
+      assert [{:log, :info, _}, {:send, %Proto.HelloResponse{}}, :client_connected] = actions
     end
   end
 

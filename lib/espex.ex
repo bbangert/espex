@@ -56,9 +56,17 @@ defmodule Espex do
         state: 21.3,
         missing_state: false
       })
+
+  ## Connected clients
+
+  Enumerate the live native-API connections with `connected_clients/1`,
+  and subscribe to changes by configuring an `Espex.ConnectionListener`:
+
+      Espex.connected_clients(MyApp.EspexServer)
+      #=> [%Espex.ClientInfo{peer: "192.168.1.5:54312", encrypted?: true, ...}]
   """
 
-  alias Espex.{DeviceConfig, Server}
+  alias Espex.{ClientInfo, DeviceConfig, Server}
   alias Espex.Supervisor, as: EspexSupervisor
 
   @doc """
@@ -105,5 +113,29 @@ defmodule Espex do
     Registry.dispatch(registry, :subscribers, fn entries ->
       Enum.each(entries, fn {pid, _} -> send(pid, {:espex_state_update, struct}) end)
     end)
+  end
+
+  @doc """
+  List the currently-connected native-API clients as
+  `Espex.ClientInfo` structs.
+
+  This is a non-blocking read of the connection Registry — the source of
+  truth for the live set. Pass a custom `:server_name` if you started the
+  supervisor with one; it defaults to `Espex.Server`.
+
+  Entries appear from TCP accept (so a client that hasn't finished its
+  `HelloRequest` yet shows `client_info: nil` / `api_version: nil`) and
+  vanish when the connection closes. To be told *when* the set changes
+  without polling, configure an `Espex.ConnectionListener`.
+
+      Espex.connected_clients(MyApp.EspexServer)
+      #=> [%Espex.ClientInfo{client_info: "Home Assistant 2026.1.0", ...}]
+  """
+  @spec connected_clients(atom()) :: [ClientInfo.t()]
+  def connected_clients(server_name \\ Server) do
+    registry = EspexSupervisor.client_registry_name(server_name)
+    # Unique-registry entries are {key, pid, value}; key/pid are ignored
+    # ($_ / :_) and the ClientInfo value ($1) is returned for every entry.
+    Registry.select(registry, [{{:_, :_, :"$1"}, [], [:"$1"]}])
   end
 end

@@ -11,6 +11,7 @@ defmodule Espex.ConnectionState do
           | :bluetooth_proxy
           | :entity_provider
           | :psk_store
+          | :connection_listener
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -40,6 +41,11 @@ defmodule Espex.ConnectionState do
           device_config: DeviceConfig.t(),
           peer: String.t(),
           server_name: atom() | nil,
+          client_registry: atom() | nil,
+          client_info: String.t() | nil,
+          api_version: {non_neg_integer(), non_neg_integer()} | nil,
+          connected_at: integer() | nil,
+          last_activity_at: integer() | nil,
           serial_proxies: [SerialProxy.Info.t()],
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
@@ -64,6 +70,11 @@ defmodule Espex.ConnectionState do
     :device_config,
     :peer,
     server_name: nil,
+    client_registry: nil,
+    client_info: nil,
+    api_version: nil,
+    connected_at: nil,
+    last_activity_at: nil,
     buffer: <<>>,
     serial_proxies: [],
     infrared_entities: [],
@@ -82,7 +93,8 @@ defmodule Espex.ConnectionState do
       bluetooth_scanner: nil,
       bluetooth_proxy: nil,
       entity_provider: nil,
-      psk_store: nil
+      psk_store: nil,
+      connection_listener: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
@@ -294,4 +306,20 @@ defmodule Espex.ConnectionState do
   """
   @spec put_encryption(t(), encryption()) :: t()
   def put_encryption(%__MODULE__{} = state, enc), do: %{state | encryption: enc}
+
+  @doc """
+  Record the client identity learned from a `HelloRequest`.
+  """
+  @spec put_client_hello(t(), String.t(), {non_neg_integer(), non_neg_integer()}) :: t()
+  def put_client_hello(%__MODULE__{} = state, client_info, {_major, _minor} = api_version) do
+    %{state | client_info: client_info, api_version: api_version}
+  end
+
+  @doc """
+  Stamp the most recent inbound activity time (epoch seconds).
+  """
+  @spec touch_activity(t(), integer()) :: t()
+  def touch_activity(%__MODULE__{} = state, now) when is_integer(now) do
+    %{state | last_activity_at: now}
+  end
 end

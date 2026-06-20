@@ -30,6 +30,7 @@ defmodule Espex.Supervisor do
         bluetooth_proxy: MyApp.MyBLEProxy,
         entity_provider: MyApp.MyEntities,
         psk_store: MyApp.MyPskStore,        # persists a runtime-provisioned PSK
+        connection_listener: MyApp.Tracker, # notified when the connected-client set changes
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -41,7 +42,10 @@ defmodule Espex.Supervisor do
   the server over mDNS; omit to skip. Pass `:psk_store` with an
   `Espex.PskStore` module to persist a Noise PSK that Home Assistant
   provisions or rotates at runtime; omit to apply provisioned keys to
-  the running server only (lost on restart, with a warning).
+  the running server only (lost on restart, with a warning). Pass
+  `:connection_listener` with an `Espex.ConnectionListener` module to be
+  notified when the connected-client set changes; start it before the
+  Espex child (`:rest_for_one`) so it is ready when the listener opens.
 
   ## Keepalive
 
@@ -73,7 +77,8 @@ defmodule Espex.Supervisor do
     :bluetooth_scanner,
     :bluetooth_proxy,
     :entity_provider,
-    :psk_store
+    :psk_store,
+    :connection_listener
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -116,13 +121,21 @@ defmodule Espex.Supervisor do
     supervisor_name = Keyword.get(opts, :name, __MODULE__)
     server_name = opts[:server_name] || Server
     registry_name = registry_name(server_name)
+    client_registry_name = client_registry_name(server_name)
     num_acceptors = opts[:num_acceptors] || 10
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
 
     children =
       [
+        # Duplicate-key registry: many connections under the single
+        # `:subscribers` key, used for push_state/2 fan-out.
         {Registry, keys: :duplicate, name: registry_name},
+        # Unique-key registry keyed by connection pid, holding each
+        # connection's mutable Espex.ClientInfo snapshot. Unique (not
+        # duplicate) because Registry.update_value/3 — the per-frame
+        # snapshot refresh — is only supported on unique registries.
+        {Registry, keys: :unique, name: client_registry_name},
         {Server, name: server_name, device_config: device_config, adapters: adapters},
         {
           ThousandIsland,
@@ -135,6 +148,7 @@ defmodule Espex.Supervisor do
           handler_options: [
             server_name: server_name,
             registry_name: registry_name,
+            client_registry: client_registry_name,
             keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
             keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000
           ],
@@ -167,6 +181,14 @@ defmodule Espex.Supervisor do
   """
   @spec registry_name(atom()) :: atom()
   def registry_name(server_name), do: Module.concat(server_name, "Registry")
+
+  @doc """
+  Return the conventional connected-clients Registry name for a given
+  server name. This is the unique-key registry that backs
+  `Espex.connected_clients/1`.
+  """
+  @spec client_registry_name(atom()) :: atom()
+  def client_registry_name(server_name), do: Module.concat(server_name, "ClientRegistry")
 
   defp normalise_device_config(%DeviceConfig{} = config), do: config
   defp normalise_device_config(opts) when is_list(opts), do: DeviceConfig.new(opts)

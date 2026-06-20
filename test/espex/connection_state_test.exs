@@ -45,7 +45,8 @@ defmodule Espex.ConnectionStateTest do
                bluetooth_scanner: nil,
                bluetooth_proxy: nil,
                entity_provider: nil,
-               psk_store: nil
+               psk_store: nil,
+               connection_listener: nil
              }
     end
 
