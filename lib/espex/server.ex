@@ -75,6 +75,21 @@ defmodule Espex.Server do
     GenServer.call(server, {:ble_owner, address})
   end
 
+  @doc """
+  Replace the Noise PSK in the stored `device_config` from a
+  runtime-provisioned key (e.g. a `NoiseEncryptionSetKeyRequest`).
+
+  Validates via `DeviceConfig.put_psk/2`: on a valid 32-byte key the
+  config is updated and `:ok` returned; on an invalid length the state
+  is left untouched and `{:error, :invalid_psk_length}` returned. The
+  new key takes effect on the *next* connection — each connection copies
+  the PSK at accept time, so live connections are unaffected.
+  """
+  @spec update_psk(GenServer.server(), binary()) :: :ok | {:error, term()}
+  def update_psk(server \\ __MODULE__, key) when is_binary(key) do
+    GenServer.call(server, {:update_psk, key})
+  end
+
   @impl GenServer
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
@@ -128,6 +143,13 @@ defmodule Espex.Server do
 
   def handle_call({:ble_owner, address}, _from, state) do
     {:reply, ServerState.ble_owner(state, address), state}
+  end
+
+  def handle_call({:update_psk, key}, _from, state) do
+    case DeviceConfig.put_psk(state.device_config, key) do
+      {:ok, config} -> {:reply, :ok, ServerState.put_device_config(state, config)}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
   end
 
   @impl GenServer

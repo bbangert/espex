@@ -38,6 +38,10 @@ and a complete example:
 
 - ESPHome Native API frame encoding/decoding — plaintext and
   `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports
+- Runtime Noise PSK provisioning and rotation — Home Assistant can
+  bootstrap a keyless node's key over plaintext (opt-in) or rotate it
+  over the encrypted channel, with host-app persistence via
+  `Espex.PskStore`
 - TCP server with one process per client connection
 - Sub-device support — advertise multiple logical devices under one node
 - Built-in message handling for the Serial Proxy, Z-Wave Proxy, Infrared
@@ -58,6 +62,7 @@ and a complete example:
   - `Espex.BluetoothScanner` (passive raw advertisements)
   - `Espex.BluetoothProxy` (active connect/disconnect, GATT, pairing)
   - `Espex.EntityProvider`
+  - `Espex.PskStore` (persist a runtime-provisioned Noise PSK)
 
 ## Installation
 
@@ -103,6 +108,33 @@ When a PSK is configured, plaintext clients are rejected with the
 standard "encryption required" signal so Home Assistant's ESPHome
 integration prompts the user for the key. Any adapter key you omit
 disables that feature.
+
+### Runtime key provisioning and rotation
+
+Home Assistant can also set the PSK at runtime via
+`NoiseEncryptionSetKeyRequest`. Two flows are supported:
+
+- **Bootstrap (plaintext).** Set `accepts_key_provisioning: true` on a
+  keyless node. It then advertises encryption support — HA's trigger to
+  offer provisioning — and accepts a key over the plaintext channel.
+  The first key crosses the wire in plaintext by protocol design, so
+  only enable this on a trusted LAN. The flag is opt-in and defaults to
+  `false` (no behaviour change for existing users).
+- **Rotation (encrypted).** A node that already has a PSK always accepts
+  a new key over its authenticated, encrypted channel — no flag needed.
+
+A provisioned key takes effect on the **next** connection (each
+connection copies the PSK at accept time; HA reconnects automatically).
+Pass a [`Espex.PskStore`](`Espex.PskStore`) module as `:psk_store` to
+persist the key so it survives a restart — without one, espex applies
+the key to the running server only and logs a warning:
+
+```elixir
+Espex.start_link(
+  device_config: [name: "my-device", accepts_key_provisioning: true],
+  psk_store: MyApp.FilePskStore
+)
+```
 
 ### mDNS advertising
 
