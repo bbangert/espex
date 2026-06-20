@@ -1052,4 +1052,36 @@ defmodule Espex.DispatchTest do
       assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, line_states: 0} = r
     end
   end
+
+  describe "NoiseEncryptionSetKeyRequest" do
+    @key32 :crypto.hash(:sha256, "provisioned")
+
+    test "rotation over an encrypted channel emits :set_psk" do
+      s = state(encryption: {:active, :tx, :rx})
+      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+    end
+
+    test "plaintext bootstrap when opted in emits :set_psk" do
+      cfg = %DeviceConfig{accepts_key_provisioning: true}
+      s = state(device_config: cfg, encryption: :disabled)
+      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+    end
+
+    test "plaintext without opt-in is rejected with success: false and no :set_psk" do
+      cfg = %DeviceConfig{accepts_key_provisioning: false}
+      s = state(device_config: cfg, encryption: :disabled)
+
+      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+      assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
+      refute Enum.any?(actions, &match?({:set_psk, _}, &1))
+    end
+
+    test "wrong-length key is rejected even over an encrypted channel" do
+      s = state(encryption: {:active, :tx, :rx})
+
+      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: <<1, 2, 3>>})
+      assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
+      refute Enum.any?(actions, &match?({:set_psk, _}, &1))
+    end
+  end
 end

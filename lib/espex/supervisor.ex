@@ -29,6 +29,7 @@ defmodule Espex.Supervisor do
         bluetooth_scanner: MyApp.MyBLEScanner,
         bluetooth_proxy: MyApp.MyBLEProxy,
         entity_provider: MyApp.MyEntities,
+        psk_store: MyApp.MyPskStore,        # persists a runtime-provisioned PSK
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -37,7 +38,10 @@ defmodule Espex.Supervisor do
 
   Any adapter key omitted disables that feature. Pass `:mdns` with an
   `Espex.Mdns` adapter module (e.g. `Espex.Mdns.MdnsLite`) to advertise
-  the server over mDNS; omit to skip.
+  the server over mDNS; omit to skip. Pass `:psk_store` with an
+  `Espex.PskStore` module to persist a Noise PSK that Home Assistant
+  provisions or rotates at runtime; omit to apply provisioned keys to
+  the running server only (lost on restart, with a warning).
 
   ## Keepalive
 
@@ -68,7 +72,8 @@ defmodule Espex.Supervisor do
     :infrared_proxy,
     :bluetooth_scanner,
     :bluetooth_proxy,
-    :entity_provider
+    :entity_provider,
+    :psk_store
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()

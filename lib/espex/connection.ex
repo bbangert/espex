@@ -693,6 +693,23 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
+  defp interpret_action(socket, state, {:set_psk, key}) do
+    # Persist first (if a store is configured), then apply to the running
+    # server. A store failure aborts the update and reports success:
+    # false so a key is never applied that we couldn't durably record.
+    # The new key takes effect on the NEXT connection; this live one is
+    # untouched.
+    with :ok <- store_psk(state, key),
+         :ok <- Server.update_psk(state.server_name, key) do
+      Logger.info("Espex #{state.peer} Noise PSK provisioned — effective on next connection")
+      send_or_halt(socket, state, %Proto.NoiseEncryptionSetKeyResponse{success: true})
+    else
+      {:error, reason} ->
+        Logger.warning("Espex #{state.peer} SetKey failed: #{inspect(reason)}")
+        send_or_halt(socket, state, %Proto.NoiseEncryptionSetKeyResponse{success: false})
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Sending
   # ---------------------------------------------------------------------------
@@ -897,6 +914,20 @@ defmodule Espex.Connection do
   end
 
   # Pattern-matched helpers used by interpret_action/3 above.
+
+  # Persist a provisioned PSK through the configured store. With no
+  # store, apply it anyway but warn — it won't survive a restart.
+  defp store_psk(%{adapters: %{psk_store: nil}} = state, _key) do
+    Logger.warning(
+      "Espex #{state.peer} PSK provisioned with no :psk_store configured — applied to the running server only, lost on restart"
+    )
+
+    :ok
+  end
+
+  defp store_psk(%{adapters: %{psk_store: module}}, key) do
+    module.store_psk(key)
+  end
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok
 

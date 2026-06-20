@@ -37,6 +37,23 @@ defmodule Espex.DeviceConfig do
 
   `new/1` normalises both forms to the raw binary. When a PSK is set,
   the server rejects plaintext clients — they have to use the key.
+
+  ## `accepts_key_provisioning` (runtime PSK provisioning)
+
+  Defaults to `false`. When `true`, the server accepts a
+  `NoiseEncryptionSetKeyRequest` over a **plaintext** connection from a
+  keyless node, letting Home Assistant bootstrap the Noise PSK at
+  runtime. A keyless node with this flag set advertises
+  `api_encryption_supported: true`, which is what triggers HA's
+  provisioning flow.
+
+  **Security note:** the first key crosses the wire in plaintext (this is
+  inherent to bootstrapping an as-yet-keyless node), so only enable this
+  on a trusted LAN. Rotation over an already-encrypted connection is
+  always accepted regardless of this flag — the channel is already
+  authenticated. A newly provisioned key takes effect on the *next*
+  connection (each connection copies the PSK at accept time); the live
+  connection is untouched. See `Espex.PskStore` for persisting the key.
   """
 
   alias Espex.DeviceConfig.Device
@@ -70,7 +87,8 @@ defmodule Espex.DeviceConfig do
           zwave_home_id: non_neg_integer(),
           bluetooth_feature_flags: non_neg_integer(),
           devices: [Device.t()],
-          psk: <<_::256>> | nil
+          psk: <<_::256>> | nil,
+          accepts_key_provisioning: boolean()
         }
 
   defstruct name: "espex",
@@ -88,7 +106,8 @@ defmodule Espex.DeviceConfig do
             zwave_home_id: 0,
             bluetooth_feature_flags: 0,
             devices: [],
-            psk: nil
+            psk: nil,
+            accepts_key_provisioning: false
 
   @doc """
   Build a new `%DeviceConfig{}` from keyword options.
@@ -134,6 +153,34 @@ defmodule Espex.DeviceConfig do
   def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
 
   @doc """
+  Set the PSK from runtime-supplied input (e.g. a
+  `NoiseEncryptionSetKeyRequest`), returning a tagged result.
+
+  Unlike `new/1` this never raises — the key comes from a client at
+  runtime, not from config, so an invalid length is an expected outcome
+  rather than a programmer error. Accepts a raw 32-byte binary or a
+  base64-encoded 32-byte string; anything else returns
+  `{:error, :invalid_psk_length}` and leaves the config unchanged.
+  """
+  @spec put_psk(t(), binary()) :: {:ok, t()} | {:error, :invalid_psk_length}
+  def put_psk(%__MODULE__{} = config, key) when is_binary(key) do
+    case validate_psk(key) do
+      {:ok, psk} -> {:ok, %{config | psk: psk}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @spec validate_psk(binary()) :: {:ok, <<_::256>>} | {:error, :invalid_psk_length}
+  defp validate_psk(<<_::binary-size(32)>> = raw), do: {:ok, raw}
+
+  defp validate_psk(bin) do
+    case Base.decode64(String.trim(bin), padding: true) do
+      {:ok, <<_::binary-size(32)>> = decoded} -> {:ok, decoded}
+      _ -> {:error, :invalid_psk_length}
+    end
+  end
+
+  @doc """
   Returns the API version major number this server advertises.
   """
   @spec api_version_major() :: non_neg_integer()
@@ -168,7 +215,7 @@ defmodule Espex.DeviceConfig do
       webserver_port: 0,
       has_deep_sleep: false,
       uses_password: false,
-      api_encryption_supported: encrypted?(config),
+      api_encryption_supported: encrypted?(config) or config.accepts_key_provisioning,
       zwave_proxy_feature_flags: config.zwave_feature_flags,
       zwave_home_id: config.zwave_home_id,
       bluetooth_proxy_feature_flags: config.bluetooth_feature_flags,

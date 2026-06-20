@@ -70,6 +70,7 @@ defmodule Espex.Dispatch do
           | {:ble_gatt_write_descriptor, address :: non_neg_integer(), handle :: non_neg_integer(), data :: binary()}
           | {:ble_gatt_notify, address :: non_neg_integer(), handle :: non_neg_integer(), enable? :: boolean()}
           | {:entity_command, struct()}
+          | {:set_psk, binary()}
 
   @type result :: {ConnectionState.t(), [action()]}
 
@@ -412,6 +413,29 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # -- Noise PSK provisioning / rotation --
+
+  def handle_request(state, %Proto.NoiseEncryptionSetKeyRequest{key: key}) do
+    cond do
+      byte_size(key) != 32 ->
+        {state,
+         [
+           {:log, :warning, "SetKey rejected — key must be 32 bytes, got #{byte_size(key)}"},
+           {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}}
+         ]}
+
+      set_key_allowed?(state) ->
+        {state, [{:set_psk, key}]}
+
+      true ->
+        {state,
+         [
+           {:log, :warning, "SetKey rejected over plaintext — accepts_key_provisioning is false"},
+           {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}}
+         ]}
+    end
+  end
+
   # -- Catch-all --
 
   def handle_request(state, message) do
@@ -695,6 +719,14 @@ defmodule Espex.Dispatch do
       status: :SERIAL_PROXY_STATUS_ERROR,
       error_message: inspect(reason)
     }
+  end
+
+  # SetKey is accepted over an already-encrypted channel (rotation —
+  # the channel is authenticated) or over plaintext only when the node
+  # opted into runtime provisioning while keyless (bootstrap).
+  defp set_key_allowed?(state) do
+    match?({:active, _, _}, state.encryption) or
+      (state.encryption == :disabled and state.device_config.accepts_key_provisioning)
   end
 
   defp unpack_line_states(bits) do

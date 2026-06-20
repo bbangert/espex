@@ -175,6 +175,29 @@ defmodule Espex.Test.FakeEntityProvider do
   def handle_command(_message), do: :ok
 end
 
+defmodule Espex.Test.PidPskStore do
+  @moduledoc """
+  Test `Espex.PskStore` that forwards the provisioned key to the test
+  process registered under `:persistent_term` key `:espex_psk_test_pid`,
+  so a test can `assert_receive {:psk_stored, key}`.
+  """
+  @behaviour Espex.PskStore
+
+  @impl true
+  def store_psk(<<_::256>> = psk) do
+    send(:persistent_term.get(:espex_psk_test_pid), {:psk_stored, psk})
+    :ok
+  end
+end
+
+defmodule Espex.Test.FailingPskStore do
+  @moduledoc "Test `Espex.PskStore` whose write always fails."
+  @behaviour Espex.PskStore
+
+  @impl true
+  def store_psk(<<_::256>>), do: {:error, :disk_full}
+end
+
 defmodule Espex.Test.FakeBluetoothScanner do
   @moduledoc """
   No-op `Espex.BluetoothScanner` adapter that implements every callback

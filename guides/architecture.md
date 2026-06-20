@@ -112,6 +112,38 @@ The encrypted transport fully replaces the varint-based plaintext
 framing once the handshake completes — every subsequent inbound and
 outbound protobuf message flows through the outer+inner path.
 
+### Runtime PSK provisioning and rotation
+
+Home Assistant can set the Noise key at runtime with
+`NoiseEncryptionSetKeyRequest` (msg 124), and Espex supports both the
+keyless bootstrap and the encrypted rotation:
+
+- **Bootstrap over plaintext.** A keyless node with
+  `DeviceConfig.accepts_key_provisioning == true` advertises
+  `api_encryption_supported: true` (the signal HA uses to offer
+  provisioning) and accepts a SetKey over the plaintext channel. This
+  is strictly opt-in (default `false`) because the first key crosses the
+  wire in plaintext — acceptable only on a trusted LAN.
+- **Rotation over the encrypted channel.** A node that already has a PSK
+  accepts a SetKey over its authenticated `{:active, _, _}` channel
+  unconditionally — no flag required.
+
+`Espex.Dispatch` is the pure decision point: it validates the 32-byte
+length and the transport/opt-in gate, emitting a `{:set_psk, key}`
+action only when allowed (otherwise a `success: false` response). The
+effectful half lives in `Espex.Connection.interpret_action/3`: it calls
+the configured `Espex.PskStore` (if any), then `Espex.Server.update_psk/2`
+to swap the key in the cross-connection `device_config`, and replies
+`NoiseEncryptionSetKeyResponse{success: true}`. A store failure aborts
+the update and replies `success: false`, so a key is never adopted that
+couldn't be persisted.
+
+Because each connection copies the PSK from `Espex.Server` at accept
+time (see ["Per-connection state"](#module-per-connection-state)), a new
+key takes effect on the **next** connection; the live connection keeps
+its own cipher state and is untouched. HA reconnects automatically after
+a successful SetKey, picking up the new key on the fresh handshake.
+
 ## `push_state/2` fan-out
 
 When your application wants to push a state update to every currently
@@ -191,6 +223,9 @@ Most fields are optional. The ones that matter most:
 - `psk` — pre-shared key for Noise encryption. Accepts either a raw
   32-byte binary or a 44-character base64 string (the format that
   appears in ESPHome YAML).
+- `accepts_key_provisioning` — opt-in (default `false`) that lets a
+  keyless node accept a runtime PSK over plaintext; see ["Runtime PSK
+  provisioning and rotation"](#module-runtime-psk-provisioning-and-rotation).
 
 `DeviceConfig.encrypted?/1` returns whether a PSK is set. The handler
 uses this to decide between plaintext and Noise transport at

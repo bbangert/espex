@@ -21,7 +21,8 @@ defmodule Espex.ServerStateTest do
              infrared_proxy: nil,
              bluetooth_scanner: nil,
              bluetooth_proxy: nil,
-             entity_provider: nil
+             entity_provider: nil,
+             psk_store: nil
            }
   end
 

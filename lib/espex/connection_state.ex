@@ -10,6 +10,7 @@ defmodule Espex.ConnectionState do
           | :bluetooth_scanner
           | :bluetooth_proxy
           | :entity_provider
+          | :psk_store
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -80,7 +81,8 @@ defmodule Espex.ConnectionState do
       infrared_proxy: nil,
       bluetooth_scanner: nil,
       bluetooth_proxy: nil,
-      entity_provider: nil
+      entity_provider: nil,
+      psk_store: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
