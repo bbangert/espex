@@ -1063,32 +1063,53 @@ defmodule Espex.DispatchTest do
   end
 
   describe "NoiseEncryptionSetKeyRequest" do
+    # Home Assistant sends the 32-byte PSK base64-encoded on the wire (44 bytes).
+    # @key32 is the decoded PSK that must reach :set_psk; @key_b64 is what HA puts
+    # in the request's key field.
     @key32 :crypto.hash(:sha256, "provisioned")
+    @key_b64 Base.encode64(@key32)
 
-    test "rotation over an encrypted channel emits :set_psk" do
+    test "rotation over an encrypted channel base64-decodes and emits :set_psk" do
       s = state(encryption: {:active, :tx, :rx})
-      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key_b64})
     end
 
-    test "plaintext bootstrap when opted in emits :set_psk" do
+    test "plaintext bootstrap when opted in base64-decodes and emits :set_psk" do
       cfg = %DeviceConfig{accepts_key_provisioning: true}
       s = state(device_config: cfg, encryption: :disabled)
-      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+      assert {^s, [{:set_psk, @key32}]} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key_b64})
     end
 
     test "plaintext without opt-in is rejected with success: false and no :set_psk" do
       cfg = %DeviceConfig{accepts_key_provisioning: false}
       s = state(device_config: cfg, encryption: :disabled)
 
-      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
+      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key_b64})
       assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
       refute Enum.any?(actions, &match?({:set_psk, _}, &1))
     end
 
-    test "wrong-length key is rejected even over an encrypted channel" do
+    test "non-base64 garbage is rejected even over an encrypted channel" do
       s = state(encryption: {:active, :tx, :rx})
 
       assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: <<1, 2, 3>>})
+      assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
+      refute Enum.any?(actions, &match?({:set_psk, _}, &1))
+    end
+
+    test "valid base64 that decodes to the wrong length is rejected" do
+      s = state(encryption: {:active, :tx, :rx})
+      short = Base.encode64(:crypto.strong_rand_bytes(16))
+
+      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: short})
+      assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
+      refute Enum.any?(actions, &match?({:set_psk, _}, &1))
+    end
+
+    test "a raw (unencoded) 32-byte key is rejected — HA always base64-encodes" do
+      s = state(encryption: {:active, :tx, :rx})
+
+      assert {^s, actions} = Dispatch.handle_request(s, %Proto.NoiseEncryptionSetKeyRequest{key: @key32})
       assert {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}} in actions
       refute Enum.any?(actions, &match?({:set_psk, _}, &1))
     end
