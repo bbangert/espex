@@ -6,7 +6,10 @@ defmodule Espex.PskProvisioningIntegrationTest do
   alias Espex.Test.{FailingPskStore, PidPskStore}
 
   @prologue "NoiseAPIInit" <> <<0, 0>>
+  # @new_key is the raw 32-byte PSK the device stores and re-handshakes with;
+  # @new_key_b64 is what Home Assistant actually puts on the wire (base64).
   @new_key :crypto.hash(:sha256, "freshly-provisioned-key")
+  @new_key_b64 Base.encode64(@new_key)
 
   setup context do
     :persistent_term.put(:espex_psk_test_pid, self())
@@ -143,7 +146,7 @@ defmodule Espex.PskProvisioningIntegrationTest do
       {:ok, %Proto.DeviceInfoResponse{api_encryption_supported: true}, _} = recv_struct(sock)
 
       # Provision the key over plaintext.
-      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key})
+      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key_b64})
       {:ok, %Proto.NoiseEncryptionSetKeyResponse{success: true}, _} = recv_struct(sock)
 
       # The store persisted it and the running server adopted it.
@@ -170,7 +173,7 @@ defmodule Espex.PskProvisioningIntegrationTest do
       %{port: port, server_name: server_name} = ctx
       sock = connect(port)
 
-      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key})
+      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key_b64})
       {:ok, %Proto.NoiseEncryptionSetKeyResponse{success: false}, _} = recv_struct(sock)
 
       # Server still keyless — the failed write blocked adoption.
@@ -184,7 +187,7 @@ defmodule Espex.PskProvisioningIntegrationTest do
       %{port: port, server_name: server_name} = ctx
       sock = connect(port)
 
-      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key})
+      send_struct(sock, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key_b64})
       {:ok, %Proto.NoiseEncryptionSetKeyResponse{success: false}, _} = recv_struct(sock)
 
       assert Server.device_config(server_name).psk == nil
@@ -207,7 +210,7 @@ defmodule Espex.PskProvisioningIntegrationTest do
       sock = connect(port)
       {tx, rx} = handshake(sock, @original)
 
-      _tx = send_encrypted(sock, tx, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key})
+      _tx = send_encrypted(sock, tx, %Proto.NoiseEncryptionSetKeyRequest{key: @new_key_b64})
       {%Proto.NoiseEncryptionSetKeyResponse{success: true}, _rx} = recv_encrypted(sock, rx)
 
       assert_receive {:psk_stored, @new_key}

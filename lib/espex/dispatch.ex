@@ -424,21 +424,25 @@ defmodule Espex.Dispatch do
   # -- Noise PSK provisioning / rotation --
 
   def handle_request(state, %Proto.NoiseEncryptionSetKeyRequest{key: key}) do
-    cond do
-      byte_size(key) != 32 ->
+    # Home Assistant sends the 32-byte Noise PSK base64-encoded on the wire
+    # (44 bytes), matching the ESPHome firmware which base64-decodes the key
+    # field before use. Decode before validating the 32-byte length.
+    case Base.decode64(key) do
+      {:ok, <<psk::binary-size(32)>>} ->
+        if set_key_allowed?(state) do
+          {state, [{:set_psk, psk}]}
+        else
+          {state,
+           [
+             {:log, :warning, "SetKey rejected over plaintext — accepts_key_provisioning is false"},
+             {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}}
+           ]}
+        end
+
+      _ ->
         {state,
          [
-           {:log, :warning, "SetKey rejected — key must be 32 bytes, got #{byte_size(key)}"},
-           {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}}
-         ]}
-
-      set_key_allowed?(state) ->
-        {state, [{:set_psk, key}]}
-
-      true ->
-        {state,
-         [
-           {:log, :warning, "SetKey rejected over plaintext — accepts_key_provisioning is false"},
+           {:log, :warning, "SetKey rejected — key must base64-decode to 32 bytes, got #{byte_size(key)} bytes"},
            {:send, %Proto.NoiseEncryptionSetKeyResponse{success: false}}
          ]}
     end
