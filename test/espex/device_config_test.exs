@@ -104,5 +104,16 @@ defmodule Espex.DeviceConfigTest do
 
       assert DeviceConfig.to_device_info_response(config).bluetooth_proxy_feature_flags == 0x63
     end
+
+    test "webserver_port defaults to 0 (Visit link disabled)" do
+      assert DeviceConfig.new().webserver_port == 0
+      assert DeviceConfig.to_device_info_response(DeviceConfig.new()).webserver_port == 0
+    end
+
+    test "webserver_port carries a configured port into the response" do
+      config = DeviceConfig.new(webserver_port: 80)
+      assert config.webserver_port == 80
+      assert DeviceConfig.to_device_info_response(config).webserver_port == 80
+    end
   end
 end
