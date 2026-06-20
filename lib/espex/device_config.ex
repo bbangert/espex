@@ -174,9 +174,17 @@ defmodule Espex.DeviceConfig do
   defp validate_psk(<<_::binary-size(32)>> = raw), do: {:ok, raw}
 
   defp validate_psk(bin) do
-    case Base.decode64(String.trim(bin), padding: true) do
-      {:ok, <<_::binary-size(32)>> = decoded} -> {:ok, decoded}
-      _ -> {:error, :invalid_psk_length}
+    # Guard with String.valid?/1 — String.trim/1 raises on non-UTF-8
+    # input, and put_psk/2 is documented as total. A 32-byte raw key
+    # (typically non-UTF-8) already matched the clause above, so only
+    # base64 strings and malformed binaries reach here.
+    if String.valid?(bin) do
+      case Base.decode64(String.trim(bin), padding: true) do
+        {:ok, <<_::binary-size(32)>> = decoded} -> {:ok, decoded}
+        _ -> {:error, :invalid_psk_length}
+      end
+    else
+      {:error, :invalid_psk_length}
     end
   end
 

@@ -69,6 +69,12 @@ defmodule Espex.DeviceConfigTest do
       assert {:error, :invalid_psk_length} = DeviceConfig.put_psk(base, <<1, 2, 3>>)
       assert {:error, :invalid_psk_length} = DeviceConfig.put_psk(base, "")
     end
+
+    test "rejects a non-UTF-8 binary of the wrong length without raising" do
+      # String.trim/1 (used for the base64 path) raises on invalid UTF-8;
+      # put_psk/2 must stay total and return a tagged error instead.
+      assert {:error, :invalid_psk_length} = DeviceConfig.put_psk(DeviceConfig.new(), <<0xFF, 0xFE>>)
+    end
   end
 
   describe "to_device_info_response" do
