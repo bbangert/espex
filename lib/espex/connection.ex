@@ -1007,18 +1007,28 @@ defmodule Espex.Connection do
   defp notify_disconnected(%{api_version: nil}), do: :ok
   defp notify_disconnected(state), do: notify_connections_changed(state)
 
-  # Best-effort: a missing/slow/raising listener must never tear down a
-  # live client connection, and we never retry — connected_clients/1 is
-  # the source of truth a listener reconciles against on its own boot.
+  # Best-effort: a missing/slow/crashing listener must never stall or tear
+  # down a live client connection, and we never retry — connected_clients/1
+  # is the source of truth a listener reconciles against on its own boot.
   defp notify_connections_changed(%{adapters: %{connection_listener: nil}}), do: :ok
 
-  defp notify_connections_changed(%{adapters: %{connection_listener: module}} = state) do
-    module.connections_changed()
+  defp notify_connections_changed(%{adapters: %{connection_listener: module}, peer: peer}) do
+    # Run detached so a slow/blocking callback can't stall frame
+    # processing, and catch every failure kind (error/exit/throw) so a
+    # misbehaving listener can't bring the connection down. Notifications
+    # are therefore unordered — fine, since each is only a "re-query" hint
+    # and connected_clients/1 is authoritative.
+    _ =
+      spawn(fn ->
+        try do
+          module.connections_changed()
+        catch
+          kind, reason ->
+            Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
+        end
+      end)
+
     :ok
-  rescue
-    error ->
-      Logger.warning("Espex #{state.peer} connection_listener crashed: #{inspect(error)}")
-      :ok
   end
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok

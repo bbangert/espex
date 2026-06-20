@@ -15,9 +15,10 @@ defmodule Espex.ConnectionListener do
 
   ## The callback is best-effort — reconcile on boot
 
-  `connections_changed/0` is fire-and-forget. Espex invokes it from the
-  connection process, guards it so a raised or slow listener can never
-  drop a live client connection, and does **not** retry or buffer. A
+  `connections_changed/0` is fire-and-forget. Espex invokes it in a
+  detached process and catches every failure kind, so a slow, blocking,
+  or crashing listener can never stall or drop a live client connection;
+  it does **not** retry or buffer, and notifications are **unordered**. A
   client can connect the instant the TCP listener is up — possibly before
   your listener process is ready — so a notification can be missed during
   startup.

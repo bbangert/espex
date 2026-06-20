@@ -18,8 +18,9 @@ defmodule Espex.ClientInfo do
     * `:connected_at` — epoch seconds when the TCP connection was
       accepted.
     * `:last_activity_at` — epoch seconds of the most recent inbound
-      frame; advances as the client sends data and is the basis for an
-      idle-time display.
+      data (any bytes, mirroring the keepalive liveness signal — not only
+      fully-decoded frames); advances as the client sends and is the
+      basis for an idle-time display.
   """
 
   alias Espex.ConnectionState
