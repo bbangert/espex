@@ -51,6 +51,10 @@ and a complete example:
   `connections_free` reporting
 - Server-side state push via `Espex.push_state/2` so adapters and
   `EntityProvider` implementations can update live values
+- Connected-client introspection — `Espex.connected_clients/1` enumerates
+  live native-API connections (peer, client_info, API version, encrypted?,
+  timestamps), with an `Espex.ConnectionListener` callback for change
+  notifications
 - Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
   `Espex.Mdns.MdnsLite` adapter over the
   [`mdns_lite`](https://hex.pm/packages/mdns_lite) library for the Nerves
@@ -63,6 +67,7 @@ and a complete example:
   - `Espex.BluetoothProxy` (active connect/disconnect, GATT, pairing)
   - `Espex.EntityProvider`
   - `Espex.PskStore` (persist a runtime-provisioned Noise PSK)
+  - `Espex.ConnectionListener` (observe the connected-client set)
 
 ## Installation
 
@@ -134,6 +139,42 @@ Espex.start_link(
   device_config: [name: "my-device", accepts_key_provisioning: true],
   psk_store: MyApp.FilePskStore
 )
+```
+
+### Connected clients
+
+Enumerate the live native-API connections at any time — handy for a
+"connected clients" dashboard:
+
+```elixir
+Espex.connected_clients(MyApp.EspexServer)
+#=> [%Espex.ClientInfo{
+#=>    peer: "192.168.1.5:54312",
+#=>    client_info: "Home Assistant 2026.1.0",
+#=>    api_version: {1, 10},
+#=>    encrypted?: true,
+#=>    connected_at: 1_750_000_000,
+#=>    last_activity_at: 1_750_000_042
+#=>  }]
+```
+
+To be notified when the set changes (instead of polling), pass a
+`connection_listener` module implementing `Espex.ConnectionListener`. Its
+`connections_changed/0` fires once per connect and once per disconnect;
+on receipt, re-read `connected_clients/1`. Start the listener before the
+Espex child (`:rest_for_one`) and reconcile on boot — the callback is
+best-effort, while `connected_clients/1` is always the source of truth:
+
+```elixir
+children = [
+  {MyApp.ClientTracker, []},
+  {Espex,
+   server_name: MyApp.EspexServer,
+   device_config: [name: "my-device"],
+   connection_listener: MyApp.ClientTracker}
+]
+
+Supervisor.start_link(children, strategy: :rest_for_one)
 ```
 
 ### mDNS advertising

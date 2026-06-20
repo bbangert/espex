@@ -7,6 +7,7 @@ defmodule Espex.Connection do
 
   alias Espex.{
     BluetoothProxy,
+    ClientInfo,
     ConnectionState,
     DeviceConfig,
     Dispatch,
@@ -30,6 +31,7 @@ defmodule Espex.Connection do
   def handle_connection(socket, handler_options) do
     server_name = Keyword.fetch!(handler_options, :server_name)
     registry_name = Keyword.fetch!(handler_options, :registry_name)
+    client_registry = Keyword.fetch!(handler_options, :client_registry)
     server_state = Server.get_state(server_name)
     peer = peer_label(socket)
     adapters = server_state.adapters
@@ -39,21 +41,33 @@ defmodule Espex.Connection do
     encryption =
       if DeviceConfig.encrypted?(device_config), do: :awaiting_hello, else: :disabled
 
+    now = now()
+
     state =
       ConnectionState.new(
         device_config: device_config,
         peer: peer,
         server_name: server_name,
+        client_registry: client_registry,
         adapters: adapters,
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
         entities: load_entities(adapters),
         encryption: encryption,
+        connected_at: now,
+        last_activity_at: now,
         keepalive_idle_ms: Keyword.get(handler_options, :keepalive_idle_ms, 60_000),
         keepalive_grace_ms: Keyword.get(handler_options, :keepalive_grace_ms, 60_000)
       )
 
+    # Duplicate-key entry for push_state/2 fan-out (value unused).
     {:ok, _} = Registry.register(registry_name, :subscribers, nil)
+
+    # Unique-key entry holding this connection's ClientInfo snapshot so
+    # connected_clients/1 is a plain Registry read. The connect-time
+    # snapshot has no client_info yet; the :client_connected action
+    # refreshes it after hello, and each inbound frame refreshes activity.
+    {:ok, _} = Registry.register(client_registry, self(), ClientInfo.new(self(), state))
     Logger.info("Espex client connected from #{peer} (encryption=#{inspect(encryption)})")
     {:continue, reset_keepalive(state)}
   end
@@ -61,11 +75,23 @@ defmodule Espex.Connection do
   @impl ThousandIsland.Handler
   def handle_data(data, socket, state) do
     # Any inbound bytes prove the client is alive — restart the keepalive
-    # idle clock and forget an outstanding ping.
-    state = state |> reset_keepalive() |> ConnectionState.append_buffer(data)
+    # idle clock, forget an outstanding ping, and stamp the activity time.
+    prev_activity = state.last_activity_at
+
+    state =
+      state
+      |> reset_keepalive()
+      |> ConnectionState.touch_activity(now())
+      |> ConnectionState.append_buffer(data)
 
     case process_buffer(socket, state) do
       {:cont, state} ->
+        # Refresh the Registry snapshot only when the (second-resolution)
+        # activity stamp actually advanced — within the same second the
+        # snapshot is identical, so skip the write. A post-hello
+        # client_info refresh happens in the :client_connected action
+        # regardless. Activity alone never notifies the listener.
+        if state.last_activity_at != prev_activity, do: sync_client_info(state)
         {:continue, state}
 
       {:halt, _reason, state} ->
@@ -74,9 +100,14 @@ defmodule Espex.Connection do
     end
   end
 
+  # ThousandIsland's terminate/2 dispatches to exactly ONE of these per
+  # connection, so notifying the connection_listener here fires exactly
+  # once on disconnect. (cleanup/1 can run twice on the {:close} path, so
+  # the notify must NOT live there.)
   @impl ThousandIsland.Handler
   def handle_close(_socket, state) do
     cleanup(state)
+    notify_disconnected(state)
     Logger.info("Espex client #{state.peer} disconnected")
     :ok
   end
@@ -84,6 +115,7 @@ defmodule Espex.Connection do
   @impl ThousandIsland.Handler
   def handle_error(reason, _socket, state) do
     cleanup(state)
+    notify_disconnected(state)
     Logger.warning("Espex client #{state.peer} connection error: #{inspect(reason)}")
     :ok
   end
@@ -91,7 +123,20 @@ defmodule Espex.Connection do
   @impl ThousandIsland.Handler
   def handle_timeout(_socket, state) do
     cleanup(state)
+    notify_disconnected(state)
     Logger.warning("Espex client #{state.peer} timed out")
+    :ok
+  end
+
+  # Graceful shutdown of the connection process (terminate reason
+  # `:shutdown`) routes here, not to handle_close — so notify here too,
+  # keeping disconnect notification exactly-once across every teardown
+  # path. (Typically the whole tree is stopping and the listener is going
+  # down too; reconcile-on-boot covers that, but completeness is cheap.)
+  @impl ThousandIsland.Handler
+  def handle_shutdown(_socket, state) do
+    cleanup(state)
+    notify_disconnected(state)
     :ok
   end
 
@@ -710,6 +755,14 @@ defmodule Espex.Connection do
     end
   end
 
+  defp interpret_action(_socket, state, :client_connected) do
+    # Hello completed — refresh the Registry snapshot (now carries
+    # client_info/api_version) and tell the listener the set changed.
+    sync_client_info(state)
+    notify_connections_changed(state)
+    {:cont, state}
+  end
+
   # ---------------------------------------------------------------------------
   # Sending
   # ---------------------------------------------------------------------------
@@ -927,6 +980,55 @@ defmodule Espex.Connection do
 
   defp store_psk(%{adapters: %{psk_store: module}}, key) do
     module.store_psk(key)
+  end
+
+  defp now, do: System.system_time(:second)
+
+  # Write this connection's current ClientInfo snapshot into its unique
+  # Registry entry so connected_clients/1 reads fresh data. No-op when
+  # there's no registry (pure-state paths / tests).
+  defp sync_client_info(%{client_registry: nil}), do: :ok
+
+  defp sync_client_info(%{client_registry: registry} = state) do
+    case Registry.update_value(registry, self(), fn _ -> ClientInfo.new(self(), state) end) do
+      {_new, _old} ->
+        :ok
+
+      :error ->
+        # Entry already gone (shutdown race) — nothing to refresh.
+        Logger.debug("Espex #{state.peer} client-info snapshot update skipped — registry entry gone")
+        :ok
+    end
+  end
+
+  # Disconnect notification — only for connections that completed hello
+  # (api_version is set then), so connect/disconnect notifications stay
+  # paired and a bare TCP open/close that never said hello is ignored.
+  defp notify_disconnected(%{api_version: nil}), do: :ok
+  defp notify_disconnected(state), do: notify_connections_changed(state)
+
+  # Best-effort: a missing/slow/crashing listener must never stall or tear
+  # down a live client connection, and we never retry — connected_clients/1
+  # is the source of truth a listener reconciles against on its own boot.
+  defp notify_connections_changed(%{adapters: %{connection_listener: nil}}), do: :ok
+
+  defp notify_connections_changed(%{adapters: %{connection_listener: module}, peer: peer}) do
+    # Run detached so a slow/blocking callback can't stall frame
+    # processing, and catch every failure kind (error/exit/throw) so a
+    # misbehaving listener can't bring the connection down. Notifications
+    # are therefore unordered — fine, since each is only a "re-query" hint
+    # and connected_clients/1 is authoritative.
+    _ =
+      spawn(fn ->
+        try do
+          module.connections_changed()
+        catch
+          kind, reason ->
+            Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
+        end
+      end)
+
+    :ok
   end
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok

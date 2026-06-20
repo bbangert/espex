@@ -198,6 +198,28 @@ defmodule Espex.Test.FailingPskStore do
   def store_psk(<<_::256>>), do: {:error, :disk_full}
 end
 
+defmodule Espex.Test.PidConnectionListener do
+  @moduledoc """
+  Test `Espex.ConnectionListener` that forwards each change notification
+  to the test process registered under `:persistent_term` key
+  `:espex_listener_test_pid`, so a test can `assert_receive
+  {:connections_changed}` and count occurrences.
+  """
+  @behaviour Espex.ConnectionListener
+
+  @impl true
+  def connections_changed do
+    # Guard against a late disconnect notification firing after the test's
+    # on_exit erased the key (the connection process may outlive the test).
+    case :persistent_term.get(:espex_listener_test_pid, nil) do
+      pid when is_pid(pid) -> send(pid, {:connections_changed})
+      nil -> :ok
+    end
+
+    :ok
+  end
+end
+
 defmodule Espex.Test.FakeBluetoothScanner do
   @moduledoc """
   No-op `Espex.BluetoothScanner` adapter that implements every callback

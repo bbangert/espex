@@ -71,6 +71,7 @@ defmodule Espex.Dispatch do
           | {:ble_gatt_notify, address :: non_neg_integer(), handle :: non_neg_integer(), enable? :: boolean()}
           | {:entity_command, struct()}
           | {:set_psk, binary()}
+          | :client_connected
 
   @type result :: {ConnectionState.t(), [action()]}
 
@@ -85,6 +86,8 @@ defmodule Espex.Dispatch do
   def handle_request(state, message)
 
   def handle_request(state, %Proto.HelloRequest{} = req) do
+    state = ConnectionState.put_client_hello(state, req.client_info, {req.api_version_major, req.api_version_minor})
+
     response = %Proto.HelloResponse{
       api_version_major: DeviceConfig.api_version_major(),
       api_version_minor: DeviceConfig.api_version_minor(),
@@ -92,7 +95,12 @@ defmodule Espex.Dispatch do
       name: state.device_config.name
     }
 
-    {state, [{:log, :info, "hello from #{state.peer} (client_info=#{inspect(req.client_info)})"}, {:send, response}]}
+    {state,
+     [
+       {:log, :info, "hello from #{state.peer} (client_info=#{inspect(req.client_info)})"},
+       {:send, response},
+       :client_connected
+     ]}
   end
 
   def handle_request(state, %Proto.AuthenticationRequest{}) do
