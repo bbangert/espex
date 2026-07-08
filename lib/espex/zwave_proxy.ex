@@ -28,20 +28,32 @@ defmodule Espex.ZWaveProxy do
 
   ## Data flow
 
-  Subscribers receive two kinds of messages from your adapter:
+  Send raw Serial API frames to the single subscriber:
 
       {:espex_zwave_frame, binary}               # raw Z-Wave Serial API frame
-      {:espex_zwave_home_id_changed, <<_::32>>}  # new home ID (4-byte binary)
 
-  Home ID changes matter because Home Assistant learns the network id
-  at subscribe time; if the controller is reset or the network rekeyed
-  while a client is connected, send the change event so HA's stored
-  state stays in sync.
+  The subscriber pid is the one passed to `c:subscribe/1`; the Z-Wave
+  Serial API is single-master, so frames go to that one connection only.
+
+  Home-ID changes are different — they must reach **every** connected
+  client, not just the subscriber. Home Assistant's `zwave_js` discovery
+  runs on a connection that never subscribes, and a controller
+  hot-plugged after a client connected must still be discovered. So on a
+  change, call:
+
+      Espex.push_zwave_home_id(server_name, <<_::32>>)
+
+  which broadcasts `HOME_ID_CHANGE` to all connections (mirroring
+  ESPHome's `APIServer::on_zwave_proxy_request`). Do **not** message the
+  subscriber directly for home-ID changes — with zero subscribers (the
+  common pre-discovery state) that message would be lost. Send a zeroed
+  home ID the same way when the controller disconnects.
 
   `c:subscribe/1` returns `{:ok, home_id_bytes}` where `home_id_bytes`
   is the current home ID as a 4-byte binary. Espex uses the value to
   decide whether to emit an initial change notification to the new
-  subscriber.
+  subscriber (in addition, Espex pushes the current home ID to every
+  client as it finishes its handshake).
 
   ## `feature_flags/0` and `home_id/0`
 
@@ -94,6 +106,11 @@ defmodule Espex.ZWaveProxy do
           Registry.dispatch(@registry, :subscribers, fn entries ->
             Enum.each(entries, fn {pid, _} -> send(pid, {:espex_zwave_frame, data}) end)
           end)
+        end
+
+        # Called whenever the controller's home ID changes (or clears):
+        def home_id_changed(new_home_id_bytes) do
+          Espex.push_zwave_home_id(MyApp.EspexServer, new_home_id_bytes)
         end
 
         defp home_id_bytes do

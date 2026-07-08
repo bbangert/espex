@@ -294,4 +294,47 @@ defmodule Espex.IntegrationTest do
       :gen_tcp.close(socket2)
     end
   end
+
+  describe "Z-Wave home ID" do
+    @tag adapters: %{zwave_proxy: Espex.Test.FakeZWaveProxyWithHomeId}
+    test "pushed to a client at handshake even without subscribing", %{port: port} do
+      socket = connect(port)
+      send_struct(socket, %Proto.HelloRequest{client_info: "zwave-js"})
+      {:ok, %Proto.HelloResponse{}, rest} = recv_struct(socket)
+
+      # No SUBSCRIBE sent — the auth-time push must still arrive.
+      {:ok, %Proto.ZWaveProxyRequest{type: type, data: data}, _} = recv_struct(socket, rest)
+      assert type == :ZWAVE_PROXY_REQUEST_TYPE_HOME_ID_CHANGE
+      assert data == <<0xDE, 0xAD, 0xBE, 0xEF>>
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{zwave_proxy: Espex.Test.FakeZWaveProxyWithHomeId}
+    test "push_zwave_home_id/2 broadcasts to every client, subscribed or not", context do
+      server_name = :"espex_server_#{context.test}"
+      socket1 = connect(context.port)
+      socket2 = connect(context.port)
+
+      # Handshake both, and drain the auth-time push each receives so the
+      # buffers are clean before the broadcast under test.
+      buffers =
+        for sock <- [socket1, socket2] do
+          send_struct(sock, %Proto.HelloRequest{})
+          {:ok, %Proto.HelloResponse{}, rest} = recv_struct(sock)
+          {:ok, %Proto.ZWaveProxyRequest{}, rest} = recv_struct(sock, rest)
+          {sock, rest}
+        end
+
+      :ok = Espex.push_zwave_home_id(server_name, <<1, 2, 3, 4>>)
+
+      for {sock, buf} <- buffers do
+        {:ok, %Proto.ZWaveProxyRequest{type: type, data: <<1, 2, 3, 4>>}, _} = recv_struct(sock, buf)
+        assert type == :ZWAVE_PROXY_REQUEST_TYPE_HOME_ID_CHANGE
+      end
+
+      :gen_tcp.close(socket1)
+      :gen_tcp.close(socket2)
+    end
+  end
 end

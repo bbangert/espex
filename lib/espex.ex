@@ -116,6 +116,36 @@ defmodule Espex do
   end
 
   @doc """
+  Broadcast a Z-Wave home-ID change to **every** connected client.
+
+  Mirrors ESPHome's `APIServer::on_zwave_proxy_request`, which sends
+  `HOME_ID_CHANGE` to all active clients rather than only the subscribed
+  one. Home Assistant learns the network identity from this message: the
+  `zwave_js` integration starts (or updates) its config-flow the moment
+  it arrives, even on a connection that never issued
+  `ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE`. Broadcasting to all is what lets
+  a controller hot-plugged *after* a client connected be discovered
+  without a reconnect.
+
+  A Z-Wave adapter should call this from its home-ID change path (see
+  `Espex.ZWaveProxy`) instead of messaging the single subscriber. Pass
+  the 4-byte big-endian home ID; a zeroed value is a valid "network
+  gone" signal and is delivered as-is.
+
+  `server_name` defaults to `Espex.Server`.
+  """
+  @spec push_zwave_home_id(atom(), <<_::32>>) :: :ok
+  def push_zwave_home_id(server_name \\ Server, <<_::binary-size(4)>> = home_id_bytes) do
+    registry = EspexSupervisor.registry_name(server_name)
+
+    Registry.dispatch(registry, :subscribers, fn entries ->
+      Enum.each(entries, fn {pid, _} ->
+        send(pid, {:espex_zwave_home_id_changed, home_id_bytes})
+      end)
+    end)
+  end
+
+  @doc """
   List the currently-connected native-API clients as
   `Espex.ClientInfo` structs.
 
