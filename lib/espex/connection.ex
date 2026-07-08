@@ -755,12 +755,17 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_action(_socket, state, :client_connected) do
+  defp interpret_action(socket, state, :client_connected) do
     # Hello completed — refresh the Registry snapshot (now carries
     # client_info/api_version) and tell the listener the set changed.
     sync_client_info(state)
     notify_connections_changed(state)
-    {:cont, state}
+    # Mirror ESPHome's api_connection_authenticated: push the current
+    # home ID to every client as it comes up, subscribed or not, so a
+    # controller already present at connect is discovered without
+    # waiting for a change event. Zero (no controller) is skipped by
+    # maybe_send_initial_home_id.
+    maybe_send_initial_home_id(socket, state, <<zwave_value(state.adapters, :home_id)::32>>)
   end
 
   # ---------------------------------------------------------------------------

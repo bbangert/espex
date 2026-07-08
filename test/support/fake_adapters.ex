@@ -140,6 +140,33 @@ defmodule Espex.Test.FakeZWaveProxy do
   def send_frame(_data), do: :ok
 end
 
+defmodule Espex.Test.FakeZWaveProxyWithHomeId do
+  @moduledoc false
+  @behaviour Espex.ZWaveProxy
+
+  # A controller that already knows its network at connect time, so the
+  # auth-time push (:client_connected) has a nonzero id to send.
+  @home_id 0xDEADBEEF
+
+  @impl true
+  def available?, do: true
+
+  @impl true
+  def home_id, do: @home_id
+
+  @impl true
+  def feature_flags, do: 1
+
+  @impl true
+  def subscribe(_pid), do: {:ok, <<@home_id::32>>}
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+
+  @impl true
+  def send_frame(_data), do: :ok
+end
+
 defmodule Espex.Test.FakeInfraredProxy do
   @moduledoc false
   @behaviour Espex.InfraredProxy
