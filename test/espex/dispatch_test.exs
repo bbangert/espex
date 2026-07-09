@@ -421,11 +421,21 @@ defmodule Espex.DispatchTest do
   end
 
   describe "ZWaveProxyFrame" do
-    test "with adapter: emits :zwave_send_frame" do
+    test "subscribed connection: emits :zwave_send_frame" do
       adapters = %{serial_proxy: nil, zwave_proxy: Espex.Test.FakeZWaveProxy, infrared_proxy: nil, entity_provider: nil}
+      s = state(adapters: adapters) |> ConnectionState.put_zwave_subscribed(true)
 
       {_s, [{:zwave_send_frame, "abc"}]} =
+        Dispatch.handle_request(s, %Proto.ZWaveProxyFrame{data: "abc"})
+    end
+
+    test "adapter present but connection not subscribed: dropped with warning" do
+      adapters = %{serial_proxy: nil, zwave_proxy: Espex.Test.FakeZWaveProxy, infrared_proxy: nil, entity_provider: nil}
+
+      {_s, [{:log, :warning, msg}]} =
         Dispatch.handle_request(state(adapters: adapters), %Proto.ZWaveProxyFrame{data: "abc"})
+
+      assert msg =~ "not subscribed"
     end
 
     test "without adapter: logs warning" do
