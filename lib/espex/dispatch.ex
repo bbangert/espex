@@ -288,10 +288,19 @@ defmodule Espex.Dispatch do
   end
 
   def handle_request(state, %Proto.ZWaveProxyFrame{data: data}) do
-    if ConnectionState.adapter?(state, :zwave_proxy) do
-      {state, [{:zwave_send_frame, data}]}
-    else
-      {state, [{:log, :warning, "Z-Wave frame dropped — no adapter configured"}]}
+    cond do
+      not ConnectionState.adapter?(state, :zwave_proxy) ->
+        {state, [{:log, :warning, "Z-Wave frame dropped — no adapter configured"}]}
+
+      # Only the subscribed connection may write to the Z-Wave module
+      # (the Serial API is single-master). A frame from any other
+      # authenticated client would interleave with the subscriber's
+      # traffic — mirrors ESPHome's send_frame subscriber check (#17461).
+      not state.zwave_subscribed ->
+        {state, [{:log, :warning, "Z-Wave frame dropped — connection not subscribed"}]}
+
+      true ->
+        {state, [{:zwave_send_frame, data}]}
     end
   end
 
