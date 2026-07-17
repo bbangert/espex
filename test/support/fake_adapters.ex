@@ -117,6 +117,78 @@ defmodule Espex.Test.TrackingSerialProxy do
   end
 end
 
+defmodule Espex.Test.TrackingSerialProxyWithDefaults do
+  @moduledoc """
+  Same as `Espex.Test.TrackingSerialProxy` but exports
+  `default_open_opts/1`, returning 115200-8-N-1 for instance 0 — used to
+  exercise the lazy-open path where the adapter supplies its own natural
+  port settings instead of falling back to `SerialProxy.default_open_opts/0`.
+  """
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances do
+    [Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl)]
+  end
+
+  @impl true
+  def open(instance, opts, subscriber) do
+    notify({:open, instance, opts, subscriber})
+
+    case :persistent_term.get({__MODULE__, :fail_next_open}, false) do
+      true ->
+        :persistent_term.erase({__MODULE__, :fail_next_open})
+        {:error, :test_induced_failure}
+
+      false ->
+        {:ok, {:tracking_handle, instance}}
+    end
+  end
+
+  @impl true
+  def write(handle, data) do
+    notify({:write, handle, data})
+    :ok
+  end
+
+  @impl true
+  def close(handle) do
+    notify({:close, handle})
+    :ok
+  end
+
+  @impl true
+  def set_modem_pins(handle, rts, dtr) do
+    notify({:set_modem_pins, handle, rts, dtr})
+    :ok
+  end
+
+  @impl true
+  def get_modem_pins(handle) do
+    notify({:get_modem_pins, handle})
+    {:ok, %{rts: false, dtr: false}}
+  end
+
+  @impl true
+  def request(handle, type) do
+    notify({:request, handle, type})
+    {:ok, :ok}
+  end
+
+  @impl true
+  def default_open_opts(0) do
+    [speed: 115_200, data_bits: 8, stop_bits: 1, parity: :none, flow_control: :none]
+  end
+
+  defp notify(event) do
+    for {{__MODULE__, _test}, pid} <- :persistent_term.get(), is_pid(pid) do
+      send(pid, event)
+    end
+
+    :ok
+  end
+end
+
 defmodule Espex.Test.FakeZWaveProxy do
   @moduledoc false
   @behaviour Espex.ZWaveProxy

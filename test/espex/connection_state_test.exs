@@ -110,25 +110,25 @@ defmodule Espex.ConnectionStateTest do
 
   describe "pending subscriptions" do
     test "starts empty" do
-      assert base_state().pending_subscriptions == MapSet.new()
+      assert base_state().serial_subscriptions == MapSet.new()
     end
 
-    test "put / pending? / drop round-trip" do
-      state = base_state() |> ConnectionState.put_pending_subscription(2)
-      assert ConnectionState.pending_subscription?(state, 2)
-      refute ConnectionState.pending_subscription?(state, 3)
+    test "put / subscribed? / drop round-trip" do
+      state = base_state() |> ConnectionState.put_serial_subscription(2)
+      assert ConnectionState.serial_subscribed?(state, 2)
+      refute ConnectionState.serial_subscribed?(state, 3)
 
-      state = ConnectionState.drop_pending_subscription(state, 2)
-      refute ConnectionState.pending_subscription?(state, 2)
+      state = ConnectionState.drop_serial_subscription(state, 2)
+      refute ConnectionState.serial_subscribed?(state, 2)
     end
 
-    test "put_pending_subscription is idempotent" do
+    test "put_serial_subscription is idempotent" do
       state =
         base_state()
-        |> ConnectionState.put_pending_subscription(7)
-        |> ConnectionState.put_pending_subscription(7)
+        |> ConnectionState.put_serial_subscription(7)
+        |> ConnectionState.put_serial_subscription(7)
 
-      assert MapSet.size(state.pending_subscriptions) == 1
+      assert MapSet.size(state.serial_subscriptions) == 1
     end
   end
 

@@ -23,10 +23,13 @@ defmodule Espex.SerialProxy do
   | `c:set_modem_pins/3` | no | Toggle RTS/DTR |
   | `c:get_modem_pins/1` | no | Read RTS/DTR |
   | `c:request/2` | no | Handle subscribe / unsubscribe / flush |
+  | `c:default_open_opts/1` | no | Options for an espex-initiated lazy open |
 
-  The three optional callbacks are each reported to the client as
+  The modem-pin and request callbacks are each reported to the client as
   `:not_supported` when omitted — your adapter can safely ignore them if
-  the hardware can't do modem-pin control or drain-flush.
+  the hardware can't do modem-pin control or drain-flush. An omitted
+  `c:default_open_opts/1` instead falls back to `default_open_opts/0`
+  (9600-8-N-1).
 
   ## Data flow
 
@@ -149,16 +152,29 @@ defmodule Espex.SerialProxy do
   When you don't define `c:request/2` at all, espex responds with
   `:not_supported` to every request type automatically.
 
-  Newer ESPHome clients send `SerialProxyRequest{type: SUBSCRIBE}`
-  *before* the `SerialProxyConfigureRequest` that opens the port. Espex
-  absorbs that ordering itself: a pre-configure `:subscribe` is
-  acknowledged with `OK` and stashed; once `c:open/3` returns a handle,
-  espex calls `c:request/2` with that handle and `:subscribe`. Your
-  adapter therefore never receives `request/2` before `open/3` — the
-  `handle` argument is always one you just returned. A pre-configure
-  `:unsubscribe` clears the stashed intent and is similarly answered
-  with `OK`, with no adapter call. `:flush` keeps its original
-  semantics and returns `"instance not open"` if no port is open.
+  Upstream ESPHome has no open/close lifecycle for the serial proxy — the
+  UART is always live at its YAML-configured settings, and
+  `SerialProxyConfigureRequest` is optional re-tuning, not a prerequisite.
+  Espex mirrors that: a connection's first serial-proxy operation of any
+  kind (write, subscribe, modem pins, flush) against an *advertised*
+  instance lazily opens it via `c:open/3`, using `c:default_open_opts/1`
+  when you export it (or the 9600-8-N-1 fallback otherwise). This lets a
+  client resume traffic after a reconnect — e.g. Home Assistant writing
+  to a Zigbee coordinator without re-sending CONFIGURE — instead of
+  getting every write silently dropped.
+
+  SUBSCRIBE/UNSUBSCRIBE track a per-connection subscribe *intent* rather
+  than a one-shot stash: after every successful `c:open/3` (whether
+  triggered by a lazy open or by CONFIGURE), espex re-issues `c:request/2`
+  with `:subscribe` if the intent is set, so a subscription survives
+  reconfiguration instead of being consumed by the first open. Your
+  adapter still never receives `request/2` before `open/3` — the
+  `handle` argument is always one you just returned. A `:subscribe` or
+  `:unsubscribe` that can't reach the adapter yet (the lazy/configure
+  open failed) is still acknowledged `OK`; the intent is remembered and
+  reattached on the next successful open. `:flush` keeps its original
+  semantics and returns `"instance not open"` only if the lazy open
+  itself fails.
 
   ## Wiring
 
@@ -202,6 +218,17 @@ defmodule Espex.SerialProxy do
       parity: parity_atom(req.parity),
       flow_control: if(req.flow_control, do: :hardware, else: :none)
     ]
+  end
+
+  @doc """
+  The fallback options used when espex lazily opens an instance and the
+  adapter does not export `c:default_open_opts/1`: 9600-8-N-1, no flow
+  control (the same defaults used for zero-valued fields in a
+  `SerialProxyConfigureRequest`).
+  """
+  @spec default_open_opts() :: open_opts()
+  def default_open_opts do
+    [speed: 9600, data_bits: 8, stop_bits: 1, parity: :none, flow_control: :none]
   end
 
   defp parity_atom(:SERIAL_PROXY_PARITY_EVEN), do: :even
@@ -265,5 +292,19 @@ defmodule Espex.SerialProxy do
   @callback request(handle(), request_type()) ::
               {:ok, request_status()} | {:error, term()}
 
-  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2
+  @doc """
+  Return the options espex should use when it opens `instance` lazily —
+  i.e. when a client sends a write/subscribe/modem-pins/flush request
+  without a prior `SerialProxyConfigureRequest` on this connection.
+
+  On real ESPHome hardware the UART is always live with its
+  YAML-configured settings, so clients legitimately resume traffic after a
+  reconnect without re-configuring. Implement this to supply your port's
+  natural settings (e.g. the baud rate the attached device actually uses).
+  When not exported, espex falls back to `default_open_opts/0`
+  (9600-8-N-1).
+  """
+  @callback default_open_opts(instance :: non_neg_integer()) :: open_opts()
+
+  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2, default_open_opts: 1
 end

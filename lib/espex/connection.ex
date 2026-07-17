@@ -413,10 +413,25 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_open, instance, opts}) do
-    case state.adapters.serial_proxy.open(instance, opts, self()) do
+    adapter = state.adapters.serial_proxy
+    resolved_opts = resolve_open_opts(adapter, instance, opts)
+
+    case adapter.open(instance, resolved_opts, self()) do
       {:ok, handle} ->
         Logger.info("Espex #{state.peer} opened serial proxy instance #{instance}")
-        {:cont, ConnectionState.put_port(state, instance, handle)}
+        state = ConnectionState.put_port(state, instance, handle)
+
+        if ConnectionState.serial_subscribed?(state, instance) do
+          case serial_request({:ok, handle}, adapter, :subscribe) do
+            {:error, reason} ->
+              Logger.warning("Espex #{state.peer} serial resubscribe instance #{instance} failed: #{inspect(reason)}")
+
+            _ ->
+              :ok
+          end
+        end
+
+        {:cont, state}
 
       {:error, reason} ->
         Logger.warning("Espex #{state.peer} serial open instance #{instance} failed: #{inspect(reason)}")
@@ -434,8 +449,6 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_close, instance}) do
-    state = ConnectionState.drop_pending_subscription(state, instance)
-
     case ConnectionState.drop_port(state, instance) do
       {new_state, nil} ->
         {:cont, new_state}
@@ -475,21 +488,6 @@ defmodule Espex.Connection do
     case send_protobuf(socket, state, Dispatch.serial_request_response(instance, type, result)) do
       {:ok, state} -> {:cont, state}
       {:error, reason} -> {:halt, reason, state}
-    end
-  end
-
-  defp interpret_action(socket, state, {:replay_pending_subscribe, instance}) do
-    with true <- ConnectionState.pending_subscription?(state, instance),
-         {:ok, handle} <- ConnectionState.port_handle(state, instance) do
-      state = ConnectionState.drop_pending_subscription(state, instance)
-      result = serial_request({:ok, handle}, state.adapters.serial_proxy, :subscribe)
-
-      case send_protobuf(socket, state, Dispatch.serial_request_response(instance, :subscribe, result)) do
-        {:ok, state} -> {:cont, state}
-        {:error, reason} -> {:halt, reason, state}
-      end
-    else
-      _ -> {:cont, state}
     end
   end
 
@@ -1074,6 +1072,21 @@ defmodule Espex.Connection do
   end
 
   defp serial_request(:error, _adapter, _type), do: {:error, :not_open}
+
+  # Resolve a lazy :serial_open's :default_opts placeholder against the
+  # adapter's own preferred settings, falling back to SerialProxy's
+  # 9600-8-N-1 default when the adapter doesn't export
+  # `default_open_opts/1`. A configure-driven open already carries
+  # concrete opts and passes straight through.
+  defp resolve_open_opts(adapter, instance, :default_opts) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :default_open_opts, 1) do
+      adapter.default_open_opts(instance)
+    else
+      SerialProxy.default_open_opts()
+    end
+  end
+
+  defp resolve_open_opts(_adapter, _instance, opts), do: opts
 
   # Optional-callback check. Pairs `Code.ensure_loaded?/1` with
   # `function_exported?/3` because BLE interpreter clauses can fire on
