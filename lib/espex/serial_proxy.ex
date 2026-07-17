@@ -25,11 +25,12 @@ defmodule Espex.SerialProxy do
   | `c:request/2` | no | Handle subscribe / unsubscribe / flush |
   | `c:default_open_opts/1` | no | Options for an espex-initiated lazy open |
 
-  The modem-pin and request callbacks are each reported to the client as
-  `:not_supported` when omitted — your adapter can safely ignore them if
-  the hardware can't do modem-pin control or drain-flush. An omitted
-  `c:default_open_opts/1` instead falls back to `default_open_opts/0`
-  (9600-8-N-1).
+  Omitted optional callbacks degrade gracefully: `c:request/2`
+  operations are answered with a `NOT_SUPPORTED` status,
+  `c:get_modem_pins/1` reports all lines low, `c:set_modem_pins/3`
+  becomes a no-op, and `c:default_open_opts/1` falls back to
+  `default_open_opts/0` (9600-8-N-1) — your adapter can safely omit
+  whatever the hardware can't do.
 
   ## Data flow
 
