@@ -128,7 +128,7 @@ defmodule Espex.IntegrationTest do
     end
   end
 
-  describe "serial proxy SUBSCRIBE-before-CONFIGURE" do
+  describe "serial proxy lazy open + subscription intent" do
     setup context do
       key = {Espex.Test.TrackingSerialProxy, context.test}
       :persistent_term.put(key, self())
@@ -137,53 +137,48 @@ defmodule Espex.IntegrationTest do
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "client sends SUBSCRIBE then CONFIGURE — adapter sees subscribe against open handle", %{port: port} do
+    test "SUBSCRIBE alone lazily opens with fallback defaults and subscribes", %{port: port} do
       socket = connect(port)
 
       send_struct(socket, %Proto.SerialProxyRequest{
         instance: 0,
         type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
       })
+
+      assert_receive {:open, 0, opts, subscriber}
+      assert is_pid(subscriber)
+      assert opts[:speed] == 9600
+
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
       {:ok, %Proto.SerialProxyRequestResponse{} = ack, rest} = recv_struct(socket)
       assert ack.instance == 0
       assert ack.type == :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
       assert ack.status == :SERIAL_PROXY_STATUS_OK
 
-      # `recv_struct` above proves the server processed SUBSCRIBE, so any
-      # adapter callback the server would have made has already been
-      # delivered to our mailbox — `refute_received` (non-blocking) is sound.
-      refute_received {:open, _, _, _}
-      refute_received {:request, _, _}
-
-      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
-
-      assert_receive {:open, 0, _opts, subscriber}
-      assert is_pid(subscriber)
-      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
-
-      {:ok, %Proto.SerialProxyRequestResponse{} = replay, _} = recv_struct(socket, rest)
-      assert replay.instance == 0
-      assert replay.type == :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
-      assert replay.status == :SERIAL_PROXY_STATUS_OK
+      # Exactly one response on the wire — the resubscribe inside :serial_open
+      # never triggers a second SerialProxyRequestResponse.
+      assert {:error, :timeout} = recv_struct(socket, rest, 250)
 
       :gen_tcp.close(socket)
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "CONFIGURE without prior SUBSCRIBE — adapter sees open only, no replay request", %{port: port} do
+    test "CONFIGURE without prior SUBSCRIBE — open only, no subscribe request", %{port: port} do
       socket = connect(port)
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
       assert_receive {:open, 0, _opts, _subscriber}
+      # Ordering is guaranteed (resubscribe, if any, happens synchronously
+      # inside :serial_open before this point) — deliberate wait, not a race.
       refute_receive {:request, _, :subscribe}, 250
 
       :gen_tcp.close(socket)
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "SUBSCRIBE then UNSUBSCRIBE then CONFIGURE — pending cleared, no replay", %{port: port} do
+    test "SUBSCRIBE then UNSUBSCRIBE: intent cleared — later CONFIGURE does not resubscribe", %{port: port} do
       socket = connect(port)
 
       send_struct(socket, %Proto.SerialProxyRequest{
@@ -191,6 +186,8 @@ defmodule Espex.IntegrationTest do
         type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
       })
 
+      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
       {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest1} = recv_struct(socket)
 
       send_struct(socket, %Proto.SerialProxyRequest{
@@ -198,18 +195,63 @@ defmodule Espex.IntegrationTest do
         type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
       })
 
+      # Port is already open, so unsubscribe goes straight to the adapter.
+      assert_receive {:request, {:tracking_handle, 0}, :unsubscribe}
       {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, _rest2} = recv_struct(socket, rest1)
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
-      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:close, {:tracking_handle, 0}}
+      assert_receive {:open, 0, _opts2, _subscriber2}
+      # Ordering is guaranteed — deliberate wait, not a race.
       refute_receive {:request, _, :subscribe}, 250
 
       :gen_tcp.close(socket)
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "SUBSCRIBE then CONFIGURE (open fails) then CONFIGURE — pending intent survives", %{port: port} do
+    test "subscription persists across reconfigure", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyRequest{
+        instance: 0,
+        type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      })
+
+      assert_receive {:open, 0, _opts1, _subscriber1}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      {:ok, %Proto.SerialProxyRequestResponse{}, rest1} = recv_struct(socket)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
+
+      assert_receive {:close, {:tracking_handle, 0}}
+      assert_receive {:open, 0, opts2, _subscriber2}
+      assert opts2[:speed] == 115_200
+
+      # Reattached on the new handle — resubscribe-on-reconfigure is the contract.
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+
+      # No extra wire response for the resubscribe — only the original ack.
+      assert {:error, :timeout} = recv_struct(socket, rest1, 250)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "WRITE without CONFIGURE lazily opens and writes", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "ping"})
+
+      assert_receive {:open, 0, opts, _subscriber}
+      assert opts[:speed] == 9600
+      assert_receive {:write, {:tracking_handle, 0}, "ping"}
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "SUBSCRIBE with failing open — OK acked, intent survives, next CONFIGURE attaches", %{port: port} do
       :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
       on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
 
@@ -220,27 +262,114 @@ defmodule Espex.IntegrationTest do
         type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
       })
 
-      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest1} = recv_struct(socket)
-
-      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
-
       assert_receive {:open, 0, _opts, _subscriber}
-      # Open failed — no replay this time
       refute_receive {:request, _, :subscribe}, 250
 
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest} = recv_struct(socket)
+
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
-      assert_receive {:open, 0, _opts, _subscriber2}
-      # Second open succeeded — preserved intent now replays
+      assert_receive {:open, 0, _opts2, _subscriber2}
       assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
-      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, _rest2} = recv_struct(socket, rest1)
+      # No second SerialProxyRequestResponse — the resubscribe is silent.
+      assert {:error, :timeout} = recv_struct(socket, rest, 250)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxyWithDefaults}
+    test "adapter-supplied default_open_opts/1 is used for the lazy open", context do
+      # No separate persistent_term registration needed — every callback
+      # delegates to TrackingSerialProxy, whose listener key was already
+      # registered by this describe block's setup.
+      socket = connect(context.port)
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "ping"})
+
+      assert_receive {:open, 0, opts, _subscriber}
+      assert opts[:speed] == 115_200
 
       :gen_tcp.close(socket)
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "SUBSCRIBE then CONFIGURE then reconfigure — replay fires exactly once", %{port: port} do
+    test "WRITE with failing lazy open — write dropped, backoff suppresses retry, CONFIGURE recovers", %{
+      port: port
+    } do
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
+
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "a"})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      refute_received {:write, _, _}
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "a"})
+
+      # Backoff skips the reopen entirely; :fail_next_open was already
+      # erased by the first attempt, so a real retry would have succeeded
+      # — the absence of :open here proves the skip, not a coincidence.
+      refute_receive {:open, 0, _, _}, 250
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+
+      # CONFIGURE is exempt from backoff — always attempts an open.
+      assert_receive {:open, 0, _opts2, _subscriber2}
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "a"})
+      assert_receive {:write, {:tracking_handle, 0}, "a"}
+
+      # Connection survived the failed open and the backoff throughout.
+      send_struct(socket, %Proto.DeviceInfoRequest{})
+      {:ok, %Proto.DeviceInfoResponse{}, _rest} = recv_struct(socket)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "SET modem pins on an unopened instance lazily opens and reaches the adapter", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x01})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:set_modem_pins, {:tracking_handle, 0}, true, false}
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "GET modem pins on an unopened instance lazily opens and reaches the adapter", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyGetModemPinsRequest{instance: 0})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:get_modem_pins, {:tracking_handle, 0}}
+
+      {:ok, %Proto.SerialProxyGetModemPinsResponse{instance: 0}, _rest} = recv_struct(socket)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "FLUSH on an unopened instance lazily opens and reaches the adapter", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyRequest{instance: 0, type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH})
+
+      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:request, {:tracking_handle, 0}, :flush}
+
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, _rest} = recv_struct(socket)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
+    test "subscribe intent and lazy opens are per-instance", %{port: port} do
       socket = connect(port)
 
       send_struct(socket, %Proto.SerialProxyRequest{
@@ -248,22 +377,25 @@ defmodule Espex.IntegrationTest do
         type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
       })
 
-      {:ok, %Proto.SerialProxyRequestResponse{}, rest1} = recv_struct(socket)
+      assert_receive {:open, 0, _opts0, _subscriber0}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest} = recv_struct(socket)
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 1, data: "aux"})
+
+      assert_receive {:open, 1, _opts1, _subscriber1}
+      assert_receive {:write, {:tracking_handle, 1}, "aux"}
+      # Instance 0's subscribe intent must not leak onto instance 1's open.
+      refute_receive {:request, {:tracking_handle, 1}, :subscribe}, 250
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
-      assert_receive {:open, 0, _opts1, _subscriber1}
+      assert_receive {:close, {:tracking_handle, 0}}
+      assert_receive {:open, 0, _opts2, _subscriber2}
       assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
-      {:ok, %Proto.SerialProxyRequestResponse{}, _rest2} = recv_struct(socket, rest1)
-
-      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
-
-      assert_receive {:close, {:tracking_handle, 0}}
-      assert_receive {:open, 0, opts2, _subscriber2}
-      assert opts2[:speed] == 115_200
-
-      refute_receive {:request, _, :subscribe}, 250
+      # No extra wire response for the resubscribe — only the original ack.
+      assert {:error, :timeout} = recv_struct(socket, rest, 250)
 
       :gen_tcp.close(socket)
     end

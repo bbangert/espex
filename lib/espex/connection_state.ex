@@ -50,7 +50,8 @@ defmodule Espex.ConnectionState do
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
           opened_ports: %{non_neg_integer() => term()},
-          pending_subscriptions: MapSet.t(non_neg_integer()),
+          serial_subscriptions: MapSet.t(non_neg_integer()),
+          serial_open_failures: %{non_neg_integer() => integer()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
           bluetooth_scanner_subscribed: boolean(),
@@ -80,7 +81,8 @@ defmodule Espex.ConnectionState do
     infrared_entities: [],
     entities: [],
     opened_ports: %{},
-    pending_subscriptions: MapSet.new(),
+    serial_subscriptions: MapSet.new(),
+    serial_open_failures: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
     bluetooth_scanner_subscribed: false,
@@ -198,28 +200,59 @@ defmodule Espex.ConnectionState do
   end
 
   @doc """
-  Record that the client subscribed to `instance` before the port was open.
-  The intent is replayed once the matching configure/open succeeds.
+  Record the client's subscribe intent for a serial instance. Set by
+  SUBSCRIBE, cleared only by UNSUBSCRIBE — it persists across port
+  (re)opens so the connection can reattach the adapter-side subscription
+  after a reconfigure or lazy open.
   """
-  @spec put_pending_subscription(t(), non_neg_integer()) :: t()
-  def put_pending_subscription(%__MODULE__{} = state, instance) do
-    %{state | pending_subscriptions: MapSet.put(state.pending_subscriptions, instance)}
+  @spec put_serial_subscription(t(), non_neg_integer()) :: t()
+  def put_serial_subscription(%__MODULE__{} = state, instance) do
+    %{state | serial_subscriptions: MapSet.put(state.serial_subscriptions, instance)}
   end
 
   @doc """
-  Forget any pending pre-open subscribe for `instance`.
+  Forget the client's subscribe intent for `instance` (UNSUBSCRIBE).
   """
-  @spec drop_pending_subscription(t(), non_neg_integer()) :: t()
-  def drop_pending_subscription(%__MODULE__{} = state, instance) do
-    %{state | pending_subscriptions: MapSet.delete(state.pending_subscriptions, instance)}
+  @spec drop_serial_subscription(t(), non_neg_integer()) :: t()
+  def drop_serial_subscription(%__MODULE__{} = state, instance) do
+    %{state | serial_subscriptions: MapSet.delete(state.serial_subscriptions, instance)}
   end
 
   @doc """
-  Return `true` if `instance` has a pending pre-open subscribe.
+  Return `true` if the client currently intends to be subscribed to
+  `instance` (regardless of whether the port is open right now).
   """
-  @spec pending_subscription?(t(), non_neg_integer()) :: boolean()
-  def pending_subscription?(%__MODULE__{pending_subscriptions: set}, instance) do
+  @spec serial_subscribed?(t(), non_neg_integer()) :: boolean()
+  def serial_subscribed?(%__MODULE__{serial_subscriptions: set}, instance) do
     MapSet.member?(set, instance)
+  end
+
+  @doc """
+  Record that a lazy open of `instance` failed at `at_ms` (monotonic
+  milliseconds). State only stores the timestamp — the backoff window
+  itself is a policy decision that lives in `Espex.Connection`.
+  """
+  @spec put_serial_open_failure(t(), non_neg_integer(), integer()) :: t()
+  def put_serial_open_failure(%__MODULE__{} = state, instance, at_ms) do
+    %{state | serial_open_failures: Map.put(state.serial_open_failures, instance, at_ms)}
+  end
+
+  @doc """
+  Forget a recorded open failure for `instance` (called after a
+  successful open).
+  """
+  @spec clear_serial_open_failure(t(), non_neg_integer()) :: t()
+  def clear_serial_open_failure(%__MODULE__{} = state, instance) do
+    %{state | serial_open_failures: Map.delete(state.serial_open_failures, instance)}
+  end
+
+  @doc """
+  Return the monotonic millisecond timestamp of the last recorded open
+  failure for `instance`, or `nil` if none is recorded.
+  """
+  @spec serial_open_failure_at(t(), non_neg_integer()) :: integer() | nil
+  def serial_open_failure_at(%__MODULE__{serial_open_failures: failures}, instance) do
+    Map.get(failures, instance)
   end
 
   @doc """

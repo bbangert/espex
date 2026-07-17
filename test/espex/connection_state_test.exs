@@ -108,27 +108,56 @@ defmodule Espex.ConnectionStateTest do
     end
   end
 
-  describe "pending subscriptions" do
+  describe "serial subscriptions" do
     test "starts empty" do
-      assert base_state().pending_subscriptions == MapSet.new()
+      assert base_state().serial_subscriptions == MapSet.new()
     end
 
-    test "put / pending? / drop round-trip" do
-      state = base_state() |> ConnectionState.put_pending_subscription(2)
-      assert ConnectionState.pending_subscription?(state, 2)
-      refute ConnectionState.pending_subscription?(state, 3)
+    test "put / subscribed? / drop round-trip" do
+      state = base_state() |> ConnectionState.put_serial_subscription(2)
+      assert ConnectionState.serial_subscribed?(state, 2)
+      refute ConnectionState.serial_subscribed?(state, 3)
 
-      state = ConnectionState.drop_pending_subscription(state, 2)
-      refute ConnectionState.pending_subscription?(state, 2)
+      state = ConnectionState.drop_serial_subscription(state, 2)
+      refute ConnectionState.serial_subscribed?(state, 2)
     end
 
-    test "put_pending_subscription is idempotent" do
+    test "put_serial_subscription is idempotent" do
       state =
         base_state()
-        |> ConnectionState.put_pending_subscription(7)
-        |> ConnectionState.put_pending_subscription(7)
+        |> ConnectionState.put_serial_subscription(7)
+        |> ConnectionState.put_serial_subscription(7)
 
-      assert MapSet.size(state.pending_subscriptions) == 1
+      assert MapSet.size(state.serial_subscriptions) == 1
+    end
+  end
+
+  describe "serial open failure markers" do
+    test "serial_open_failure_at is nil when nothing recorded" do
+      assert ConnectionState.serial_open_failure_at(base_state(), 0) == nil
+    end
+
+    test "put / at / clear round-trip" do
+      state = base_state() |> ConnectionState.put_serial_open_failure(0, 12_345)
+      assert ConnectionState.serial_open_failure_at(state, 0) == 12_345
+      assert ConnectionState.serial_open_failure_at(state, 1) == nil
+
+      state = ConnectionState.clear_serial_open_failure(state, 0)
+      assert ConnectionState.serial_open_failure_at(state, 0) == nil
+    end
+
+    test "clearing an instance with no recorded failure is a no-op" do
+      state = base_state() |> ConnectionState.clear_serial_open_failure(0)
+      assert ConnectionState.serial_open_failure_at(state, 0) == nil
+    end
+
+    test "put_serial_open_failure overwrites an earlier timestamp for the same instance" do
+      state =
+        base_state()
+        |> ConnectionState.put_serial_open_failure(0, 1)
+        |> ConnectionState.put_serial_open_failure(0, 2)
+
+      assert ConnectionState.serial_open_failure_at(state, 0) == 2
     end
   end
 

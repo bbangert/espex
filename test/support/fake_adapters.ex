@@ -53,6 +53,10 @@ defmodule Espex.Test.TrackingSerialProxy do
   `{__MODULE__, test_name}`; this adapter forwards every callback to every
   registered pid.
 
+  Advertises two instances (0 "zigbee", 1 "aux") so tests can exercise
+  per-instance isolation (lazy-open backoff, subscribe intent) without
+  cross-contamination on a single connection.
+
   Tests using this adapter MUST run `async: false` — the adapter sends to
   every registered listener, so true parallel isolation would also require
   threading the listener pid through the connection state.
@@ -61,7 +65,10 @@ defmodule Espex.Test.TrackingSerialProxy do
 
   @impl true
   def list_instances do
-    [Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl)]
+    [
+      Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl),
+      Espex.SerialProxy.Info.new(instance: 1, name: "aux", port_type: :ttl)
+    ]
   end
 
   @impl true
@@ -114,6 +121,52 @@ defmodule Espex.Test.TrackingSerialProxy do
     end
 
     :ok
+  end
+end
+
+defmodule Espex.Test.TrackingSerialProxyWithDefaults do
+  @moduledoc """
+  Same as `Espex.Test.TrackingSerialProxy` but exports
+  `default_open_opts/1`, returning 115200-8-N-1 for instance 0 — used to
+  exercise the lazy-open path where the adapter supplies its own natural
+  port settings instead of falling back to `SerialProxy.default_open_opts/0`.
+
+  Every other callback delegates to `Espex.Test.TrackingSerialProxy`, so
+  notifications flow through its listener fan-out (register under
+  `{Espex.Test.TrackingSerialProxy, test}`, same as any other test using
+  that adapter) and its `:fail_next_open` knob applies here too.
+  """
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances do
+    # Deliberately instance 0 only, NOT TrackingSerialProxy's two-instance
+    # list — default_open_opts/1 below only matches instance 0 and would
+    # raise FunctionClauseError for instance 1.
+    [Espex.SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :ttl)]
+  end
+
+  @impl true
+  defdelegate open(instance, opts, subscriber), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate write(handle, data), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate close(handle), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate set_modem_pins(handle, rts, dtr), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate get_modem_pins(handle), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate request(handle, type), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  def default_open_opts(0) do
+    [speed: 115_200, data_bits: 8, stop_bits: 1, parity: :none, flow_control: :none]
   end
 end
 
