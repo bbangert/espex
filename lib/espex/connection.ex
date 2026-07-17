@@ -27,6 +27,11 @@ defmodule Espex.Connection do
   @handshake_status_ok 0x00
   @handshake_status_error 0x01
 
+  # Bounds failed-lazy-open adapter calls + warning logs to one per second
+  # per instance while a client loops writes at an unopenable port;
+  # CONFIGURE is exempt so an explicit reconfigure always retries.
+  @lazy_open_backoff_ms 1_000
+
   @impl ThousandIsland.Handler
   def handle_connection(socket, handler_options) do
     server_name = Keyword.fetch!(handler_options, :server_name)
@@ -413,29 +418,34 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:serial_open, instance, opts}) do
-    adapter = state.adapters.serial_proxy
-    resolved_opts = resolve_open_opts(adapter, instance, opts)
+    if opts == :default_opts and lazy_open_backing_off?(state, instance) do
+      Logger.debug(
+        "Espex #{state.peer} skipping lazy reopen of serial proxy instance #{instance} (recent open failure)"
+      )
 
-    case adapter.open(instance, resolved_opts, self()) do
-      {:ok, handle} ->
-        Logger.info("Espex #{state.peer} opened serial proxy instance #{instance}")
-        state = ConnectionState.put_port(state, instance, handle)
+      {:cont, state}
+    else
+      adapter = state.adapters.serial_proxy
+      resolved_opts = resolve_open_opts(adapter, instance, opts)
 
-        if ConnectionState.serial_subscribed?(state, instance) do
-          case serial_request({:ok, handle}, adapter, :subscribe) do
-            {:error, reason} ->
-              Logger.warning("Espex #{state.peer} serial resubscribe instance #{instance} failed: #{inspect(reason)}")
+      case adapter.open(instance, resolved_opts, self()) do
+        {:ok, handle} ->
+          Logger.info("Espex #{state.peer} opened serial proxy instance #{instance}")
 
-            _ ->
-              :ok
-          end
-        end
+          state =
+            state
+            |> ConnectionState.put_port(instance, handle)
+            |> ConnectionState.clear_serial_open_failure(instance)
 
-        {:cont, state}
+          maybe_reattach_subscription(state, adapter, instance, handle)
 
-      {:error, reason} ->
-        Logger.warning("Espex #{state.peer} serial open instance #{instance} failed: #{inspect(reason)}")
-        {:cont, state}
+          {:cont, state}
+
+        {:error, reason} ->
+          Logger.warning("Espex #{state.peer} serial open instance #{instance} failed: #{inspect(reason)}")
+          state = ConnectionState.put_serial_open_failure(state, instance, System.monotonic_time(:millisecond))
+          {:cont, state}
+      end
     end
   end
 
@@ -1072,6 +1082,35 @@ defmodule Espex.Connection do
   end
 
   defp serial_request(:error, _adapter, _type), do: {:error, :not_open}
+
+  # After every successful open (lazy or CONFIGURE-driven), reattach the
+  # client's subscribe intent if it's set — the SerialProxy moduledoc's
+  # contract is that a subscription survives reconfiguration instead of
+  # being consumed by the first open. There's no wire response here: the
+  # client's original SUBSCRIBE was already acked when the intent was
+  # recorded.
+  defp maybe_reattach_subscription(state, adapter, instance, handle) do
+    if ConnectionState.serial_subscribed?(state, instance) do
+      case serial_request({:ok, handle}, adapter, :subscribe) do
+        {:error, reason} ->
+          Logger.warning("Espex #{state.peer} serial resubscribe instance #{instance} failed: #{inspect(reason)}")
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  # A recent failed lazy open (:default_opts only — CONFIGURE always
+  # attempts) is still within the backoff window.
+  defp lazy_open_backing_off?(state, instance) do
+    case ConnectionState.serial_open_failure_at(state, instance) do
+      nil -> false
+      failed_at -> System.monotonic_time(:millisecond) - failed_at < @lazy_open_backoff_ms
+    end
+  end
 
   # Resolve a lazy :serial_open's :default_opts placeholder against the
   # adapter's own preferred settings, falling back to SerialProxy's

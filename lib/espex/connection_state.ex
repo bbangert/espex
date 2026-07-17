@@ -51,6 +51,7 @@ defmodule Espex.ConnectionState do
           entities: [struct()],
           opened_ports: %{non_neg_integer() => term()},
           serial_subscriptions: MapSet.t(non_neg_integer()),
+          serial_open_failures: %{non_neg_integer() => integer()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
           bluetooth_scanner_subscribed: boolean(),
@@ -81,6 +82,7 @@ defmodule Espex.ConnectionState do
     entities: [],
     opened_ports: %{},
     serial_subscriptions: MapSet.new(),
+    serial_open_failures: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
     bluetooth_scanner_subscribed: false,
@@ -223,6 +225,34 @@ defmodule Espex.ConnectionState do
   @spec serial_subscribed?(t(), non_neg_integer()) :: boolean()
   def serial_subscribed?(%__MODULE__{serial_subscriptions: set}, instance) do
     MapSet.member?(set, instance)
+  end
+
+  @doc """
+  Record that a lazy open of `instance` failed at `at_ms` (monotonic
+  milliseconds). State only stores the timestamp — the backoff window
+  itself is a policy decision that lives in `Espex.Connection`.
+  """
+  @spec put_serial_open_failure(t(), non_neg_integer(), integer()) :: t()
+  def put_serial_open_failure(%__MODULE__{} = state, instance, at_ms) do
+    %{state | serial_open_failures: Map.put(state.serial_open_failures, instance, at_ms)}
+  end
+
+  @doc """
+  Forget a recorded open failure for `instance` (called after a
+  successful open).
+  """
+  @spec clear_serial_open_failure(t(), non_neg_integer()) :: t()
+  def clear_serial_open_failure(%__MODULE__{} = state, instance) do
+    %{state | serial_open_failures: Map.delete(state.serial_open_failures, instance)}
+  end
+
+  @doc """
+  Return the monotonic millisecond timestamp of the last recorded open
+  failure for `instance`, or `nil` if none is recorded.
+  """
+  @spec serial_open_failure_at(t(), non_neg_integer()) :: integer() | nil
+  def serial_open_failure_at(%__MODULE__{serial_open_failures: failures}, instance) do
+    Map.get(failures, instance)
   end
 
   @doc """

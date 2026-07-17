@@ -194,8 +194,8 @@ defmodule Espex.Dispatch do
 
   def handle_request(state, %Proto.SerialProxyWriteRequest{} = req) do
     case with_lazy_open(state, req.instance, [{:serial_write, req.instance, req.data}]) do
-      nil -> {state, [{:log, :warning, "serial proxy write for unknown instance #{req.instance}"}]}
-      actions -> {state, actions}
+      :unknown_instance -> {state, [{:log, :warning, "serial proxy write for unknown instance #{req.instance}"}]}
+      {:ok, actions} -> {state, actions}
     end
   end
 
@@ -203,14 +203,14 @@ defmodule Espex.Dispatch do
     {rts, dtr} = unpack_line_states(req.line_states)
 
     case with_lazy_open(state, req.instance, [{:serial_modem_pins_set, req.instance, rts, dtr}]) do
-      nil -> {state, [{:log, :warning, "set_modem_pins for unknown instance #{req.instance}"}]}
-      actions -> {state, actions}
+      :unknown_instance -> {state, [{:log, :warning, "set_modem_pins for unknown instance #{req.instance}"}]}
+      {:ok, actions} -> {state, actions}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyGetModemPinsRequest{} = req) do
     case with_lazy_open(state, req.instance, [{:serial_modem_pins_get, req.instance}]) do
-      nil ->
+      :unknown_instance ->
         response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, line_states: 0}
 
         {state,
@@ -219,7 +219,7 @@ defmodule Espex.Dispatch do
            {:send, response}
          ]}
 
-      actions ->
+      {:ok, actions} ->
         {state, actions}
     end
   end
@@ -795,26 +795,29 @@ defmodule Espex.Dispatch do
   # advertised but not yet open on this connection. Upstream ESPHome has no
   # open gate at all — the UART is always live — so clients legitimately
   # write/subscribe/flush without a prior CONFIGURE (e.g. resuming after a
-  # device restart). `nil` when the instance isn't advertised.
+  # device restart). `:unknown_instance` when the instance isn't advertised.
+  @spec with_lazy_open(ConnectionState.t(), non_neg_integer(), [action()]) ::
+          {:ok, [action()]} | :unknown_instance
   defp with_lazy_open(state, instance, actions) do
     cond do
       ConnectionState.port_open?(state, instance) ->
-        actions
+        {:ok, actions}
 
       ConnectionState.find_serial_proxy(state, instance) ->
-        [
-          {:log, :debug, "lazily opening serial proxy instance #{instance}"},
-          {:serial_open, instance, :default_opts} | actions
-        ]
+        {:ok,
+         [
+           {:log, :debug, "lazily opening serial proxy instance #{instance}"},
+           {:serial_open, instance, :default_opts} | actions
+         ]}
 
       true ->
-        nil
+        :unknown_instance
     end
   end
 
   defp handle_flush_request(state, req) do
     case with_lazy_open(state, req.instance, [{:serial_request, req.instance, :flush}]) do
-      nil ->
+      :unknown_instance ->
         response = serial_request_error(req.instance, req.type, "unknown instance")
 
         {state,
@@ -823,7 +826,7 @@ defmodule Espex.Dispatch do
            {:send, response}
          ]}
 
-      actions ->
+      {:ok, actions} ->
         {state, actions}
     end
   end

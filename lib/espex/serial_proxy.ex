@@ -173,8 +173,12 @@ defmodule Espex.SerialProxy do
   `:unsubscribe` that can't reach the adapter yet (the lazy/configure
   open failed) is still acknowledged `OK`; the intent is remembered and
   reattached on the next successful open. `:flush` keeps its original
-  semantics and returns `"instance not open"` only if the lazy open
-  itself fails.
+  semantics; if the lazy open itself fails the client receives an ERROR
+  response (`error_message: ":not_open"`).
+
+  A failed lazy open is retried at most once per second per instance;
+  an explicit CONFIGURE always attempts an open, and a successful open
+  resets the backoff.
 
   ## Wiring
 
