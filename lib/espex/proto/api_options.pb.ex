@@ -1,6 +1,6 @@
 defmodule Espex.Proto.APISourceType do
   @moduledoc false
-  use Protobuf, enum: true, protoc_gen_elixir_version: "0.16.0", syntax: :proto2
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto2
 
   field(:SOURCE_BOTH, 0)
   field(:SOURCE_SERVER, 1)
@@ -9,7 +9,7 @@ end
 
 defmodule Espex.Proto.PbExtension do
   @moduledoc false
-  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto2
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto2
 
   extend(Google.Protobuf.MethodOptions, :needs_setup_connection, 1038,
     optional: true,
@@ -146,5 +146,5 @@ end
 
 defmodule Espex.Proto.Void do
   @moduledoc false
-  use Protobuf, protoc_gen_elixir_version: "0.16.0", syntax: :proto2
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto2
 end
