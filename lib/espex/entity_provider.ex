@@ -16,6 +16,7 @@ defmodule Espex.EntityProvider do
   | `c:list_entities/0` | Once per connection, when the client sends `ListEntitiesRequest` |
   | `c:initial_states/0` | Once per connection, when the client sends `SubscribeStatesRequest` |
   | `c:handle_command/1` | Each time the client issues a command struct for one of your entities |
+  | `c:handle_command/2` | Optional. Same, but also given the connection's security context — preferred over `c:handle_command/1` when exported |
 
   Return values:
 
@@ -26,6 +27,10 @@ defmodule Espex.EntityProvider do
     * `c:handle_command/1` returns `:ok` on success or `{:error, term}`
       on failure. Espex currently logs errors and continues — it does
       not send an error back to the client.
+    * `c:handle_command/2` has the same return contract. Implement it to
+      refuse dangerous commands (reboot, factory reset, firmware install)
+      on an unauthenticated connection — see its docs for why that
+      judgement has to live in the provider rather than in Espex.
 
   ## Frozen-at-accept-time snapshot
 
