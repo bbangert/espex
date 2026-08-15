@@ -223,4 +223,47 @@ defmodule Espex.EntityProvider do
   `%Espex.Proto.SwitchCommandRequest{}`, `%Espex.Proto.LightCommandRequest{}`.
   """
   @callback handle_command(command :: struct()) :: :ok | {:error, term()}
+
+  @doc """
+  Same as `c:handle_command/1`, but also given the originating
+  connection's security context. Preferred when exported — Espex calls
+  this in place of `c:handle_command/1`.
+
+  The context is currently:
+
+      %{encrypted?: boolean()}
+
+  `encrypted?` is true only once a Noise session is established. It is
+  false whenever the server is running keyless, because the ESPHome
+  protocol offers no other authentication: `AuthenticationRequest` carries
+  a password field, but Espex answers every such request with
+  `invalid_password: false`. On a keyless server, *any* host that can open
+  a TCP connection can therefore issue entity commands.
+
+  That is usually acceptable — the keyless window exists so Home Assistant
+  can adopt the device and provision a PSK, and most entity commands are
+  innocuous. It is not acceptable for commands that reboot, wipe or
+  reflash the device. Espex cannot tell those apart: which entity is
+  dangerous is the provider's knowledge, not the protocol's. Implement
+  this callback to make that judgement:
+
+      @impl Espex.EntityProvider
+      def handle_command(command, %{encrypted?: false}) do
+        if privileged?(command) do
+          Logger.warning("refusing privileged command on an unencrypted connection")
+          :ok
+        else
+          handle_command(command)
+        end
+      end
+
+      def handle_command(command, _context), do: handle_command(command)
+
+  Providers that don't export this keep receiving `c:handle_command/1`
+  unchanged.
+  """
+  @callback handle_command(command :: struct(), context :: %{encrypted?: boolean()}) ::
+              :ok | {:error, term()}
+
+  @optional_callbacks handle_command: 2
 end

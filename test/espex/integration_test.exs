@@ -119,6 +119,38 @@ defmodule Espex.IntegrationTest do
     end
   end
 
+  describe "entity commands (security context)" do
+    setup do
+      :persistent_term.put(:espex_entity_command_test_pid, self())
+      on_exit(fn -> :persistent_term.erase(:espex_entity_command_test_pid) end)
+      :ok
+    end
+
+    @tag adapters: %{entity_provider: Espex.Test.FakeEntityProvider}
+    test "a provider without handle_command/2 still gets handle_command/1", %{port: port} do
+      socket = connect(port)
+      send_struct(socket, %Proto.ButtonCommandRequest{key: 1})
+
+      assert_receive {:entity_command_1, %Proto.ButtonCommandRequest{key: 1}}, 1_000
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{entity_provider: Espex.Test.ContextAwareEntityProvider}
+    test "handle_command/2 is preferred and reports an unencrypted connection", %{port: port} do
+      socket = connect(port)
+      send_struct(socket, %Proto.ButtonCommandRequest{key: 1})
+
+      # Plaintext connection: the provider must be told, so it can refuse
+      # privileged commands. AuthenticationRequest is answered
+      # unconditionally, so there is no other signal available.
+      assert_receive {:entity_command_2, %Proto.ButtonCommandRequest{key: 1}, %{encrypted?: false}},
+                     1_000
+
+      refute_receive {:entity_command_1, _}, 100
+      :gen_tcp.close(socket)
+    end
+  end
+
   describe "disconnect" do
     test "DisconnectRequest gets a response and the server closes the socket", %{port: port} do
       socket = connect(port)

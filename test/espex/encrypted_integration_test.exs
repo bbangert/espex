@@ -13,17 +13,19 @@ defmodule Espex.EncryptedIntegrationTest do
 
     {:ok, sup_pid} =
       Espex.start_link(
-        name: sup_name,
-        server_name: server_name,
-        port: 0,
-        device_config: [
-          name: "espex-encrypted",
-          friendly_name: "Espex Encrypted",
-          project_name: "espex.demo",
-          project_version: "0.0.1",
-          mac_address: "AA:BB:CC:DD:EE:FF",
-          psk: @psk
-        ]
+        [
+          name: sup_name,
+          server_name: server_name,
+          port: 0,
+          device_config: [
+            name: "espex-encrypted",
+            friendly_name: "Espex Encrypted",
+            project_name: "espex.demo",
+            project_version: "0.0.1",
+            mac_address: "AA:BB:CC:DD:EE:FF",
+            psk: @psk
+          ]
+        ] ++ adapter_opts(context)
       )
 
     {:ok, port} = Espex.Supervisor.bound_port(sup_pid)
@@ -39,6 +41,37 @@ defmodule Espex.EncryptedIntegrationTest do
     end)
 
     %{port: port}
+  end
+
+  describe "entity commands (security context)" do
+    setup do
+      :persistent_term.put(:espex_entity_command_test_pid, self())
+      on_exit(fn -> :persistent_term.erase(:espex_entity_command_test_pid) end)
+      :ok
+    end
+
+    @tag adapters: %{entity_provider: Espex.Test.ContextAwareEntityProvider}
+    test "an established Noise session reports encrypted?: true", %{port: port} do
+      sock = connect(port)
+      {tx, _rx} = do_handshake(sock)
+
+      {:ok, type, payload} = MessageTypes.encode_parts(%Proto.ButtonCommandRequest{key: 1})
+      inner = NoiseFrame.encode_inner(type, payload)
+      {:ok, _tx, ct} = Noise.encrypt(tx, <<>>, inner)
+      :ok = :gen_tcp.send(sock, NoiseFrame.encode_outer(ct))
+
+      assert_receive {:entity_command_2, %Proto.ButtonCommandRequest{key: 1}, %{encrypted?: true}},
+                     1_000
+
+      :gen_tcp.close(sock)
+    end
+  end
+
+  defp adapter_opts(context) do
+    case Map.get(context, :adapters) do
+      nil -> []
+      adapters -> Map.to_list(adapters)
+    end
   end
 
   defp connect(port) do

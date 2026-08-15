@@ -740,8 +740,22 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(_socket, state, {:entity_command, command}) do
-    state.adapters.entity_provider.handle_command(command)
-    |> log_adapter_error(state.peer, "entity command")
+    provider = state.adapters.entity_provider
+
+    # Prefer the context-aware callback so the provider can refuse
+    # privileged commands (reboot / factory reset / firmware install) on an
+    # unauthenticated connection. Espex can't make that call itself —
+    # which entity is dangerous is the provider's knowledge — so it just
+    # supplies the security context. Providers that don't export /2 keep
+    # the original behaviour.
+    result =
+      if function_exported?(provider, :handle_command, 2) do
+        provider.handle_command(command, command_context(state))
+      else
+        provider.handle_command(command)
+      end
+
+    log_adapter_error(result, state.peer, "entity command")
 
     {:cont, state}
   end
@@ -1043,6 +1057,11 @@ defmodule Espex.Connection do
 
     :ok
   end
+
+  # A Noise session is the only authentication the ESPHome protocol
+  # actually provides here: AuthenticationRequest is answered
+  # unconditionally, so a keyless connection is anonymous by construction.
+  defp command_context(state), do: %{encrypted?: match?({:active, _, _}, state.encryption)}
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok
 
