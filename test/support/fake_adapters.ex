@@ -252,7 +252,53 @@ defmodule Espex.Test.FakeEntityProvider do
   end
 
   @impl true
-  def handle_command(_message), do: :ok
+  def handle_command(message) do
+    Espex.Test.EntityCommandProbe.notify({:entity_command_1, message})
+    :ok
+  end
+end
+
+defmodule Espex.Test.ContextAwareEntityProvider do
+  @moduledoc """
+  Entity provider exporting the optional `handle_command/2`, so a test can
+  assert Espex prefers it and hands over the connection's security context.
+  """
+  @behaviour Espex.EntityProvider
+
+  @impl true
+  def list_entities do
+    [%Espex.Proto.ListEntitiesBinarySensorResponse{object_id: "fake", key: 1, name: "Fake"}]
+  end
+
+  @impl true
+  def initial_states do
+    [%Espex.Proto.BinarySensorStateResponse{key: 1, state: true, missing_state: false}]
+  end
+
+  @impl true
+  def handle_command(message) do
+    Espex.Test.EntityCommandProbe.notify({:entity_command_1, message})
+    :ok
+  end
+
+  @impl true
+  def handle_command(message, context) do
+    Espex.Test.EntityCommandProbe.notify({:entity_command_2, message, context})
+    :ok
+  end
+end
+
+defmodule Espex.Test.EntityCommandProbe do
+  @moduledoc """
+  Routes entity-command callbacks to the test process registered under
+  `:persistent_term` key `:espex_entity_command_test_pid`.
+  """
+  def notify(msg) do
+    case :persistent_term.get(:espex_entity_command_test_pid, nil) do
+      pid when is_pid(pid) -> send(pid, msg)
+      _ -> :ok
+    end
+  end
 end
 
 defmodule Espex.Test.PidPskStore do
