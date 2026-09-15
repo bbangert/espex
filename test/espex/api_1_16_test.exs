@@ -184,6 +184,18 @@ defmodule Espex.Api116Test do
       :gen_tcp.close(socket)
     end
 
+    @tag adapters: %{serial_proxy: Espex.Test.UnsupportedPinsSerialProxy}
+    test "an adapter answering {:error, :not_supported} is acknowledged NOT_SUPPORTED, not ERROR", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x01})
+
+      assert {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_NOT_SUPPORTED, error_message: ""}, _} =
+               recv_struct(socket, rest)
+
+      :gen_tcp.close(socket)
+    end
+
     @tag adapters: %{serial_proxy: Espex.Test.FakeSerialProxyWithOne}
     test "GET_MODEM_PINS for an unknown instance reports INVALID_ARGUMENT", %{port: port} do
       {socket, _hello, rest} = hello(port)

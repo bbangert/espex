@@ -274,6 +274,26 @@ defmodule Espex.Test.ErroringPinsSerialProxy do
   def set_modem_pins(_handle, _rts, _dtr), do: {:error, :eio}
 end
 
+defmodule Espex.Test.UnsupportedPinsSerialProxy do
+  @moduledoc "Implements set_modem_pins/3 but answers the documented {:error, :not_supported}."
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances, do: [Espex.SerialProxy.Info.new(instance: 0, name: "nopins")]
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :nopins_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def set_modem_pins(_handle, _rts, _dtr), do: {:error, :not_supported}
+end
+
 defmodule Espex.Test.ExplodingZWaveProxy do
   @moduledoc "A controller whose subscribe fails for a reason other than :in_use."
   @behaviour Espex.ZWaveProxy

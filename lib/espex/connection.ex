@@ -1112,6 +1112,8 @@ defmodule Espex.Connection do
     if function_exported?(adapter, :set_modem_pins, 3) do
       case adapter.set_modem_pins(handle, rts, dtr) do
         :ok -> {:ok, :ok}
+        # The callback's documented "unsupported" answer is a status, not a failure.
+        {:error, :not_supported} -> {:ok, :not_supported}
         {:error, _reason} = error -> error
       end
     else

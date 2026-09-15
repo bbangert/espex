@@ -86,14 +86,15 @@ defmodule Espex.SerialProxy do
 
   ## Acknowledgements
 
-  Since 0.10.0 (API 1.16), every client request except WRITE is answered with a
-  `SerialProxyRequestResponse` (or, for GET_MODEM_PINS, a
-  `SerialProxyGetModemPinsResponse` carrying `status`):
+  Since 0.10.0 (API 1.16), every request in the API 1.16 set except WRITE
+  is answered with a `SerialProxyRequestResponse` (or, for GET_MODEM_PINS,
+  a `SerialProxyGetModemPinsResponse` carrying `status`). SET_MODE (API
+  1.17) is not implemented and is not answered:
 
   | Request | Status |
   |---------|--------|
   | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails, `INVALID_ARGUMENT` for an unknown instance |
-  | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it, `INVALID_ARGUMENT` for an unknown instance |
+  | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for an unknown instance |
   | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, `ERROR`, or `INVALID_ARGUMENT` |
   | SUBSCRIBE / UNSUBSCRIBE / FLUSH | the status returned by `c:request/2`, `OK` when a lazy open handles the subscribe, `INVALID_ARGUMENT` for an unknown instance |
 
