@@ -7,7 +7,8 @@ defmodule Espex.ServerState do
           device_config: DeviceConfig.t(),
           adapters: ConnectionState.adapters(),
           ble_owners: %{non_neg_integer() => pid()},
-          ble_monitors: %{pid() => reference()}
+          serial_owners: %{non_neg_integer() => pid()},
+          owner_monitors: %{pid() => reference()}
         }
 
   @enforce_keys [:device_config]
@@ -24,7 +25,8 @@ defmodule Espex.ServerState do
       connection_listener: nil
     },
     ble_owners: %{},
-    ble_monitors: %{}
+    serial_owners: %{},
+    owner_monitors: %{}
   ]
 
   @doc """
@@ -91,7 +93,7 @@ defmodule Espex.ServerState do
   end
 
   @doc """
-  Return the pid that currently owns `address`, or `nil`.
+  Return the pid that currently owns BLE `address`, or `nil`.
   """
   @spec ble_owner(t(), non_neg_integer()) :: pid() | nil
   def ble_owner(%__MODULE__{ble_owners: owners}, address) do
@@ -99,23 +101,18 @@ defmodule Espex.ServerState do
   end
 
   @doc """
-  Record `pid` as the owner of `address` and remember the monitor ref
-  so a later `DOWN` sweep can fire. Caller (`Espex.Server`) is
-  responsible for calling `Process.monitor/1`.
+  Record `pid` as the owner of BLE `address`. Ownership alone — the
+  caller (`Espex.Server`) pairs it with `put_owner_monitor/3`.
   """
-  @spec put_ble_owner(t(), non_neg_integer(), pid(), reference()) :: t()
-  def put_ble_owner(%__MODULE__{} = state, address, pid, monitor_ref) when is_pid(pid) do
-    %{
-      state
-      | ble_owners: Map.put(state.ble_owners, address, pid),
-        ble_monitors: Map.put_new(state.ble_monitors, pid, monitor_ref)
-    }
+  @spec put_ble_owner(t(), non_neg_integer(), pid()) :: t()
+  def put_ble_owner(%__MODULE__{} = state, address, pid) when is_pid(pid) do
+    %{state | ble_owners: Map.put(state.ble_owners, address, pid)}
   end
 
   @doc """
-  Drop `address` from the ownership map iff `pid` is the current owner.
-  Returns `{state, dropped?}` so the caller can decide whether to
-  demonitor when this was the pid's last owned address.
+  Drop `address` from the BLE ownership map iff `pid` is the current
+  owner. Returns `{state, dropped?}` so the caller can decide whether
+  to demonitor when this was the pid's last owned resource.
   """
   @spec drop_ble_owner(t(), non_neg_integer(), pid()) :: {t(), boolean()}
   def drop_ble_owner(%__MODULE__{} = state, address, pid) do
@@ -130,34 +127,93 @@ defmodule Espex.ServerState do
   end
 
   @doc """
-  Drop every address owned by `pid` and remove its monitor entry.
-  Returns `{state, [addresses]}` so the caller can fire adapter
-  disconnects.
+  Drop every BLE address owned by `pid`. Returns `{state, [addresses]}`
+  so the caller can fire adapter disconnects. The pid's monitor entry is
+  left in place — it is shared with serial ownership, so the caller
+  drops it once both kinds are released (`pop_owner_monitor/2`).
   """
   @spec drop_all_ble_owners(t(), pid()) :: {t(), [non_neg_integer()]}
   def drop_all_ble_owners(%__MODULE__{} = state, pid) do
-    {owned, kept} =
-      Map.split_with(state.ble_owners, fn {_addr, owner} -> owner == pid end)
+    {owned, kept} = Map.split_with(state.ble_owners, fn {_addr, owner} -> owner == pid end)
+    {%{state | ble_owners: kept}, Map.keys(owned)}
+  end
 
-    addresses = Map.keys(owned)
-    monitors = Map.delete(state.ble_monitors, pid)
+  @doc """
+  Return the pid that currently owns serial proxy `instance`, or `nil`.
+  """
+  @spec serial_owner(t(), non_neg_integer()) :: pid() | nil
+  def serial_owner(%__MODULE__{serial_owners: owners}, instance) do
+    Map.get(owners, instance)
+  end
 
-    {%{state | ble_owners: kept, ble_monitors: monitors}, addresses}
+  @doc """
+  Record `pid` as the owner of serial proxy `instance`.
+  """
+  @spec put_serial_owner(t(), non_neg_integer(), pid()) :: t()
+  def put_serial_owner(%__MODULE__{} = state, instance, pid) when is_pid(pid) do
+    %{state | serial_owners: Map.put(state.serial_owners, instance, pid)}
+  end
+
+  @doc """
+  Drop `instance` from the serial ownership map iff `pid` is the current
+  owner. Returns `{state, dropped?}`.
+  """
+  @spec drop_serial_owner(t(), non_neg_integer(), pid()) :: {t(), boolean()}
+  def drop_serial_owner(%__MODULE__{} = state, instance, pid) do
+    case Map.get(state.serial_owners, instance) do
+      ^pid ->
+        new_owners = Map.delete(state.serial_owners, instance)
+        {%{state | serial_owners: new_owners}, true}
+
+      _other ->
+        {state, false}
+    end
+  end
+
+  @doc """
+  Drop every serial instance owned by `pid`. Returns
+  `{state, [instances]}`. Leaves the monitor entry alone, like
+  `drop_all_ble_owners/2`.
+  """
+  @spec drop_all_serial_owners(t(), pid()) :: {t(), [non_neg_integer()]}
+  def drop_all_serial_owners(%__MODULE__{} = state, pid) do
+    {owned, kept} = Map.split_with(state.serial_owners, fn {_instance, owner} -> owner == pid end)
+    {%{state | serial_owners: kept}, Map.keys(owned)}
+  end
+
+  @doc """
+  Return `true` if `pid` owns at least one resource of either kind.
+  """
+  @spec pid_owns_any?(t(), pid()) :: boolean()
+  def pid_owns_any?(%__MODULE__{} = state, pid) do
+    owns = fn {_key, owner} -> owner == pid end
+    Enum.any?(state.ble_owners, owns) or Enum.any?(state.serial_owners, owns)
+  end
+
+  @doc """
+  Remember the monitor ref for `pid` so a later `DOWN` sweep can fire.
+  One ref per pid, shared by BLE and serial ownership; a second call for
+  the same pid keeps the first ref. The caller (`Espex.Server`) is
+  responsible for `Process.monitor/1`.
+  """
+  @spec put_owner_monitor(t(), pid(), reference()) :: t()
+  def put_owner_monitor(%__MODULE__{} = state, pid, monitor_ref) when is_pid(pid) do
+    %{state | owner_monitors: Map.put_new(state.owner_monitors, pid, monitor_ref)}
   end
 
   @doc """
   Pop the monitor ref for `pid`, returning `{ref, new_state}` (or
   `{nil, state}` when none registered).
   """
-  @spec pop_ble_monitor(t(), pid()) :: {reference() | nil, t()}
-  def pop_ble_monitor(%__MODULE__{} = state, pid) do
-    {ref, monitors} = Map.pop(state.ble_monitors, pid)
-    {ref, %{state | ble_monitors: monitors}}
+  @spec pop_owner_monitor(t(), pid()) :: {reference() | nil, t()}
+  def pop_owner_monitor(%__MODULE__{} = state, pid) do
+    {ref, monitors} = Map.pop(state.owner_monitors, pid)
+    {ref, %{state | owner_monitors: monitors}}
   end
 
   @doc """
   Look up the monitor ref for `pid`, or `nil`.
   """
-  @spec ble_monitor(t(), pid()) :: reference() | nil
-  def ble_monitor(%__MODULE__{ble_monitors: monitors}, pid), do: Map.get(monitors, pid)
+  @spec owner_monitor(t(), pid()) :: reference() | nil
+  def owner_monitor(%__MODULE__{owner_monitors: monitors}, pid), do: Map.get(monitors, pid)
 end

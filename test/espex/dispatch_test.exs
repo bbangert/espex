@@ -14,6 +14,13 @@ defmodule Espex.DispatchTest do
     ConnectionState.new(Keyword.merge(defaults, overrides))
   end
 
+  # A connection that owns `instance` (API 1.17): the subscribe intent is
+  # recorded only after a successful Server claim, so setting it here is
+  # the pure-state stand-in for "this connection SUBSCRIBEd".
+  defp owned_state(serial_proxies, instance) do
+    state(serial_proxies: serial_proxies) |> ConnectionState.put_serial_subscription(instance)
+  end
+
   defp ble_scanner_adapters(scanner) do
     %{
       serial_proxy: nil,
@@ -208,7 +215,7 @@ defmodule Espex.DispatchTest do
              } = ack
     end
 
-    test "known instance, not yet open: emits :serial_open with translated opts" do
+    test "owned instance, not yet open: emits :serial_open with translated opts" do
       info = SerialProxy.Info.new(instance: 0, name: "n", port_type: :ttl)
 
       req = %Proto.SerialProxyConfigureRequest{
@@ -220,41 +227,66 @@ defmodule Espex.DispatchTest do
         flow_control: true
       }
 
-      {_s, [{:serial_open, 0, opts}]} =
-        Dispatch.handle_request(state(serial_proxies: [info]), req)
+      {_s, [{:serial_open, 0, opts}]} = Dispatch.handle_request(owned_state([info], 0), req)
 
       assert opts[:speed] == 115_200
       assert opts[:parity] == :even
       assert opts[:flow_control] == :hardware
     end
 
-    test "known instance already open: emits :serial_close then :serial_open" do
+    test "owned instance already open: emits :serial_close then :serial_open" do
       info = SerialProxy.Info.new(instance: 0, name: "n")
-      s = state(serial_proxies: [info]) |> ConnectionState.put_port(0, :existing_handle)
+      s = owned_state([info], 0) |> ConnectionState.put_port(0, :existing_handle)
       {_s, actions} = Dispatch.handle_request(s, %Proto.SerialProxyConfigureRequest{instance: 0})
 
       assert [{:serial_close, 0}, {:serial_open, 0, _opts}] = actions
     end
+
+    test "known instance without SUBSCRIBE: acks PORT_IN_USE, no open" do
+      info = SerialProxy.Info.new(instance: 0, name: "n")
+
+      {_s, [{:log, :info, msg}, {:send, ack}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyConfigureRequest{instance: 0})
+
+      assert msg =~ "not the owner"
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 0,
+               type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE,
+               status: :SERIAL_PROXY_STATUS_PORT_IN_USE
+             } = ack
+    end
   end
 
   describe "SerialProxyWriteRequest" do
-    test "opened instance: emits :serial_write" do
-      s = state() |> ConnectionState.put_port(3, :h)
+    test "owned, opened instance: emits :serial_write" do
+      s = owned_state([], 3) |> ConnectionState.put_port(3, :h)
 
       {_s, [{:serial_write, 3, "hi"}]} =
         Dispatch.handle_request(s, %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
     end
 
-    test "advertised but unopened instance: lazily opens with default opts then writes" do
+    test "owned but unopened instance: lazily opens with default opts then writes" do
       info = SerialProxy.Info.new(instance: 3, name: "n")
 
       {_s, actions} =
-        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyWriteRequest{
-          instance: 3,
-          data: "hi"
-        })
+        Dispatch.handle_request(owned_state([info], 3), %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
 
       assert [{:log, :debug, _}, {:serial_open, 3, :default_opts}, {:serial_write, 3, "hi"}] = actions
+    end
+
+    test "known instance without SUBSCRIBE: dropped with a debug log, no ack" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+
+      {_s, [{:log, :debug, msg}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
+
+      assert msg =~ "not the owner"
+
+      # Open on this connection (a non-owner's GET_MODEM_PINS can open it)
+      # but still not subscribed: same outcome.
+      s = state() |> ConnectionState.put_port(3, :h)
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(s, %Proto.SerialProxyWriteRequest{instance: 3, data: "hi"})
     end
 
     test "unknown instance: logs warning" do
@@ -267,7 +299,7 @@ defmodule Espex.DispatchTest do
 
   describe "SerialProxySetModemPinsRequest" do
     test "unpacks line_states bitmask into rts/dtr booleans" do
-      s = state() |> ConnectionState.put_port(3, :h)
+      s = owned_state([], 3) |> ConnectionState.put_port(3, :h)
 
       {_, [{:serial_modem_pins_set, 3, true, false}]} =
         Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0x01})
@@ -282,17 +314,33 @@ defmodule Espex.DispatchTest do
         Dispatch.handle_request(s, %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0})
     end
 
-    test "advertised but unopened instance: lazily opens with default opts then sets pins" do
+    test "owned but unopened instance: lazily opens with default opts then sets pins" do
       info = SerialProxy.Info.new(instance: 3, name: "n")
 
       {_s, actions} =
-        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxySetModemPinsRequest{
+        Dispatch.handle_request(owned_state([info], 3), %Proto.SerialProxySetModemPinsRequest{
           instance: 3,
           line_states: 0x01
         })
 
       assert [{:log, :debug, _}, {:serial_open, 3, :default_opts}, {:serial_modem_pins_set, 3, true, false}] =
                actions
+    end
+
+    test "known instance without SUBSCRIBE: acks PORT_IN_USE" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+
+      {_s, [{:log, :info, _}, {:send, ack}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxySetModemPinsRequest{
+          instance: 3,
+          line_states: 0x01
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS,
+               status: :SERIAL_PROXY_STATUS_PORT_IN_USE
+             } = ack
     end
 
     test "unknown instance: logs warning and acks INVALID_ARGUMENT" do
@@ -317,7 +365,7 @@ defmodule Espex.DispatchTest do
         Dispatch.handle_request(s, %Proto.SerialProxyGetModemPinsRequest{instance: 3})
     end
 
-    test "advertised but unopened instance: lazily opens with default opts then reads" do
+    test "advertised but unopened instance, no SUBSCRIBE: still lazily opens and reads (ungated)" do
       info = SerialProxy.Info.new(instance: 3, name: "n")
 
       {_s, actions} =
@@ -387,39 +435,58 @@ defmodule Espex.DispatchTest do
   end
 
   describe "SerialProxyRequest" do
-    test "open instance with known type: emits :serial_request action" do
+    test "SUBSCRIBE / UNSUBSCRIBE on a known instance: emit only the ownership action, state untouched" do
       info = SerialProxy.Info.new(instance: 3, name: "n")
-      s = state(serial_proxies: [info]) |> ConnectionState.put_port(3, :h)
 
-      {_, [{:serial_request, 3, :subscribe}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 3,
-          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
-        })
+      for s <- [state(serial_proxies: [info]), state(serial_proxies: [info]) |> ConnectionState.put_port(3, :h)] do
+        {^s, [{:serial_subscribe, 3}]} =
+          Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE})
 
-      {_, [{:serial_request, 3, :unsubscribe}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 3,
-          type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
-        })
+        # Intent is recorded by the Connection after the Server claim, never here.
+        refute ConnectionState.serial_subscribed?(s, 3)
 
-      {_, [{:serial_request, 3, :flush}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 3,
-          type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
-        })
+        {^s, [{:serial_unsubscribe, 3}]} =
+          Dispatch.handle_request(s, %Proto.SerialProxyRequest{
+            instance: 3,
+            type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+          })
+      end
     end
 
-    test "flush for advertised but unopened instance: lazily opens then flushes" do
+    test "flush on an owned, open instance: emits :serial_request" do
+      s = owned_state([SerialProxy.Info.new(instance: 3, name: "n")], 3) |> ConnectionState.put_port(3, :h)
+
+      {_, [{:serial_request, 3, :flush}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH})
+    end
+
+    test "flush on an owned but unopened instance: lazily opens then flushes" do
       info = SerialProxy.Info.new(instance: 3, name: "n")
 
       {_, actions} =
-        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyRequest{
+        Dispatch.handle_request(owned_state([info], 3), %Proto.SerialProxyRequest{
           instance: 3,
           type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
         })
 
       assert [{:log, :debug, _}, {:serial_open, 3, :default_opts}, {:serial_request, 3, :flush}] = actions
+    end
+
+    test "flush without SUBSCRIBE: acks PORT_IN_USE" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+
+      {_, [{:log, :info, _}, {:send, ack}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyRequest{
+          instance: 3,
+          type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
+               status: :SERIAL_PROXY_STATUS_PORT_IN_USE,
+               error_message: "port owned by another client or not subscribed"
+             } = ack
     end
 
     test "flush / subscribe / unsubscribe for unknown instance: INVALID_ARGUMENT" do
@@ -450,85 +517,74 @@ defmodule Espex.DispatchTest do
 
       assert %Proto.SerialProxyRequestResponse{type: 99, status: :SERIAL_PROXY_STATUS_ERROR} = response
     end
+  end
 
-    test "subscribe on unopened advertised instance: records intent, lazily opens, replies OK" do
-      info = SerialProxy.Info.new(instance: 4, name: "n")
+  describe "SerialProxySetModeRequest" do
+    test "unknown instance: INVALID_ARGUMENT with the SET_MODE type" do
+      {_, [{:log, :warning, msg}, {:send, ack}]} =
+        Dispatch.handle_request(state(), %Proto.SerialProxySetModeRequest{instance: 9, mode: :SERIAL_PROXY_MODE_RAW})
 
-      {new_s, actions} =
-        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxyRequest{
-          instance: 4,
-          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
-        })
-
-      assert [{:log, :debug, _}, {:serial_open, 4, :default_opts}, {:send, response}] = actions
-
-      assert %Proto.SerialProxyRequestResponse{
-               instance: 4,
-               type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
-               status: :SERIAL_PROXY_STATUS_OK,
-               error_message: ""
-             } = response
-
-      assert ConnectionState.serial_subscribed?(new_s, 4)
-    end
-
-    test "subscribe on OPEN instance: emits :serial_request and records intent" do
-      info = SerialProxy.Info.new(instance: 4, name: "n")
-      s = state(serial_proxies: [info]) |> ConnectionState.put_port(4, :h)
-
-      {new_s, [{:serial_request, 4, :subscribe}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 4,
-          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
-        })
-
-      assert ConnectionState.serial_subscribed?(new_s, 4)
-    end
-
-    test "subscribe for unknown instance: INVALID_ARGUMENT 'unknown instance'" do
-      {_, [{:log, :warning, _}, {:send, response}]} =
-        Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
-          instance: 9,
-          type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
-        })
+      assert msg =~ "unknown instance"
 
       assert %Proto.SerialProxyRequestResponse{
                instance: 9,
-               type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SET_MODE,
+               status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+             } = ack
+    end
+
+    test "known instance without SUBSCRIBE: PORT_IN_USE" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+
+      {_, [{:log, :info, _}, {:send, ack}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxySetModeRequest{
+          instance: 3,
+          mode: :SERIAL_PROXY_MODE_PROTOCOL
+        })
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SET_MODE,
+               status: :SERIAL_PROXY_STATUS_PORT_IN_USE
+             } = ack
+    end
+
+    test "mode outside the enum (decoded as an integer): INVALID_ARGUMENT" do
+      s = owned_state([SerialProxy.Info.new(instance: 3, name: "n")], 3) |> ConnectionState.put_port(3, :h)
+
+      {_, [{:log, :warning, msg}, {:send, ack}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModeRequest{instance: 3, mode: 7})
+
+      assert msg =~ "unknown mode"
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SET_MODE,
                status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT,
-               error_message: "unknown instance"
-             } = response
+               error_message: "unknown mode"
+             } = ack
     end
 
-    test "unsubscribe on unopened instance: clears intent and replies OK" do
-      info = SerialProxy.Info.new(instance: 4, name: "n")
-      s = state(serial_proxies: [info]) |> ConnectionState.put_serial_subscription(4)
+    test "RAW / PROTOCOL on an owned, open instance: emits :serial_set_mode" do
+      s = owned_state([SerialProxy.Info.new(instance: 3, name: "n")], 3) |> ConnectionState.put_port(3, :h)
 
-      {new_s, [{:send, response}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 4,
-          type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
-        })
+      {_, [{:serial_set_mode, 3, :raw}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModeRequest{instance: 3, mode: :SERIAL_PROXY_MODE_RAW})
 
-      assert response.status == :SERIAL_PROXY_STATUS_OK
-      refute ConnectionState.serial_subscribed?(new_s, 4)
+      {_, [{:serial_set_mode, 3, :protocol}]} =
+        Dispatch.handle_request(s, %Proto.SerialProxySetModeRequest{instance: 3, mode: :SERIAL_PROXY_MODE_PROTOCOL})
     end
 
-    test "unsubscribe on OPEN instance: emits :serial_request and clears intent" do
-      info = SerialProxy.Info.new(instance: 4, name: "n")
+    test "owned but unopened instance: lazily opens first (the callback needs a handle)" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
 
-      s =
-        state(serial_proxies: [info])
-        |> ConnectionState.put_port(4, :h)
-        |> ConnectionState.put_serial_subscription(4)
-
-      {new_s, [{:serial_request, 4, :unsubscribe}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{
-          instance: 4,
-          type: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+      {_, actions} =
+        Dispatch.handle_request(owned_state([info], 3), %Proto.SerialProxySetModeRequest{
+          instance: 3,
+          mode: :SERIAL_PROXY_MODE_PROTOCOL
         })
 
-      refute ConnectionState.serial_subscribed?(new_s, 4)
+      assert [{:log, :debug, _}, {:serial_open, 3, :default_opts}, {:serial_set_mode, 3, :protocol}] = actions
     end
   end
 
@@ -556,6 +612,25 @@ defmodule Espex.DispatchTest do
       r = Dispatch.serial_request_response(2, :flush, {:error, :port_busy})
       assert r.status == :SERIAL_PROXY_STATUS_ERROR
       assert r.error_message == ":port_busy"
+    end
+
+    test ":set_mode acknowledges with the SET_MODE wire type" do
+      r = Dispatch.serial_request_response(2, :set_mode, {:ok, :not_supported})
+      assert r.type == :SERIAL_PROXY_REQUEST_TYPE_SET_MODE
+      assert r.status == :SERIAL_PROXY_STATUS_NOT_SUPPORTED
+    end
+  end
+
+  describe "serial_port_in_use_response/2" do
+    test "builds the PORT_IN_USE ack for the given type" do
+      r = Dispatch.serial_port_in_use_response(1, :subscribe)
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 1,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+               status: :SERIAL_PROXY_STATUS_PORT_IN_USE,
+               error_message: "port owned by another client or not subscribed"
+             } = r
     end
   end
 

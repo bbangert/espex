@@ -65,6 +65,103 @@ defmodule Espex.ServerTest do
     end
   end
 
+  describe "claim_serial_owner/3" do
+    test "succeeds for an unowned instance and is idempotent for the same pid", %{server: server} do
+      assert Server.claim_serial_owner(server, 0, self()) == :ok
+      assert Server.claim_serial_owner(server, 0, self()) == :ok
+      assert Server.serial_owner(server, 0) == self()
+    end
+
+    test "returns {:busy, other_pid} when another live connection holds it", %{server: server} do
+      other = spawn_link(fn -> Process.sleep(:infinity) end)
+      assert Server.claim_serial_owner(server, 0, other) == :ok
+      assert Server.claim_serial_owner(server, 0, self()) == {:busy, other}
+    end
+
+    test "takes over from a recorded owner that is no longer alive", %{server: server} do
+      # A pid the Server never monitored (it has already exited), so no
+      # DOWN sweep can have run — only the alive check at claim time can
+      # clear it, which is the window between death and sweep.
+      {:ok, ghost} = Task.start(fn -> :ok end)
+      ref = Process.monitor(ghost)
+      assert_receive {:DOWN, ^ref, :process, ^ghost, _}, 1_000
+
+      other = spawn_link(fn -> Process.sleep(:infinity) end)
+      :ok = Server.claim_serial_owner(server, 0, other)
+      :ok = Server.claim_serial_owner(server, 1, other)
+      state = Server.get_state(server)
+      state = %{state | serial_owners: Map.put(state.serial_owners, 0, ghost)}
+      :sys.replace_state(server, fn _ -> state end)
+
+      assert Server.claim_serial_owner(server, 0, self()) == :ok
+      assert Server.serial_owner(server, 0) == self()
+      # The takeover swept the ghost only; the live other owner is untouched.
+      assert Server.serial_owner(server, 1) == other
+    end
+  end
+
+  describe "release_serial_owner/3" do
+    test "drops the instance when pid matches and is idempotent", %{server: server} do
+      :ok = Server.claim_serial_owner(server, 0, self())
+      assert Server.release_serial_owner(server, 0, self()) == :ok
+      assert Server.serial_owner(server, 0) == nil
+      assert Server.release_serial_owner(server, 0, self()) == :ok
+    end
+
+    test "is a no-op when pid is not the owner", %{server: server} do
+      other = spawn_link(fn -> Process.sleep(:infinity) end)
+      :ok = Server.claim_serial_owner(server, 0, other)
+
+      assert Server.release_serial_owner(server, 0, self()) == :ok
+      assert Server.serial_owner(server, 0) == other
+    end
+  end
+
+  describe "release_all_serial_owners/2" do
+    test "returns the released instances and leaves other owners alone", %{server: server} do
+      :ok = Server.claim_serial_owner(server, 0, self())
+      :ok = Server.claim_serial_owner(server, 1, self())
+      other = spawn_link(fn -> Process.sleep(:infinity) end)
+      :ok = Server.claim_serial_owner(server, 2, other)
+
+      assert Enum.sort(Server.release_all_serial_owners(server, self())) == [0, 1]
+      assert Server.serial_owner(server, 0) == nil
+      assert Server.serial_owner(server, 1) == nil
+      assert Server.serial_owner(server, 2) == other
+      assert Server.release_all_serial_owners(server, self()) == []
+    end
+  end
+
+  describe "shared owner monitor" do
+    test "one monitor per pid, dropped only once both BLE and serial are released", %{server: server} do
+      me = self()
+      :ok = Server.claim_ble_owner(server, 0x1122, me)
+      :ok = Server.claim_serial_owner(server, 0, me)
+
+      state = Server.get_state(server)
+      assert map_size(state.owner_monitors) == 1
+      ref = state.owner_monitors[me]
+
+      :ok = Server.release_ble_owner(server, 0x1122, me)
+      assert Server.get_state(server).owner_monitors[me] == ref
+
+      :ok = Server.release_serial_owner(server, 0, me)
+      assert Server.get_state(server).owner_monitors == %{}
+    end
+
+    test "release_all_ble_owners/2 keeps the monitor while a serial instance is still owned", %{server: server} do
+      me = self()
+      :ok = Server.claim_ble_owner(server, 0x1122, me)
+      :ok = Server.claim_serial_owner(server, 0, me)
+
+      _ = Server.release_all_ble_owners(server, me)
+      assert Map.has_key?(Server.get_state(server).owner_monitors, me)
+
+      _ = Server.release_all_serial_owners(server, me)
+      refute Map.has_key?(Server.get_state(server).owner_monitors, me)
+    end
+  end
+
   describe "update_device_config/2" do
     @psk :crypto.hash(:sha256, "server-test-psk")
 
@@ -173,6 +270,22 @@ defmodule Espex.ServerTest do
       # handler has run yet — different scheduler, different mailbox.
       wait_until(fn -> Server.ble_owner(server, 0x1122) == nil end)
       wait_until(fn -> Server.ble_owner(server, 0x3344) == nil end)
+    end
+
+    test "an owner's death releases its serial instances and its monitor entry", %{server: server} do
+      {:ok, owner} = Task.start(fn -> Process.sleep(:infinity) end)
+
+      :ok = Server.claim_serial_owner(server, 0, owner)
+      :ok = Server.claim_ble_owner(server, 0x1122, owner)
+      assert Server.serial_owner(server, 0) == owner
+
+      ref = Process.monitor(owner)
+      Process.exit(owner, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^owner, _}, 1_000
+
+      wait_until(fn -> Server.serial_owner(server, 0) == nil end)
+      wait_until(fn -> Server.ble_owner(server, 0x1122) == nil end)
+      refute Map.has_key?(Server.get_state(server).owner_monitors, owner)
     end
   end
 

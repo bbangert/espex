@@ -44,6 +44,9 @@ defmodule Espex.Dispatch do
           | {:serial_modem_pins_set, instance :: non_neg_integer(), rts :: boolean(), dtr :: boolean()}
           | {:serial_modem_pins_get, instance :: non_neg_integer()}
           | {:serial_request, instance :: non_neg_integer(), SerialProxy.request_type()}
+          | {:serial_subscribe, instance :: non_neg_integer()}
+          | {:serial_unsubscribe, instance :: non_neg_integer()}
+          | {:serial_set_mode, instance :: non_neg_integer(), SerialProxy.mode()}
           | :zwave_subscribe
           | :zwave_unsubscribe
           | {:zwave_send_frame, binary()}
@@ -188,39 +191,59 @@ defmodule Espex.Dispatch do
   end
 
   # -- Serial Proxy --
+  #
+  # API 1.17 single-owner rule: the connection that SUBSCRIBEd an instance
+  # owns it. The subscribe intent in ConnectionState is recorded only after
+  # a successful `Server.claim_serial_owner/3` (see Connection), so
+  # `serial_subscribed?/2` is exactly "this connection is the owner" and
+  # the gate below needs no Server call. Upstream validates the instance
+  # before ownership, so an unknown instance stays INVALID_ARGUMENT.
 
   def handle_request(state, %Proto.SerialProxyConfigureRequest{} = req) do
-    if ConnectionState.find_serial_proxy(state, req.instance) do
-      opts = SerialProxy.configure_request_to_open_opts(req)
+    cond do
+      ConnectionState.find_serial_proxy(state, req.instance) == nil ->
+        {state,
+         [
+           {:log, :warning, "serial proxy configure for unknown instance #{req.instance}"},
+           {:send, serial_request_error(req.instance, :configure, "unknown instance", :invalid_argument)}
+         ]}
 
-      close_actions =
-        if ConnectionState.port_open?(state, req.instance) do
-          [{:serial_close, req.instance}]
-        else
-          []
-        end
+      not ConnectionState.serial_subscribed?(state, req.instance) ->
+        refuse_not_owner(state, req.instance, :configure)
 
-      {state, close_actions ++ [{:serial_open, req.instance, opts}]}
-    else
-      {state,
-       [
-         {:log, :warning, "serial proxy configure for unknown instance #{req.instance}"},
-         {:send, serial_request_error(req.instance, :configure, "unknown instance", :invalid_argument)}
-       ]}
+      true ->
+        opts = SerialProxy.configure_request_to_open_opts(req)
+
+        close_actions =
+          if ConnectionState.port_open?(state, req.instance) do
+            [{:serial_close, req.instance}]
+          else
+            []
+          end
+
+        {state, close_actions ++ [{:serial_open, req.instance, opts}]}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyWriteRequest{} = req) do
-    case with_lazy_open(state, req.instance, [{:serial_write, req.instance, req.data}]) do
-      :unknown_instance -> {state, [{:log, :warning, "serial proxy write for unknown instance #{req.instance}"}]}
-      {:ok, actions} -> {state, actions}
+    case with_owner_lazy_open(state, req.instance, [{:serial_write, req.instance, req.data}]) do
+      :unknown_instance ->
+        {state, [{:log, :warning, "serial proxy write for unknown instance #{req.instance}"}]}
+
+      # WRITE has no acknowledgement, so upstream drops a non-owner's bytes
+      # silently (verbose log only, to avoid flooding).
+      :not_owner ->
+        {state, [{:log, :debug, "serial proxy write for instance #{req.instance} dropped — not the owner"}]}
+
+      {:ok, actions} ->
+        {state, actions}
     end
   end
 
   def handle_request(state, %Proto.SerialProxySetModemPinsRequest{} = req) do
     {rts, dtr} = unpack_line_states(req.line_states)
 
-    case with_lazy_open(state, req.instance, [{:serial_modem_pins_set, req.instance, rts, dtr}]) do
+    case with_owner_lazy_open(state, req.instance, [{:serial_modem_pins_set, req.instance, rts, dtr}]) do
       :unknown_instance ->
         {state,
          [
@@ -228,8 +251,42 @@ defmodule Espex.Dispatch do
            {:send, serial_request_error(req.instance, :set_modem_pins, "unknown instance", :invalid_argument)}
          ]}
 
+      :not_owner ->
+        refuse_not_owner(state, req.instance, :set_modem_pins)
+
       {:ok, actions} ->
         {state, actions}
+    end
+  end
+
+  # SET_MODE needs a handle for the adapter's `set_mode/2`, so it takes
+  # the owner's lazy open like WRITE does. Arguments are validated before
+  # ownership, as for the instance: the enum decodes to an integer for a
+  # value outside SerialProxyMode.
+  def handle_request(state, %Proto.SerialProxySetModeRequest{} = req) do
+    case serial_mode_from_wire(req.mode) do
+      nil ->
+        {state,
+         [
+           {:log, :warning, "serial proxy set_mode with unknown mode #{inspect(req.mode)}"},
+           {:send, serial_request_error(req.instance, :set_mode, "unknown mode", :invalid_argument)}
+         ]}
+
+      mode ->
+        case with_owner_lazy_open(state, req.instance, [{:serial_set_mode, req.instance, mode}]) do
+          :unknown_instance ->
+            {state,
+             [
+               {:log, :warning, "serial proxy set_mode for unknown instance #{req.instance}"},
+               {:send, serial_request_error(req.instance, :set_mode, "unknown instance", :invalid_argument)}
+             ]}
+
+          :not_owner ->
+            refuse_not_owner(state, req.instance, :set_mode)
+
+          {:ok, actions} ->
+            {state, actions}
+        end
     end
   end
 
@@ -828,6 +885,18 @@ defmodule Espex.Dispatch do
   end
 
   @doc """
+  Build the PORT_IN_USE `SerialProxyRequestResponse` a non-owner receives
+  under the API 1.17 single-owner rule. Dispatch emits it for the gated
+  requests; the handler sends it for a SUBSCRIBE whose claim on the
+  Server came back `{:busy, _}`.
+  """
+  @spec serial_port_in_use_response(non_neg_integer(), SerialProxy.ack_type()) ::
+          Proto.SerialProxyRequestResponse.t()
+  def serial_port_in_use_response(instance, type) do
+    serial_request_error(instance, type, "port owned by another client or not subscribed", :port_in_use)
+  end
+
+  @doc """
   Build a `SerialProxyRequestResponse` from an adapter's return value.
   The handler calls this after resolving a `:serial_request` action.
   """
@@ -884,6 +953,7 @@ defmodule Espex.Dispatch do
   defp to_wire_request_type(:flush), do: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
   defp to_wire_request_type(:configure), do: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE
   defp to_wire_request_type(:set_modem_pins), do: :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS
+  defp to_wire_request_type(:set_mode), do: :SERIAL_PROXY_REQUEST_TYPE_SET_MODE
   # Echoing an inbound request's type back in an error ack: the six wire
   # atoms pass through, and so does the raw integer the decoder yields for
   # a value outside the enum — an out-of-range type must produce an ERROR
@@ -909,6 +979,10 @@ defmodule Espex.Dispatch do
   defp to_wire_status(:port_in_use), do: :SERIAL_PROXY_STATUS_PORT_IN_USE
   defp to_wire_status(:invalid_argument), do: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
 
+  defp serial_mode_from_wire(:SERIAL_PROXY_MODE_RAW), do: :raw
+  defp serial_mode_from_wire(:SERIAL_PROXY_MODE_PROTOCOL), do: :protocol
+  defp serial_mode_from_wire(_unknown), do: nil
+
   defp zwave_wire_request_type(:subscribe), do: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE
   defp zwave_wire_request_type(:unsubscribe), do: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE
 
@@ -922,15 +996,6 @@ defmodule Espex.Dispatch do
       type: to_wire_request_type(type),
       status: to_wire_status(status),
       error_message: message
-    }
-  end
-
-  defp serial_request_ok(instance, wire_type) do
-    %Proto.SerialProxyRequestResponse{
-      instance: instance,
-      type: wire_type,
-      status: :SERIAL_PROXY_STATUS_OK,
-      error_message: ""
     }
   end
 
@@ -958,8 +1023,34 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # The owner gate in front of `with_lazy_open/3`: `:not_owner` for a known
+  # (advertised, or already open on this connection) instance this
+  # connection has not SUBSCRIBEd.
+  @spec with_owner_lazy_open(ConnectionState.t(), non_neg_integer(), [action()]) ::
+          {:ok, [action()]} | :not_owner | :unknown_instance
+  defp with_owner_lazy_open(state, instance, actions) do
+    cond do
+      ConnectionState.serial_subscribed?(state, instance) ->
+        with_lazy_open(state, instance, actions)
+
+      ConnectionState.port_open?(state, instance) or ConnectionState.find_serial_proxy(state, instance) != nil ->
+        :not_owner
+
+      true ->
+        :unknown_instance
+    end
+  end
+
+  defp refuse_not_owner(state, instance, type) do
+    {state,
+     [
+       {:log, :info, "serial proxy #{type} for instance #{instance} refused — not the owner (SUBSCRIBE first)"},
+       {:send, serial_port_in_use_response(instance, type)}
+     ]}
+  end
+
   defp handle_flush_request(state, req) do
-    case with_lazy_open(state, req.instance, [{:serial_request, req.instance, :flush}]) do
+    case with_owner_lazy_open(state, req.instance, [{:serial_request, req.instance, :flush}]) do
       :unknown_instance ->
         response = serial_request_error(req.instance, req.type, "unknown instance", :invalid_argument)
 
@@ -969,47 +1060,35 @@ defmodule Espex.Dispatch do
            {:send, response}
          ]}
 
+      :not_owner ->
+        refuse_not_owner(state, req.instance, :flush)
+
       {:ok, actions} ->
         {state, actions}
     end
   end
 
+  # Ownership is a cross-connection effect, so SUBSCRIBE / UNSUBSCRIBE are
+  # handed to the Connection whole: it claims (or releases) the instance
+  # on the Server, records the intent, runs the lazy open and sends the
+  # acknowledgement — see `{:serial_subscribe, _}` there.
   defp handle_subscription_request(state, req, type) do
-    cond do
-      ConnectionState.find_serial_proxy(state, req.instance) == nil ->
-        response = serial_request_error(req.instance, req.type, "unknown instance", :invalid_argument)
-
-        {state,
-         [
-           {:log, :warning, "serial proxy #{type} for unknown instance #{req.instance}"},
-           {:send, response}
-         ]}
-
-      type == :subscribe ->
-        state = ConnectionState.put_serial_subscription(state, req.instance)
-
-        if ConnectionState.port_open?(state, req.instance) do
-          {state, [{:serial_request, req.instance, type}]}
-        else
-          # Lazy open; auto-attach happens inside the :serial_open
-          # interpretation, so ack the request directly instead of also
-          # emitting {:serial_request, ...} (which would double-subscribe).
-          {state,
-           [
-             {:log, :debug, "lazily opening serial proxy instance #{req.instance}"},
-             {:serial_open, req.instance, :default_opts},
-             {:send, serial_request_ok(req.instance, req.type)}
-           ]}
+    if ConnectionState.find_serial_proxy(state, req.instance) do
+      action =
+        case type do
+          :subscribe -> {:serial_subscribe, req.instance}
+          :unsubscribe -> {:serial_unsubscribe, req.instance}
         end
 
-      type == :unsubscribe ->
-        state = ConnectionState.drop_serial_subscription(state, req.instance)
+      {state, [action]}
+    else
+      response = serial_request_error(req.instance, req.type, "unknown instance", :invalid_argument)
 
-        if ConnectionState.port_open?(state, req.instance) do
-          {state, [{:serial_request, req.instance, type}]}
-        else
-          {state, [{:send, serial_request_ok(req.instance, req.type)}]}
-        end
+      {state,
+       [
+         {:log, :warning, "serial proxy #{type} for unknown instance #{req.instance}"},
+         {:send, response}
+       ]}
     end
   end
 

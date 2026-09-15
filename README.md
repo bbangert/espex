@@ -38,7 +38,8 @@ and a complete example:
 
 - ESPHome Native API frame encoding/decoding — plaintext and
   `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports; advertises
-  API 1.16 (device capabilities RPC, proxy request acknowledgements)
+  API 1.17 (device capabilities RPC, proxy request acknowledgements,
+  serial proxy ownership and port mode)
 - Runtime Noise PSK provisioning and rotation — Home Assistant can
   bootstrap a keyless node's key over plaintext (opt-in) or rotate it
   over the encrypted channel, with host-app persistence via
@@ -81,7 +82,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:espex, "~> 0.10"}
+    {:espex, "~> 0.11"}
   ]
 end
 ```

@@ -15,8 +15,15 @@ adapter behaviours are for.
    accepted connection handler registers itself here so `Espex.push_state/2`
    can fan broadcasts out to subscribers.
 2. **`Espex.Server`** — a GenServer holding the stable cross-connection
-   state (device config, adapter modules). Short-lived per-connection
-   state does not live here; see below.
+   state (device config, adapter modules) and the two ownership tables
+   that must be visible across connections: which connection holds each
+   BLE peripheral address, and which connection owns each serial proxy
+   instance (API 1.17's single-owner rule — the connection that
+   SUBSCRIBEd). A connection claims and releases through `Espex.Server`
+   calls; the Server keeps one monitor per connection pid, shared by
+   both kinds, and sweeps everything that pid owned on `DOWN` so a crash
+   before `cleanup/1` still frees the resources. Short-lived
+   per-connection state does not live here; see below.
 3. **`ThousandIsland`** — TCP acceptor pool that spawns an
    `Espex.Connection` handler process per client.
 4. **`Espex.Mdns.Advertiser`** — optional. Started only if you pass the
@@ -51,12 +58,17 @@ an action so the handler owns those interactions exclusively. This
 split keeps `Dispatch` easy to test with fake adapters and keeps the
 handler free of branching on message type.
 
-Acknowledgements whose status depends on an adapter call — the serial
-CONFIGURE / SET_MODEM_PINS / GET_MODEM_PINS replies and the Z-Wave
-SUBSCRIBE reply — follow the same split: `Dispatch` exposes a pure
-builder (`serial_request_response/3`, `modem_pins_response/2`,
-`zwave_request_response/2`) and the handler calls it with the adapter's
-result and sends the frame.
+Acknowledgements whose status depends on an adapter call or on
+cross-connection state — the serial CONFIGURE / SET_MODEM_PINS /
+GET_MODEM_PINS / SET_MODE replies, the serial SUBSCRIBE / UNSUBSCRIBE
+replies (which follow an ownership claim or release on `Espex.Server`),
+and the Z-Wave SUBSCRIBE reply — follow the same split: `Dispatch`
+exposes a pure builder (`serial_request_response/3`,
+`serial_port_in_use_response/2`, `modem_pins_response/2`,
+`zwave_request_response/2`) and the handler calls it with the result and
+sends the frame. Refusals `Dispatch` can decide from per-connection state
+alone (an unknown instance, a request from a non-owner) are emitted as
+`{:send, _}` actions directly.
 
 ## Per-connection state
 

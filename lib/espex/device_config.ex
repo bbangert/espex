@@ -62,7 +62,7 @@ defmodule Espex.DeviceConfig do
 
   @default_port 6053
   @api_version_major 1
-  @api_version_minor 16
+  @api_version_minor 17
   @compilation_time (fn ->
                        {{y, mo, d}, {h, mi, s}} = :erlang.universaltime()
                        months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -259,7 +259,7 @@ defmodule Espex.DeviceConfig do
   @doc """
   Returns the API version minor number this server advertises.
 
-  Changed in 0.10.0: 1.10 → 1.16.
+  Changed in 0.10.0: 1.10 → 1.16. Changed in 0.11.0: 1.16 → 1.17.
 
   The version is an espex constant, not a host option: it states which
   client-gated behaviours espex implements, and a host cannot add
@@ -270,6 +270,10 @@ defmodule Espex.DeviceConfig do
     * 1.16 — `ZWaveProxyRequestResponse` after SUBSCRIBE / UNSUBSCRIBE,
       `SerialProxyRequestResponse` after CONFIGURE and SET_MODEM_PINS,
       `status` on `SerialProxyGetModemPinsResponse`
+    * 1.17 — serial proxy single-owner rule (the SUBSCRIBEd connection
+      owns the instance; others get `PORT_IN_USE`) and
+      `SerialProxySetModeRequest` (RAW / PROTOCOL) acknowledged with
+      `SET_MODE`
   """
   @spec api_version_minor() :: non_neg_integer()
   def api_version_minor, do: @api_version_minor

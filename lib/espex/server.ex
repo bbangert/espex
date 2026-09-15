@@ -76,6 +76,49 @@ defmodule Espex.Server do
   end
 
   @doc """
+  Claim ownership of serial proxy `instance` for `pid` — the SUBSCRIBE
+  step of the API 1.17 single-owner rule. Returns `:ok` when the instance
+  is unowned, already owned by `pid`, or owned by a connection that has
+  since died (the dead owner's entries are swept first, mirroring
+  upstream's `is_connection_setup` takeover), and `{:busy, other_pid}`
+  when another live connection holds it.
+
+  Espex monitors `pid` so a sudden death (TCP crash before `cleanup/1`
+  runs) still releases the instance. One monitor per pid covers both
+  BLE and serial ownership.
+  """
+  @spec claim_serial_owner(GenServer.server(), non_neg_integer(), pid()) :: :ok | {:busy, pid()}
+  def claim_serial_owner(server, instance, pid) when is_pid(pid) do
+    GenServer.call(server, {:claim_serial_owner, instance, pid})
+  end
+
+  @doc """
+  Release ownership of serial proxy `instance` iff `pid` is the current
+  owner. Idempotent — a release for a not-owned instance is a no-op.
+  """
+  @spec release_serial_owner(GenServer.server(), non_neg_integer(), pid()) :: :ok
+  def release_serial_owner(server, instance, pid) when is_pid(pid) do
+    GenServer.call(server, {:release_serial_owner, instance, pid})
+  end
+
+  @doc """
+  Release every serial instance owned by `pid` in one shot and return
+  the released instances. Used by `Connection.cleanup/1` on TCP close.
+  """
+  @spec release_all_serial_owners(GenServer.server(), pid()) :: [non_neg_integer()]
+  def release_all_serial_owners(server, pid) when is_pid(pid) do
+    GenServer.call(server, {:release_all_serial_owners, pid})
+  end
+
+  @doc """
+  Return the pid currently owning serial proxy `instance`, or `nil`.
+  """
+  @spec serial_owner(GenServer.server(), non_neg_integer()) :: pid() | nil
+  def serial_owner(server, instance) do
+    GenServer.call(server, {:serial_owner, instance})
+  end
+
+  @doc """
   Replace the Noise PSK in the stored `device_config` from a
   runtime-provisioned key (e.g. a `NoiseEncryptionSetKeyRequest`).
 
@@ -153,8 +196,11 @@ defmodule Espex.Server do
   def handle_call({:claim_ble_owner, address, pid}, _from, state) do
     case ServerState.ble_owner(state, address) do
       nil ->
-        ref = ensure_monitor(state, pid)
-        new_state = ServerState.put_ble_owner(state, address, pid, ref)
+        new_state =
+          state
+          |> ensure_monitor(pid)
+          |> ServerState.put_ble_owner(address, pid)
+
         {:reply, :ok, new_state}
 
       ^pid ->
@@ -167,25 +213,50 @@ defmodule Espex.Server do
 
   def handle_call({:release_ble_owner, address, pid}, _from, state) do
     {new_state, dropped?} = ServerState.drop_ble_owner(state, address, pid)
-
-    new_state =
-      if dropped? and not pid_owns_any?(new_state, pid) do
-        demonitor(new_state, pid)
-      else
-        new_state
-      end
-
-    {:reply, :ok, new_state}
+    {:reply, :ok, maybe_demonitor(new_state, pid, dropped?)}
   end
 
   def handle_call({:release_all_ble_owners, pid}, _from, state) do
     {new_state, addresses} = ServerState.drop_all_ble_owners(state, pid)
-    new_state = demonitor(new_state, pid)
-    {:reply, addresses, new_state}
+    {:reply, addresses, maybe_demonitor(new_state, pid, true)}
   end
 
   def handle_call({:ble_owner, address}, _from, state) do
     {:reply, ServerState.ble_owner(state, address), state}
+  end
+
+  def handle_call({:claim_serial_owner, instance, pid}, _from, state) do
+    case ServerState.serial_owner(state, instance) do
+      nil ->
+        {:reply, :ok, claim_serial(state, instance, pid)}
+
+      ^pid ->
+        {:reply, :ok, state}
+
+      other ->
+        # The DOWN sweep is the durable release; this only covers the
+        # window between the old owner's death and the Server processing
+        # its DOWN, so a reconnecting client is not refused by a ghost.
+        if Process.alive?(other) do
+          {:reply, {:busy, other}, state}
+        else
+          {:reply, :ok, state |> sweep_owner(other) |> claim_serial(instance, pid)}
+        end
+    end
+  end
+
+  def handle_call({:release_serial_owner, instance, pid}, _from, state) do
+    {new_state, dropped?} = ServerState.drop_serial_owner(state, instance, pid)
+    {:reply, :ok, maybe_demonitor(new_state, pid, dropped?)}
+  end
+
+  def handle_call({:release_all_serial_owners, pid}, _from, state) do
+    {new_state, instances} = ServerState.drop_all_serial_owners(state, pid)
+    {:reply, instances, maybe_demonitor(new_state, pid, true)}
+  end
+
+  def handle_call({:serial_owner, instance}, _from, state) do
+    {:reply, ServerState.serial_owner(state, instance), state}
   end
 
   def handle_call({:update_psk, key}, _from, state) do
@@ -217,27 +288,42 @@ defmodule Espex.Server do
 
   @impl GenServer
   def handle_info({:DOWN, _ref, :process, pid, _reason}, state) do
-    # Connection process died without calling release_all_ble_owners/2;
-    # sweep its addresses so future claims succeed.
-    {new_state, _addresses} = ServerState.drop_all_ble_owners(state, pid)
-    {:noreply, new_state}
+    # Connection process died without releasing; sweep everything it
+    # owned (BLE addresses and serial instances) so future claims succeed.
+    {:noreply, sweep_owner(state, pid)}
   end
 
   def handle_info(_other, state), do: {:noreply, state}
 
+  defp claim_serial(state, instance, pid) do
+    state
+    |> ensure_monitor(pid)
+    |> ServerState.put_serial_owner(instance, pid)
+  end
+
   defp ensure_monitor(state, pid) do
-    case ServerState.ble_monitor(state, pid) do
-      nil -> Process.monitor(pid)
-      ref -> ref
+    case ServerState.owner_monitor(state, pid) do
+      nil -> ServerState.put_owner_monitor(state, pid, Process.monitor(pid))
+      _ref -> state
     end
   end
 
-  defp pid_owns_any?(state, pid) do
-    Enum.any?(state.ble_owners, fn {_addr, owner} -> owner == pid end)
+  # Drop the shared monitor once the pid owns nothing of either kind.
+  defp maybe_demonitor(state, pid, true = _released?) do
+    if ServerState.pid_owns_any?(state, pid), do: state, else: demonitor(state, pid)
+  end
+
+  defp maybe_demonitor(state, _pid, false), do: state
+
+  # Release everything `pid` owns, of both kinds, and forget its monitor.
+  defp sweep_owner(state, pid) do
+    {state, _addresses} = ServerState.drop_all_ble_owners(state, pid)
+    {state, _instances} = ServerState.drop_all_serial_owners(state, pid)
+    demonitor(state, pid)
   end
 
   defp demonitor(state, pid) do
-    case ServerState.pop_ble_monitor(state, pid) do
+    case ServerState.pop_owner_monitor(state, pid) do
       {nil, state} ->
         state
 
