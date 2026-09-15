@@ -150,7 +150,8 @@ defmodule Espex.ServerTest do
     end
 
     test "a struct is refused at the caller, never inside the server", %{server: server, server_pid: pid} do
-      assert_raise FunctionClauseError, fn -> Server.update_adapters(server, %DeviceConfig{}) end
+      # apply/3 keeps the compiler from proving the guard fails at compile time.
+      assert_raise FunctionClauseError, fn -> apply(Server, :update_adapters, [server, %DeviceConfig{}]) end
       assert Process.alive?(pid)
     end
   end

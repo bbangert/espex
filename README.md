@@ -37,7 +37,8 @@ and a complete example:
 ## Features
 
 - ESPHome Native API frame encoding/decoding — plaintext and
-  `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports
+  `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports; advertises
+  API 1.16 (device capabilities RPC, proxy request acknowledgements)
 - Runtime Noise PSK provisioning and rotation — Home Assistant can
   bootstrap a keyless node's key over plaintext (opt-in) or rotate it
   over the encrypted channel, with host-app persistence via
@@ -155,7 +156,7 @@ Espex.connected_clients(MyApp.EspexServer)
 #=> [%Espex.ClientInfo{
 #=>    peer: "192.168.1.5:54312",
 #=>    client_info: "Home Assistant 2026.1.0",
-#=>    api_version: {1, 10},
+#=>    api_version: {1, 16},
 #=>    encrypted?: true,
 #=>    connected_at: 1_750_000_000,
 #=>    last_activity_at: 1_750_000_042

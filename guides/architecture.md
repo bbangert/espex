@@ -51,6 +51,13 @@ an action so the handler owns those interactions exclusively. This
 split keeps `Dispatch` easy to test with fake adapters and keeps the
 handler free of branching on message type.
 
+Acknowledgements whose status depends on an adapter call — the serial
+CONFIGURE / SET_MODEM_PINS / GET_MODEM_PINS replies and the Z-Wave
+SUBSCRIBE reply — follow the same split: `Dispatch` exposes a pure
+builder (`serial_request_response/3`, `modem_pins_response/2`,
+`zwave_request_response/2`) and the handler calls it with the adapter's
+result and sends the frame.
+
 ## Per-connection state
 
 `Espex.ConnectionState` is built once at connection-accept time from
@@ -237,7 +244,12 @@ Any adapter key you omit disables that feature.
 ## DeviceConfig
 
 `Espex.DeviceConfig` holds the identity and capabilities advertised to
-clients. Construct one with `DeviceConfig.new/1`:
+clients. `to_device_info_response/2` and
+`to_device_capabilities_response/2` are both built from it on the same
+connection, so the feature flags a pre-1.15 client reads from
+`DeviceInfoResponse` and a newer client reads from
+`DeviceCapabilitiesResponse` never disagree. Construct one with
+`DeviceConfig.new/1`:
 
 ```elixir
 DeviceConfig.new(

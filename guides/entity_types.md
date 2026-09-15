@@ -207,11 +207,22 @@ Key advertisement fields:
   comfort, home, sleep, activity)
 - `visual_min_temperature` / `visual_max_temperature` / `visual_target_temperature_step`
   — UI bounds and resolution (floats in °C)
-- `supports_two_point_target_temperature` — set `true` if HEAT_COOL
-  mode uses distinct low/high setpoints instead of a single target
-- `supports_action` — set `true` if you can report the *action* the
-  system is currently taking (heating/cooling/idle) in addition to the
-  configured *mode*
+- `feature_flags` — bitmask of ESPHome's `ClimateFeature`:
+  `SUPPORTS_CURRENT_TEMPERATURE` (1), `SUPPORTS_TWO_POINT_TARGET_TEMPERATURE`
+  (2), `REQUIRES_TWO_POINT_TARGET_TEMPERATURE` (4), `SUPPORTS_CURRENT_HUMIDITY`
+  (8), `SUPPORTS_TARGET_HUMIDITY` (16), `SUPPORTS_ACTION` (32)
+- `supports_current_temperature`, `supports_two_point_target_temperature`
+  (`true` if HEAT_COOL mode uses distinct low/high setpoints instead of a
+  single target), `supports_action` (`true` if you can report the *action*
+  the system is currently taking in addition to the configured *mode*),
+  `supports_current_humidity`, `supports_target_humidity` — the deprecated
+  boolean forms of the same capabilities
+
+Which form a client reads depends on the API version the device
+advertises: below 1.13 it ignores `feature_flags` and derives the
+capabilities from the booleans; from 1.13 it reads only `feature_flags`.
+Espex advertises 1.16, so set `feature_flags`; keep the booleans too if
+older clients matter to you.
 
 ### Mode vs action
 
@@ -226,6 +237,8 @@ A thermostat in `HEAT` mode is `IDLE` when the room's at the setpoint
 and `HEATING` while it's ramping up.
 
 ```elixir
+import Bitwise
+
 @thermostat_key 6001
 
 def list_entities do
@@ -234,6 +247,8 @@ def list_entities do
       object_id: "thermostat",
       key: @thermostat_key,
       name: "Thermostat",
+      # SUPPORTS_CURRENT_TEMPERATURE | SUPPORTS_ACTION
+      feature_flags: 1 ||| 32,
       supports_current_temperature: true,
       supports_action: true,
       supported_modes: [:CLIMATE_MODE_OFF, :CLIMATE_MODE_HEAT, :CLIMATE_MODE_COOL, :CLIMATE_MODE_HEAT_COOL],

@@ -195,11 +195,17 @@ defmodule Espex.DispatchTest do
   end
 
   describe "SerialProxyConfigureRequest" do
-    test "unknown instance: logs warning, no open" do
-      {_s, [{:log, :warning, msg}]} =
+    test "unknown instance: logs warning, acks INVALID_ARGUMENT, no open" do
+      {_s, [{:log, :warning, msg}, {:send, ack}]} =
         Dispatch.handle_request(state(), %Proto.SerialProxyConfigureRequest{instance: 99})
 
       assert msg =~ "unknown instance 99"
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 99,
+               type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE,
+               status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+             } = ack
     end
 
     test "known instance, not yet open: emits :serial_open with translated opts" do
@@ -289,11 +295,17 @@ defmodule Espex.DispatchTest do
                actions
     end
 
-    test "unknown instance: logs warning" do
-      {_, [{:log, :warning, msg}]} =
+    test "unknown instance: logs warning and acks INVALID_ARGUMENT" do
+      {_, [{:log, :warning, msg}, {:send, ack}]} =
         Dispatch.handle_request(state(), %Proto.SerialProxySetModemPinsRequest{instance: 3, line_states: 0})
 
       assert msg =~ "unknown instance"
+
+      assert %Proto.SerialProxyRequestResponse{
+               instance: 3,
+               type: :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS,
+               status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+             } = ack
     end
   end
 
@@ -319,7 +331,58 @@ defmodule Espex.DispatchTest do
         Dispatch.handle_request(state(), %Proto.SerialProxyGetModemPinsRequest{instance: 3})
 
       assert msg =~ "unknown instance"
-      assert %Proto.SerialProxyGetModemPinsResponse{instance: 3, line_states: 0} = response
+
+      assert %Proto.SerialProxyGetModemPinsResponse{
+               instance: 3,
+               line_states: 0,
+               status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+             } = response
+    end
+  end
+
+  describe "SerialProxyRequest with an acknowledgement-only type" do
+    test "CONFIGURE / SET_MODEM_PINS / SET_MODE are refused with INVALID_ARGUMENT" do
+      for wire <- [
+            :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE,
+            :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS,
+            :SERIAL_PROXY_REQUEST_TYPE_SET_MODE
+          ] do
+        {_s, [{:log, :warning, _}, {:send, response}]} =
+          Dispatch.handle_request(state(), %Proto.SerialProxyRequest{instance: 0, type: wire})
+
+        assert %Proto.SerialProxyRequestResponse{
+                 instance: 0,
+                 type: ^wire,
+                 status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+               } = response
+      end
+    end
+  end
+
+  describe "DeviceCapabilitiesRequest" do
+    test "mirrors the feature flags and serial proxies DeviceInfoResponse carries" do
+      config = %DeviceConfig{
+        name: "caps",
+        bluetooth_feature_flags: 0x23,
+        zwave_feature_flags: 1,
+        zwave_home_id: 0xDEADBEEF
+      }
+
+      info = SerialProxy.Info.new(instance: 0, name: "zigbee", port_type: :rs485, configured_line_states: [:rts])
+      s = state(device_config: config, serial_proxies: [info])
+
+      {_s, [{:send, %Proto.DeviceInfoResponse{} = device_info}]} =
+        Dispatch.handle_request(s, %Proto.DeviceInfoRequest{})
+
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{} = caps}]} =
+        Dispatch.handle_request(s, %Proto.DeviceCapabilitiesRequest{})
+
+      assert caps.bluetooth_proxy.feature_flags == device_info.bluetooth_proxy_feature_flags
+      assert caps.zwave_proxy.feature_flags == device_info.zwave_proxy_feature_flags
+      assert caps.zwave_proxy.home_id == device_info.zwave_home_id
+      assert caps.serial_proxies == device_info.serial_proxies
+      assert caps.voice_assistant.feature_flags == 0
+      assert caps.bluetooth_proxy.mac_address == ""
     end
   end
 
@@ -359,30 +422,33 @@ defmodule Espex.DispatchTest do
       assert [{:log, :debug, _}, {:serial_open, 3, :default_opts}, {:serial_request, 3, :flush}] = actions
     end
 
-    test "flush for unknown instance: sends ERROR response" do
-      {_, [{:log, :warning, msg}, {:send, response}]} =
-        Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
-          instance: 3,
-          type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
-        })
+    test "flush / subscribe / unsubscribe for unknown instance: INVALID_ARGUMENT" do
+      for wire <- [
+            :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
+            :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+            :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+          ] do
+        {_, [{:log, :warning, msg}, {:send, response}]} =
+          Dispatch.handle_request(state(), %Proto.SerialProxyRequest{instance: 3, type: wire})
 
-      assert msg =~ "unknown instance"
+        assert msg =~ "unknown instance"
 
-      assert %Proto.SerialProxyRequestResponse{
-               instance: 3,
-               type: :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
-               status: :SERIAL_PROXY_STATUS_ERROR,
-               error_message: "unknown instance"
-             } = response
+        assert %Proto.SerialProxyRequestResponse{
+                 instance: 3,
+                 type: ^wire,
+                 status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT,
+                 error_message: "unknown instance"
+               } = response
+      end
     end
 
-    test "unknown request type: sends ERROR response and logs" do
+    test "out-of-range request type: sends ERROR response echoing the raw value" do
       s = state() |> ConnectionState.put_port(3, :h)
-
+      # The decoder yields the integer for a value outside the enum.
       {_, [{:log, :warning, _}, {:send, response}]} =
-        Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: :SERIAL_PROXY_REQUEST_TYPE_UNKNOWN})
+        Dispatch.handle_request(s, %Proto.SerialProxyRequest{instance: 3, type: 99})
 
-      assert %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_ERROR} = response
+      assert %Proto.SerialProxyRequestResponse{type: 99, status: :SERIAL_PROXY_STATUS_ERROR} = response
     end
 
     test "subscribe on unopened advertised instance: records intent, lazily opens, replies OK" do
@@ -419,7 +485,7 @@ defmodule Espex.DispatchTest do
       assert ConnectionState.serial_subscribed?(new_s, 4)
     end
 
-    test "subscribe for unknown instance: ERROR 'unknown instance'" do
+    test "subscribe for unknown instance: INVALID_ARGUMENT 'unknown instance'" do
       {_, [{:log, :warning, _}, {:send, response}]} =
         Dispatch.handle_request(state(), %Proto.SerialProxyRequest{
           instance: 9,
@@ -429,7 +495,7 @@ defmodule Espex.DispatchTest do
       assert %Proto.SerialProxyRequestResponse{
                instance: 9,
                type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
-               status: :SERIAL_PROXY_STATUS_ERROR,
+               status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT,
                error_message: "unknown instance"
              } = response
     end
@@ -503,22 +569,45 @@ defmodule Espex.DispatchTest do
         })
     end
 
-    test "subscribe without adapter: logs only" do
-      {_s, [{:log, :info, _}]} =
+    test "subscribe without adapter: logs and acks NOT_SUPPORTED" do
+      {_s, [{:log, :info, _}, {:send, ack}]} =
         Dispatch.handle_request(state(), %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE})
+
+      assert %Proto.ZWaveProxyRequestResponse{
+               type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE,
+               status: :ZWAVE_PROXY_STATUS_NOT_SUPPORTED
+             } = ack
     end
 
-    test "unsubscribe when subscribed: flips flag and emits action" do
+    test "unsubscribe when subscribed: flips flag, emits action, then acks OK" do
       s = state() |> ConnectionState.put_zwave_subscribed(true)
 
-      {new_s, [:zwave_unsubscribe]} =
+      {new_s, [:zwave_unsubscribe, {:send, ack}]} =
         Dispatch.handle_request(s, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE})
 
       refute new_s.zwave_subscribed
+      assert ack == Dispatch.zwave_request_response(:unsubscribe, :ok)
     end
 
-    test "unsubscribe when not subscribed: no actions" do
-      {_s, []} = Dispatch.handle_request(state(), %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE})
+    test "unsubscribe when not subscribed: acks OK only" do
+      {_s, [{:send, ack}]} =
+        Dispatch.handle_request(state(), %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE})
+
+      assert %Proto.ZWaveProxyRequestResponse{
+               type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE,
+               status: :ZWAVE_PROXY_STATUS_OK
+             } = ack
+    end
+
+    test "zwave_request_response/2 maps every status" do
+      assert %Proto.ZWaveProxyRequestResponse{status: :ZWAVE_PROXY_STATUS_OK} =
+               Dispatch.zwave_request_response(:subscribe, :ok)
+
+      assert %Proto.ZWaveProxyRequestResponse{status: :ZWAVE_PROXY_STATUS_IN_USE} =
+               Dispatch.zwave_request_response(:subscribe, :in_use)
+
+      assert %Proto.ZWaveProxyRequestResponse{status: :ZWAVE_PROXY_STATUS_NOT_SUPPORTED} =
+               Dispatch.zwave_request_response(:subscribe, :not_supported)
     end
   end
 
@@ -1212,6 +1301,16 @@ defmodule Espex.DispatchTest do
       for event <- events do
         assert {^s, []} = Dispatch.handle_event(s, event)
       end
+    end
+  end
+
+  describe "modem_pins_response/2 status" do
+    test "OK on success, NOT_SUPPORTED and ERROR on the two failure kinds" do
+      assert %{status: :SERIAL_PROXY_STATUS_OK} = Dispatch.modem_pins_response(1, {:ok, %{rts: false, dtr: false}})
+      assert %{status: :SERIAL_PROXY_STATUS_NOT_SUPPORTED} = Dispatch.modem_pins_response(1, {:error, :not_supported})
+
+      assert %{status: :SERIAL_PROXY_STATUS_ERROR, line_states: 0} =
+               Dispatch.modem_pins_response(1, {:error, :not_open})
     end
   end
 

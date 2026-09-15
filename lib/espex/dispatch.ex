@@ -124,6 +124,12 @@ defmodule Espex.Dispatch do
     {state, [{:send, response}]}
   end
 
+  def handle_request(state, %Proto.DeviceCapabilitiesRequest{}) do
+    serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
+    response = DeviceConfig.to_device_capabilities_response(state.device_config, serial_protos)
+    {state, [{:send, response}]}
+  end
+
   def handle_request(state, %Proto.ListEntitiesRequest{}) do
     ir_actions = Enum.map(state.infrared_entities, &{:send, InfraredProxy.Entity.to_proto(&1)})
     custom_actions = Enum.map(state.entities, &{:send, &1})
@@ -196,7 +202,11 @@ defmodule Espex.Dispatch do
 
       {state, close_actions ++ [{:serial_open, req.instance, opts}]}
     else
-      {state, [{:log, :warning, "serial proxy configure for unknown instance #{req.instance}"}]}
+      {state,
+       [
+         {:log, :warning, "serial proxy configure for unknown instance #{req.instance}"},
+         {:send, serial_request_error(req.instance, :configure, "unknown instance", :invalid_argument)}
+       ]}
     end
   end
 
@@ -211,15 +221,26 @@ defmodule Espex.Dispatch do
     {rts, dtr} = unpack_line_states(req.line_states)
 
     case with_lazy_open(state, req.instance, [{:serial_modem_pins_set, req.instance, rts, dtr}]) do
-      :unknown_instance -> {state, [{:log, :warning, "set_modem_pins for unknown instance #{req.instance}"}]}
-      {:ok, actions} -> {state, actions}
+      :unknown_instance ->
+        {state,
+         [
+           {:log, :warning, "set_modem_pins for unknown instance #{req.instance}"},
+           {:send, serial_request_error(req.instance, :set_modem_pins, "unknown instance", :invalid_argument)}
+         ]}
+
+      {:ok, actions} ->
+        {state, actions}
     end
   end
 
   def handle_request(state, %Proto.SerialProxyGetModemPinsRequest{} = req) do
     case with_lazy_open(state, req.instance, [{:serial_modem_pins_get, req.instance}]) do
       :unknown_instance ->
-        response = %Proto.SerialProxyGetModemPinsResponse{instance: req.instance, line_states: 0}
+        response = %Proto.SerialProxyGetModemPinsResponse{
+          instance: req.instance,
+          line_states: 0,
+          status: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
+        }
 
         {state,
          [
@@ -240,6 +261,16 @@ defmodule Espex.Dispatch do
         {state,
          [
            {:log, :warning, "serial proxy request unknown type: #{inspect(req.type)}"},
+           {:send, response}
+         ]}
+
+      :ack_only ->
+        response =
+          serial_request_error(req.instance, req.type, "acknowledgement-only request type", :invalid_argument)
+
+        {state,
+         [
+           {:log, :warning, "serial proxy request with acknowledgement-only type: #{inspect(req.type)}"},
            {:send, response}
          ]}
 
@@ -275,19 +306,30 @@ defmodule Espex.Dispatch do
 
   # -- Z-Wave Proxy --
 
+  # The SUBSCRIBE acknowledgement carries the adapter's answer, so the
+  # interpreter sends it after `subscribe/1` (see Connection).
   def handle_request(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE}) do
     if ConnectionState.adapter?(state, :zwave_proxy) do
       {state, [:zwave_subscribe]}
     else
-      {state, [{:log, :info, "Z-Wave subscribe ignored — no adapter configured"}]}
+      {state,
+       [
+         {:log, :info, "Z-Wave subscribe refused — no adapter configured"},
+         {:send, zwave_request_response(:subscribe, :not_supported)}
+       ]}
     end
   end
 
+  # UNSUBSCRIBE always succeeds (idempotent), so the ack is emitted here.
+  # `cleanup/1` runs the :zwave_unsubscribe action directly on teardown and
+  # must stay silent, which is why the ack is not part of that action.
   def handle_request(state, %Proto.ZWaveProxyRequest{type: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE}) do
+    ack = {:send, zwave_request_response(:unsubscribe, :ok)}
+
     if state.zwave_subscribed do
-      {ConnectionState.put_zwave_subscribed(state, false), [:zwave_unsubscribe]}
+      {ConnectionState.put_zwave_subscribed(state, false), [:zwave_unsubscribe, ack]}
     else
-      {state, []}
+      {state, [ack]}
     end
   end
 
@@ -752,11 +794,37 @@ defmodule Espex.Dispatch do
   @spec modem_pins_response(non_neg_integer(), {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}) ::
           Proto.SerialProxyGetModemPinsResponse.t()
   def modem_pins_response(instance, {:ok, %{rts: rts, dtr: dtr}}) do
-    %Proto.SerialProxyGetModemPinsResponse{instance: instance, line_states: pack_line_states(rts, dtr)}
+    %Proto.SerialProxyGetModemPinsResponse{
+      instance: instance,
+      line_states: pack_line_states(rts, dtr),
+      status: :SERIAL_PROXY_STATUS_OK
+    }
+  end
+
+  def modem_pins_response(instance, {:error, :not_supported}) do
+    %Proto.SerialProxyGetModemPinsResponse{
+      instance: instance,
+      line_states: 0,
+      status: :SERIAL_PROXY_STATUS_NOT_SUPPORTED
+    }
   end
 
   def modem_pins_response(instance, {:error, _reason}) do
-    %Proto.SerialProxyGetModemPinsResponse{instance: instance, line_states: 0}
+    %Proto.SerialProxyGetModemPinsResponse{instance: instance, line_states: 0, status: :SERIAL_PROXY_STATUS_ERROR}
+  end
+
+  @doc """
+  Build a `ZWaveProxyRequestResponse` acknowledging a SUBSCRIBE or
+  UNSUBSCRIBE. The handler calls this after resolving `:zwave_subscribe`;
+  Dispatch emits it directly for the cases that need no adapter call.
+  """
+  @spec zwave_request_response(:subscribe | :unsubscribe, :ok | :in_use | :not_supported) ::
+          Proto.ZWaveProxyRequestResponse.t()
+  def zwave_request_response(type, status) do
+    %Proto.ZWaveProxyRequestResponse{
+      type: zwave_wire_request_type(type),
+      status: zwave_wire_status(status)
+    }
   end
 
   @doc """
@@ -765,7 +833,7 @@ defmodule Espex.Dispatch do
   """
   @spec serial_request_response(
           non_neg_integer(),
-          SerialProxy.request_type(),
+          SerialProxy.ack_type(),
           {:ok, SerialProxy.request_status()} | {:error, term()}
         ) :: Proto.SerialProxyRequestResponse.t()
   def serial_request_response(instance, type, {:ok, status}) do
@@ -805,23 +873,54 @@ defmodule Espex.Dispatch do
   defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE), do: :subscribe
   defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE), do: :unsubscribe
   defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_FLUSH), do: :flush
+  # Values that only identify an acknowledgement; a client must not send them.
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_CONFIGURE), do: :ack_only
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS), do: :ack_only
+  defp normalize_request_type(:SERIAL_PROXY_REQUEST_TYPE_SET_MODE), do: :ack_only
   defp normalize_request_type(_), do: nil
 
   defp to_wire_request_type(:subscribe), do: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
   defp to_wire_request_type(:unsubscribe), do: :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
   defp to_wire_request_type(:flush), do: :SERIAL_PROXY_REQUEST_TYPE_FLUSH
+  defp to_wire_request_type(:configure), do: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE
+  defp to_wire_request_type(:set_modem_pins), do: :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS
+  # Echoing an inbound request's type back in an error ack: the six wire
+  # atoms pass through, and so does the raw integer the decoder yields for
+  # a value outside the enum — an out-of-range type must produce an ERROR
+  # ack, not a FunctionClauseError that drops the connection.
+  defp to_wire_request_type(wire)
+       when wire in [
+              :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+              :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE,
+              :SERIAL_PROXY_REQUEST_TYPE_FLUSH,
+              :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE,
+              :SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS,
+              :SERIAL_PROXY_REQUEST_TYPE_SET_MODE
+            ],
+       do: wire
+
+  defp to_wire_request_type(wire) when is_integer(wire), do: wire
 
   defp to_wire_status(:ok), do: :SERIAL_PROXY_STATUS_OK
   defp to_wire_status(:assumed_success), do: :SERIAL_PROXY_STATUS_ASSUMED_SUCCESS
   defp to_wire_status(:error), do: :SERIAL_PROXY_STATUS_ERROR
   defp to_wire_status(:timeout), do: :SERIAL_PROXY_STATUS_TIMEOUT
   defp to_wire_status(:not_supported), do: :SERIAL_PROXY_STATUS_NOT_SUPPORTED
+  defp to_wire_status(:port_in_use), do: :SERIAL_PROXY_STATUS_PORT_IN_USE
+  defp to_wire_status(:invalid_argument), do: :SERIAL_PROXY_STATUS_INVALID_ARGUMENT
 
-  defp serial_request_error(instance, wire_type, message) do
+  defp zwave_wire_request_type(:subscribe), do: :ZWAVE_PROXY_REQUEST_TYPE_SUBSCRIBE
+  defp zwave_wire_request_type(:unsubscribe), do: :ZWAVE_PROXY_REQUEST_TYPE_UNSUBSCRIBE
+
+  defp zwave_wire_status(:ok), do: :ZWAVE_PROXY_STATUS_OK
+  defp zwave_wire_status(:in_use), do: :ZWAVE_PROXY_STATUS_IN_USE
+  defp zwave_wire_status(:not_supported), do: :ZWAVE_PROXY_STATUS_NOT_SUPPORTED
+
+  defp serial_request_error(instance, type, message, status \\ :error) do
     %Proto.SerialProxyRequestResponse{
       instance: instance,
-      type: wire_type,
-      status: :SERIAL_PROXY_STATUS_ERROR,
+      type: to_wire_request_type(type),
+      status: to_wire_status(status),
       error_message: message
     }
   end
@@ -862,7 +961,7 @@ defmodule Espex.Dispatch do
   defp handle_flush_request(state, req) do
     case with_lazy_open(state, req.instance, [{:serial_request, req.instance, :flush}]) do
       :unknown_instance ->
-        response = serial_request_error(req.instance, req.type, "unknown instance")
+        response = serial_request_error(req.instance, req.type, "unknown instance", :invalid_argument)
 
         {state,
          [
@@ -878,7 +977,7 @@ defmodule Espex.Dispatch do
   defp handle_subscription_request(state, req, type) do
     cond do
       ConnectionState.find_serial_proxy(state, req.instance) == nil ->
-        response = serial_request_error(req.instance, req.type, "unknown instance")
+        response = serial_request_error(req.instance, req.type, "unknown instance", :invalid_argument)
 
         {state,
          [
