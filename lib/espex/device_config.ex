@@ -256,6 +256,8 @@ defmodule Espex.DeviceConfig do
   @doc """
   Returns the API version minor number this server advertises.
 
+  Changed in 0.10.0: 1.10 → 1.16.
+
   The version is an espex constant, not a host option: it states which
   client-gated behaviours espex implements, and a host cannot add
   protocol handling of its own. Past 1.10 each step required:
@@ -301,6 +303,7 @@ defmodule Espex.DeviceConfig do
     }
   end
 
+  @doc since: "0.10.0"
   @doc """
   Convert this config to a `DeviceCapabilitiesResponse` protobuf struct.
 

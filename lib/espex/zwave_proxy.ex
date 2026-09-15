@@ -150,7 +150,7 @@ defmodule Espex.ZWaveProxy do
   Returns the current home ID as a 4-byte binary so the subscriber can
   decide whether to emit an initial change event.
 
-  The result is acknowledged to the client with a
+  Since 0.10.0 the result is acknowledged to the client with a
   `ZWaveProxyRequestResponse`: `{:ok, _}` → `OK`; `{:error, :in_use}` →
   `IN_USE`, the signal that another client already holds the
   single-master controller; any other `{:error, _}` → `NOT_SUPPORTED`

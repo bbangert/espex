@@ -86,7 +86,7 @@ defmodule Espex.SerialProxy do
 
   ## Acknowledgements
 
-  Every client request except WRITE is answered with a
+  Since 0.10.0 (API 1.16), every client request except WRITE is answered with a
   `SerialProxyRequestResponse` (or, for GET_MODEM_PINS, a
   `SerialProxyGetModemPinsResponse` carrying `status`):
 
