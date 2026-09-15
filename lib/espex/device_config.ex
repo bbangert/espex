@@ -57,11 +57,12 @@ defmodule Espex.DeviceConfig do
   """
 
   alias Espex.DeviceConfig.Device
+  alias Espex.Proto
   alias Espex.Proto.DeviceInfoResponse
 
   @default_port 6053
   @api_version_major 1
-  @api_version_minor 10
+  @api_version_minor 16
   @compilation_time (fn ->
                        {{y, mo, d}, {h, mi, s}} = :erlang.universaltime()
                        months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -254,6 +255,16 @@ defmodule Espex.DeviceConfig do
 
   @doc """
   Returns the API version minor number this server advertises.
+
+  The version is an espex constant, not a host option: it states which
+  client-gated behaviours espex implements, and a host cannot add
+  protocol handling of its own. Past 1.10 each step required:
+
+    * 1.14 — `object_id` optional on entities (espex always sends it)
+    * 1.15 — `DeviceCapabilitiesRequest` answered
+    * 1.16 — `ZWaveProxyRequestResponse` after SUBSCRIBE / UNSUBSCRIBE,
+      `SerialProxyRequestResponse` after CONFIGURE and SET_MODEM_PINS,
+      `status` on `SerialProxyGetModemPinsResponse`
   """
   @spec api_version_minor() :: non_neg_integer()
   def api_version_minor, do: @api_version_minor
@@ -287,6 +298,33 @@ defmodule Espex.DeviceConfig do
       bluetooth_proxy_feature_flags: config.bluetooth_feature_flags,
       serial_proxies: serial_proxies,
       devices: Enum.map(config.devices, &Device.to_proto/1)
+    }
+  end
+
+  @doc """
+  Convert this config to a `DeviceCapabilitiesResponse` protobuf struct.
+
+  Clients that see API 1.15 or newer read the optional-feature flags
+  from this message and ignore the matching `DeviceInfoResponse`
+  fields (`bluetooth_proxy_feature_flags`, `zwave_proxy_feature_flags`,
+  `zwave_home_id`, `serial_proxies`). Both are built from the same
+  config struct and the same serial-proxy list, so they cannot drift.
+  `voice_assistant` is reported with no features and
+  `bluetooth_proxy.mac_address` is empty — espex advertises neither.
+  """
+  @spec to_device_capabilities_response(t(), [struct()]) :: Proto.DeviceCapabilitiesResponse.t()
+  def to_device_capabilities_response(%__MODULE__{} = config, serial_proxies \\ []) do
+    %Proto.DeviceCapabilitiesResponse{
+      bluetooth_proxy: %Proto.BluetoothProxyCapabilities{
+        feature_flags: config.bluetooth_feature_flags,
+        mac_address: ""
+      },
+      voice_assistant: %Proto.VoiceAssistantCapabilities{feature_flags: 0},
+      zwave_proxy: %Proto.ZWaveProxyCapabilities{
+        feature_flags: config.zwave_feature_flags,
+        home_id: config.zwave_home_id
+      },
+      serial_proxies: serial_proxies
     }
   end
 

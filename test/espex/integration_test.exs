@@ -263,8 +263,11 @@ defmodule Espex.IntegrationTest do
       # Reattached on the new handle — resubscribe-on-reconfigure is the contract.
       assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
-      # No extra wire response for the resubscribe — only the original ack.
-      assert {:error, :timeout} = recv_struct(socket, rest1, 250)
+      # CONFIGURE is acknowledged; the resubscribe adds no frame of its own.
+      {:ok, %Proto.SerialProxyRequestResponse{type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE}, rest2} =
+        recv_struct(socket, rest1)
+
+      assert {:error, :timeout} = recv_struct(socket, rest2, 250)
 
       :gen_tcp.close(socket)
     end
@@ -304,8 +307,11 @@ defmodule Espex.IntegrationTest do
       assert_receive {:open, 0, _opts2, _subscriber2}
       assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
-      # No second SerialProxyRequestResponse — the resubscribe is silent.
-      assert {:error, :timeout} = recv_struct(socket, rest, 250)
+      # CONFIGURE is acknowledged; the resubscribe is silent.
+      {:ok, %Proto.SerialProxyRequestResponse{type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE}, rest2} =
+        recv_struct(socket, rest)
+
+      assert {:error, :timeout} = recv_struct(socket, rest2, 250)
 
       :gen_tcp.close(socket)
     end
@@ -347,15 +353,16 @@ defmodule Espex.IntegrationTest do
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
-      # CONFIGURE is exempt from backoff — always attempts an open.
+      # CONFIGURE is exempt from backoff — always attempts an open, and acks it.
       assert_receive {:open, 0, _opts2, _subscriber2}
+      {:ok, %Proto.SerialProxyRequestResponse{status: :SERIAL_PROXY_STATUS_OK}, rest} = recv_struct(socket)
 
       send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "a"})
       assert_receive {:write, {:tracking_handle, 0}, "a"}
 
       # Connection survived the failed open and the backoff throughout.
       send_struct(socket, %Proto.DeviceInfoRequest{})
-      {:ok, %Proto.DeviceInfoResponse{}, _rest} = recv_struct(socket)
+      {:ok, %Proto.DeviceInfoResponse{}, _rest} = recv_struct(socket, rest)
 
       :gen_tcp.close(socket)
     end
@@ -426,8 +433,11 @@ defmodule Espex.IntegrationTest do
       assert_receive {:open, 0, _opts2, _subscriber2}
       assert_receive {:request, {:tracking_handle, 0}, :subscribe}
 
-      # No extra wire response for the resubscribe — only the original ack.
-      assert {:error, :timeout} = recv_struct(socket, rest, 250)
+      # CONFIGURE is acknowledged; the resubscribe adds no frame of its own.
+      {:ok, %Proto.SerialProxyRequestResponse{type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE}, rest2} =
+        recv_struct(socket, rest)
+
+      assert {:error, :timeout} = recv_struct(socket, rest2, 250)
 
       :gen_tcp.close(socket)
     end

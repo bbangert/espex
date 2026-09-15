@@ -84,6 +84,22 @@ defmodule Espex.SerialProxy do
   client; see the "Architecture" guide for why changes require a
   reconnect.
 
+  ## Acknowledgements
+
+  Every client request except WRITE is answered with a
+  `SerialProxyRequestResponse` (or, for GET_MODEM_PINS, a
+  `SerialProxyGetModemPinsResponse` carrying `status`):
+
+  | Request | Status |
+  |---------|--------|
+  | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails, `INVALID_ARGUMENT` for an unknown instance |
+  | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it, `INVALID_ARGUMENT` for an unknown instance |
+  | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, `ERROR`, or `INVALID_ARGUMENT` |
+  | SUBSCRIBE / UNSUBSCRIBE / FLUSH | the status returned by `c:request/2`, `OK` when a lazy open handles the subscribe, `INVALID_ARGUMENT` for an unknown instance |
+
+  A lazy open (a WRITE, SUBSCRIBE or FLUSH arriving before any CONFIGURE)
+  is not itself acknowledged; only the request that triggered it is.
+
   ## Example: a port wrapping Circuits.UART
 
   The following sketch wires a single port (`/dev/ttyUSB0`) to a
@@ -283,11 +299,16 @@ defmodule Espex.SerialProxy do
   @callback get_modem_pins(handle()) ::
               {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}
 
-  @typedoc "Internal atom form of the `SerialProxyRequestType` enum."
-  @type request_type :: :subscribe | :unsubscribe | :flush
+  @typedoc """
+  Internal atom form of the `SerialProxyRequestType` enum. `:configure`
+  and `:set_modem_pins` only ever appear in a `SerialProxyRequestResponse`,
+  identifying which request is being acknowledged.
+  """
+  @type request_type :: :subscribe | :unsubscribe | :flush | :configure | :set_modem_pins
 
   @typedoc "Internal atom form of the `SerialProxyStatus` enum."
-  @type request_status :: :ok | :assumed_success | :error | :timeout | :not_supported
+  @type request_status ::
+          :ok | :assumed_success | :error | :timeout | :not_supported | :port_in_use | :invalid_argument
 
   @doc """
   Handle one of the `SerialProxyRequest` operations (subscribe,

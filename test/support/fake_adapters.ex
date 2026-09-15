@@ -220,6 +220,106 @@ defmodule Espex.Test.FakeZWaveProxyWithHomeId do
   def send_frame(_data), do: :ok
 end
 
+defmodule Espex.Test.MinimalSerialProxy do
+  @moduledoc "One instance, no optional callbacks — modem-pin requests are NOT_SUPPORTED."
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances, do: [Espex.SerialProxy.Info.new(instance: 0, name: "minimal")]
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :minimal_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+end
+
+defmodule Espex.Test.FailingOpenSerialProxy do
+  @moduledoc "One instance whose open always fails, to exercise the ERROR acknowledgement."
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances, do: [Espex.SerialProxy.Info.new(instance: 0, name: "broken")]
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:error, :enodev}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+end
+
+defmodule Espex.Test.ErroringPinsSerialProxy do
+  @moduledoc "One instance whose set_modem_pins/3 fails, to exercise the ERROR acknowledgement."
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  def list_instances, do: [Espex.SerialProxy.Info.new(instance: 0, name: "pins", configured_line_states: [:rts])]
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :pins_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+
+  @impl true
+  def set_modem_pins(_handle, _rts, _dtr), do: {:error, :eio}
+end
+
+defmodule Espex.Test.ExplodingZWaveProxy do
+  @moduledoc "A controller whose subscribe fails for a reason other than :in_use."
+  @behaviour Espex.ZWaveProxy
+
+  @impl true
+  def available?, do: true
+
+  @impl true
+  def home_id, do: 0
+
+  @impl true
+  def feature_flags, do: 1
+
+  @impl true
+  def subscribe(_pid), do: {:error, :board_reset}
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+
+  @impl true
+  def send_frame(_data), do: :ok
+end
+
+defmodule Espex.Test.BusyZWaveProxy do
+  @moduledoc "A controller already held by another client: subscribe answers {:error, :in_use}."
+  @behaviour Espex.ZWaveProxy
+
+  @impl true
+  def available?, do: true
+
+  @impl true
+  def home_id, do: 0
+
+  @impl true
+  def feature_flags, do: 1
+
+  @impl true
+  def subscribe(_pid), do: {:error, :in_use}
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+
+  @impl true
+  def send_frame(_data), do: :ok
+end
+
 defmodule Espex.Test.FakeInfraredProxy do
   @moduledoc false
   @behaviour Espex.InfraredProxy

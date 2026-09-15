@@ -429,7 +429,7 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_action(_socket, state, {:serial_open, instance, opts}) do
+  defp interpret_action(socket, state, {:serial_open, instance, opts}) do
     if opts == :default_opts and lazy_open_backing_off?(state, instance) do
       Logger.debug(
         "Espex #{state.peer} skipping lazy reopen of serial proxy instance #{instance} (recent open failure)"
@@ -449,14 +449,16 @@ defmodule Espex.Connection do
             |> ConnectionState.put_port(instance, handle)
             |> ConnectionState.clear_serial_open_failure(instance)
 
+          # Reattach is best-effort and logs its own failure; the CONFIGURE
+          # ack reports the open, which succeeded regardless.
           maybe_reattach_subscription(state, adapter, instance, handle)
 
-          {:cont, state}
+          ack_configure(socket, state, instance, opts, {:ok, :ok})
 
         {:error, reason} ->
           Logger.warning("Espex #{state.peer} serial open instance #{instance} failed: #{inspect(reason)}")
           state = ConnectionState.put_serial_open_failure(state, instance, System.monotonic_time(:millisecond))
-          {:cont, state}
+          ack_configure(socket, state, instance, opts, {:error, reason})
       end
     end
   end
@@ -481,12 +483,13 @@ defmodule Espex.Connection do
     end
   end
 
-  defp interpret_action(_socket, state, {:serial_modem_pins_set, instance, rts, dtr}) do
-    state
-    |> ConnectionState.port_handle(instance)
-    |> set_modem_pins(state.adapters.serial_proxy, rts, dtr)
+  defp interpret_action(socket, state, {:serial_modem_pins_set, instance, rts, dtr}) do
+    result =
+      state
+      |> ConnectionState.port_handle(instance)
+      |> set_modem_pins(state.adapters.serial_proxy, rts, dtr)
 
-    {:cont, state}
+    send_or_halt(socket, state, Dispatch.serial_request_response(instance, :set_modem_pins, result))
   end
 
   defp interpret_action(socket, state, {:serial_modem_pins_get, instance}) do
@@ -513,15 +516,25 @@ defmodule Espex.Connection do
     end
   end
 
+  # The acknowledgement goes out before the initial HOME_ID_CHANGE so the
+  # client's subscribe-and-await resolves first.
   defp interpret_action(socket, state, :zwave_subscribe) do
     case state.adapters.zwave_proxy.subscribe(self()) do
       {:ok, home_id_bytes} ->
         state = ConnectionState.put_zwave_subscribed(state, true)
-        maybe_send_initial_home_id(socket, state, home_id_bytes)
+
+        case send_or_halt(socket, state, Dispatch.zwave_request_response(:subscribe, :ok)) do
+          {:cont, state} -> maybe_send_initial_home_id(socket, state, home_id_bytes)
+          halt -> halt
+        end
+
+      {:error, :in_use} ->
+        Logger.info("Espex #{state.peer} Z-Wave subscribe refused — controller in use by another client")
+        send_or_halt(socket, state, Dispatch.zwave_request_response(:subscribe, :in_use))
 
       {:error, reason} ->
         Logger.warning("Espex #{state.peer} Z-Wave subscribe failed: #{inspect(reason)}")
-        {:cont, state}
+        send_or_halt(socket, state, Dispatch.zwave_request_response(:subscribe, :not_supported))
     end
   end
 
@@ -1094,15 +1107,28 @@ defmodule Espex.Connection do
   defp write_port({:ok, handle}, adapter, data), do: adapter.write(handle, data)
   defp write_port(:error, _adapter, _data), do: :ok
 
+  # Result shape feeds Dispatch.serial_request_response/3 for the ack.
   defp set_modem_pins({:ok, handle}, adapter, rts, dtr) do
     if function_exported?(adapter, :set_modem_pins, 3) do
-      adapter.set_modem_pins(handle, rts, dtr)
+      case adapter.set_modem_pins(handle, rts, dtr) do
+        :ok -> {:ok, :ok}
+        {:error, _reason} = error -> error
+      end
     else
-      :ok
+      {:ok, :not_supported}
     end
   end
 
-  defp set_modem_pins(:error, _adapter, _rts, _dtr), do: :ok
+  defp set_modem_pins(:error, _adapter, _rts, _dtr), do: {:error, :not_open}
+
+  # Only a CONFIGURE-driven open (concrete opts) is acknowledged. A lazy
+  # open carries :default_opts and answers no request of its own — the
+  # write/subscribe/flush that triggered it is acknowledged on its own terms.
+  defp ack_configure(_socket, state, _instance, :default_opts, _result), do: {:cont, state}
+
+  defp ack_configure(socket, state, instance, _opts, result) do
+    send_or_halt(socket, state, Dispatch.serial_request_response(instance, :configure, result))
+  end
 
   defp get_modem_pins({:ok, handle}, adapter) do
     if function_exported?(adapter, :get_modem_pins, 1) do

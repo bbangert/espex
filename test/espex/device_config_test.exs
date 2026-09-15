@@ -60,6 +60,23 @@ defmodule Espex.DeviceConfigTest do
     end
   end
 
+  describe "to_device_capabilities_response/2" do
+    test "carries the same feature data as to_device_info_response/2" do
+      config = %DeviceConfig{bluetooth_feature_flags: 0x1F, zwave_feature_flags: 3, zwave_home_id: 42}
+      serial = [%Espex.Proto.SerialProxyInfo{name: "p", port_type: :SERIAL_PROXY_PORT_TYPE_TTL}]
+
+      info = DeviceConfig.to_device_info_response(config, serial)
+      caps = DeviceConfig.to_device_capabilities_response(config, serial)
+
+      assert caps.bluetooth_proxy == %Espex.Proto.BluetoothProxyCapabilities{feature_flags: 0x1F, mac_address: ""}
+      assert caps.bluetooth_proxy.feature_flags == info.bluetooth_proxy_feature_flags
+      assert caps.zwave_proxy == %Espex.Proto.ZWaveProxyCapabilities{feature_flags: 3, home_id: 42}
+      assert caps.zwave_proxy.home_id == info.zwave_home_id
+      assert caps.voice_assistant == %Espex.Proto.VoiceAssistantCapabilities{feature_flags: 0}
+      assert caps.serial_proxies == info.serial_proxies
+    end
+  end
+
   describe "psk normalisation" do
     @raw32 :crypto.hash(:sha256, "pinky")
     @b64 Base.encode64(@raw32)
