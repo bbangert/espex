@@ -1,4 +1,5 @@
 defmodule Espex.PskStore do
+  @moduledoc since: "0.4.0"
   @moduledoc """
   Behaviour for persisting the Noise pre-shared key when Home Assistant
   provisions or rotates it at runtime via `NoiseEncryptionSetKeyRequest`.

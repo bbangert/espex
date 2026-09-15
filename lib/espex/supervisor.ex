@@ -71,9 +71,10 @@ defmodule Espex.Supervisor do
   connections are built from, `Espex.update_adapters/2` swaps the adapter
   modules, and `Espex.disconnect_clients/1` asks every connected client
   to disconnect and come back — together they make Home Assistant re-read
-  `DeviceInfo` and the entity list without restarting this tree. `disconnect_grace_ms` bounds how long a
-  connection waits for the client's `DisconnectResponse` before closing
-  the socket anyway.
+  `DeviceInfo` and the entity list without restarting this tree. All
+  three, and the option below, are new in 0.10.0. `disconnect_grace_ms`
+  bounds how long a connection waits for the client's
+  `DisconnectResponse` before closing the socket anyway.
   """
 
   use Supervisor
@@ -194,6 +195,7 @@ defmodule Espex.Supervisor do
   @spec registry_name(atom()) :: atom()
   def registry_name(server_name), do: Module.concat(server_name, "Registry")
 
+  @doc since: "0.5.0"
   @doc """
   Return the conventional connected-clients Registry name for a given
   server name. This is the unique-key registry that backs

@@ -155,6 +155,7 @@ defmodule Espex.DeviceConfig do
   def encrypted?(%__MODULE__{psk: nil}), do: false
   def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
 
+  @doc since: "0.4.0"
   @doc """
   Set the PSK from runtime-supplied input (e.g. a
   `NoiseEncryptionSetKeyRequest`), returning a tagged result.
@@ -173,6 +174,7 @@ defmodule Espex.DeviceConfig do
     end
   end
 
+  @doc since: "0.10.0"
   @doc """
   Validate a caller-built `%DeviceConfig{}` for use at runtime, returning
   a tagged result.
@@ -187,6 +189,7 @@ defmodule Espex.DeviceConfig do
   def validate(%__MODULE__{psk: psk} = config) when is_binary(psk), do: put_psk(config, psk)
   def validate(%__MODULE__{}), do: {:error, :invalid_psk_length}
 
+  @doc since: "0.10.0"
   @doc """
   Apply runtime-supplied keyword options onto an existing config,
   returning a tagged result.

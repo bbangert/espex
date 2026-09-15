@@ -1,4 +1,5 @@
 defmodule Espex.BluetoothProxy.Service do
+  @moduledoc since: "0.2.0"
   @moduledoc """
   A GATT service streamed from a `Espex.BluetoothProxy` adapter.
 

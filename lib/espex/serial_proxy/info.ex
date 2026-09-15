@@ -13,7 +13,7 @@ defmodule Espex.SerialProxy.Info do
   alias Espex.Proto
 
   @type port_type :: :ttl | :rs232 | :rs485
-  @typedoc "A modem control line the port can drive via `set_modem_pins/3`."
+  @typedoc "A modem control line the port can drive via `set_modem_pins/3`. Since 0.10.0."
   @type line :: :rts | :dtr
 
   @type t :: %__MODULE__{
@@ -49,6 +49,7 @@ defmodule Espex.SerialProxy.Info do
     }
   end
 
+  @doc since: "0.10.0"
   @doc """
   Encode a list of modem lines as the `configured_line_states` bitmask
   (`:rts` → bit 0, `:dtr` → bit 1).

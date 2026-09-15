@@ -79,6 +79,7 @@ defmodule Espex.SerialProxy do
       drive, a list of `:rts` / `:dtr` (default `[]`). Advertised to the
       client as a bitmask so it knows which pins `set_modem_pins/3` will
       honour. Set it when the adapter implements `c:set_modem_pins/3`.
+      Since 0.10.0.
 
   The list is snapshotted at connection-accept time and cached by the
   client; see the "Architecture" guide for why changes require a
@@ -254,6 +255,7 @@ defmodule Espex.SerialProxy do
     ]
   end
 
+  @doc since: "0.8.0"
   @doc """
   The fallback options used when espex lazily opens an instance and the
   adapter does not export `c:default_open_opts/1`: 9600-8-N-1, no flow
@@ -337,6 +339,7 @@ defmodule Espex.SerialProxy do
   @callback request(handle(), request_type()) ::
               {:ok, request_status()} | {:error, term()}
 
+  @doc since: "0.8.0"
   @doc """
   Return the options espex should use when it opens `instance` lazily —
   i.e. when a client sends a write/subscribe/modem-pins/flush request

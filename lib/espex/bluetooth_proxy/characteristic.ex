@@ -1,4 +1,5 @@
 defmodule Espex.BluetoothProxy.Characteristic do
+  @moduledoc since: "0.2.0"
   @moduledoc """
   A GATT characteristic inside a `Espex.BluetoothProxy.Service`.
 

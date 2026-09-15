@@ -1,4 +1,5 @@
 defmodule Espex.BluetoothProxy do
+  @moduledoc since: "0.2.0"
   @moduledoc """
   Behaviour for Bluetooth Low Energy active-proxy adapters.
 

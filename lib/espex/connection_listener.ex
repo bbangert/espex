@@ -1,4 +1,5 @@
 defmodule Espex.ConnectionListener do
+  @moduledoc since: "0.5.0"
   @moduledoc """
   Behaviour for being notified when the set of connected native-API
   clients changes.
