@@ -34,6 +34,7 @@ defmodule Espex.Supervisor do
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
+        disconnect_grace_ms: 2_000,           # wait for DisconnectResponse before closing
         read_timeout: 180_000                 # hard transport-level backstop
       )
 
@@ -63,6 +64,16 @@ defmodule Espex.Supervisor do
   times out — the 180 s default clears the 60 s + 60 s keepalive defaults;
   if you shorten `read_timeout` or lengthen the keepalive intervals, raise
   it to match.
+
+  ## Runtime reconfiguration
+
+  `Espex.update_device_config/2` swaps the `%DeviceConfig{}` new
+  connections are built from, and `Espex.disconnect_clients/1` asks every
+  connected client to disconnect and come back — the two together make
+  Home Assistant re-read `DeviceInfo` and the entity list without
+  restarting this tree. `disconnect_grace_ms` bounds how long a
+  connection waits for the client's `DisconnectResponse` before closing
+  the socket anyway.
   """
 
   use Supervisor
@@ -150,7 +161,8 @@ defmodule Espex.Supervisor do
             registry_name: registry_name,
             client_registry: client_registry_name,
             keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
-            keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000
+            keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000,
+            disconnect_grace_ms: opts[:disconnect_grace_ms] || 2_000
           ],
           transport_module: ThousandIsland.Transports.TCP,
           transport_options: [nodelay: true],

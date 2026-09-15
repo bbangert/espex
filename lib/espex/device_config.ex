@@ -172,6 +172,62 @@ defmodule Espex.DeviceConfig do
     end
   end
 
+  @doc """
+  Validate a caller-built `%DeviceConfig{}` for use at runtime, returning
+  a tagged result.
+
+  `new/1` normalises `:psk` on the way in, but a struct assembled by hand
+  can carry any value. This applies the same normalisation without
+  raising, so `Espex.update_device_config/2` rejects a bad key instead of
+  crashing every later connection.
+  """
+  @spec validate(t()) :: {:ok, t()} | {:error, :invalid_psk_length}
+  def validate(%__MODULE__{psk: nil} = config), do: {:ok, config}
+  def validate(%__MODULE__{psk: psk} = config) when is_binary(psk), do: put_psk(config, psk)
+  def validate(%__MODULE__{}), do: {:error, :invalid_psk_length}
+
+  @doc """
+  Apply runtime-supplied keyword options onto an existing config,
+  returning a tagged result.
+
+  Each key given replaces that field; keys omitted keep their current
+  value, so a `:psk` that Home Assistant provisioned at runtime survives
+  `merge(config, name: "renamed")`. An explicit `psk: nil` clears the key
+  and disables encryption for subsequent connections.
+
+  Like `put_psk/2` this never raises — the options come from the host at
+  runtime, not from compile-time config. `:psk` is validated the same way
+  (`{:error, :invalid_psk_length}` on anything but a raw 32-byte binary,
+  a base64-encoded one, or `nil`), and a key that is not a config field
+  is `{:error, {:unknown_key, key}}`. `:port` is refused with
+  `{:error, {:immutable_key, :port}}` — the listener is already bound to
+  it, so a merged value could only lie. Every error leaves the config
+  untouched.
+
+  This is the keyword form of `Espex.update_device_config/2`.
+  """
+  @spec merge(t(), keyword()) ::
+          {:ok, t()} | {:error, :invalid_psk_length | {:unknown_key, atom()} | {:immutable_key, :port}}
+  def merge(%__MODULE__{} = config, opts) when is_list(opts) do
+    Enum.reduce_while(opts, {:ok, config}, fn {key, value}, {:ok, acc} ->
+      case merge_key(acc, key, value) do
+        {:ok, _} = ok -> {:cont, ok}
+        {:error, _} = error -> {:halt, error}
+      end
+    end)
+  end
+
+  defp merge_key(_config, :port, _value), do: {:error, {:immutable_key, :port}}
+  defp merge_key(config, :psk, nil), do: {:ok, %{config | psk: nil}}
+  defp merge_key(config, :psk, key) when is_binary(key), do: put_psk(config, key)
+  defp merge_key(_config, :psk, _other), do: {:error, :invalid_psk_length}
+
+  defp merge_key(config, key, value) when is_map_key(config, key) and key != :__struct__ do
+    {:ok, Map.put(config, key, value)}
+  end
+
+  defp merge_key(_config, key, _value), do: {:error, {:unknown_key, key}}
+
   @spec validate_psk(binary()) :: {:ok, <<_::256>>} | {:error, :invalid_psk_length}
   defp validate_psk(<<_::binary-size(32)>> = raw), do: {:ok, raw}
 

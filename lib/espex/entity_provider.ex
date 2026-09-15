@@ -42,8 +42,13 @@ defmodule Espex.EntityProvider do
 
   **Implication**: if you dynamically add or remove entities at
   runtime, existing clients will continue to see the set that was
-  returned when they connected. A reconnect is required to pick up
-  changes.
+  returned when they connected. To publish the new set, ask them to
+  reconnect with `Espex.disconnect_clients/1` — Home Assistant comes
+  back a few seconds later, re-issues `ListEntitiesRequest`, and
+  reconciles its registry against your new `c:list_entities/0` result:
+
+      MyApp.Entities.add_sensor(...)
+      Espex.disconnect_clients(MyApp.EspexServer)
 
   ## The stateful provider pattern (GenServer)
 

@@ -37,6 +37,15 @@ defmodule Espex.Connection do
     server_name = Keyword.fetch!(handler_options, :server_name)
     registry_name = Keyword.fetch!(handler_options, :registry_name)
     client_registry = Keyword.fetch!(handler_options, :client_registry)
+
+    # Duplicate-key entry for push_state/2 and disconnect_clients/1 fan-out
+    # (value unused). Registered BEFORE the state snapshot below so a
+    # connection accepting across `update_device_config/2` →
+    # `disconnect_clients/1` cannot both read the old config and miss the
+    # fan-out: registered first, it receives :espex_disconnect; registered
+    # later, its snapshot already sees the update.
+    {:ok, _} = Registry.register(registry_name, :subscribers, nil)
+
     server_state = Server.get_state(server_name)
     peer = peer_label(socket)
     adapters = server_state.adapters
@@ -62,11 +71,9 @@ defmodule Espex.Connection do
         connected_at: now,
         last_activity_at: now,
         keepalive_idle_ms: Keyword.get(handler_options, :keepalive_idle_ms, 60_000),
-        keepalive_grace_ms: Keyword.get(handler_options, :keepalive_grace_ms, 60_000)
+        keepalive_grace_ms: Keyword.get(handler_options, :keepalive_grace_ms, 60_000),
+        disconnect_grace_ms: Keyword.get(handler_options, :disconnect_grace_ms, 2_000)
       )
-
-    # Duplicate-key entry for push_state/2 fan-out (value unused).
-    {:ok, _} = Registry.register(registry_name, :subscribers, nil)
 
     # Unique-key entry holding this connection's ClientInfo snapshot so
     # connected_clients/1 is a plain Registry read. The connect-time
@@ -190,8 +197,13 @@ defmodule Espex.Connection do
         {:noreply, {socket, state}}
 
       {:halt, reason, state} ->
+        # A halt here is this process choosing to close (a {:close, _}
+        # action, or a send it could not encode). ThousandIsland routes a
+        # {:shutdown, _} exit to handle_close/2; any other reason goes to
+        # handle_error/3 with a crash report, which a deliberate close is
+        # not. Same shape as the keepalive stops above.
         cleanup(state)
-        {:stop, reason, {socket, state}}
+        {:stop, {:shutdown, reason}, {socket, state}}
     end
   end
 
@@ -775,6 +787,16 @@ defmodule Espex.Connection do
         Logger.warning("Espex #{state.peer} SetKey failed: #{inspect(reason)}")
         send_or_halt(socket, state, %Proto.NoiseEncryptionSetKeyResponse{success: false})
     end
+  end
+
+  # The DisconnectRequest is on the wire (see Dispatch's :espex_disconnect
+  # event); if the client never answers, :espex_disconnect_timeout closes
+  # the socket. The timer is armed once per connection and never cancelled:
+  # the usual outcome is that the socket closed before it fires, and a
+  # message to an exited process is dropped by the runtime.
+  defp interpret_action(_socket, state, {:arm_disconnect_timeout, ms}) do
+    _ = Process.send_after(self(), :espex_disconnect_timeout, ms)
+    {:cont, state}
   end
 
   defp interpret_action(socket, state, :client_connected) do

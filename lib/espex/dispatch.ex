@@ -71,6 +71,7 @@ defmodule Espex.Dispatch do
           | {:entity_command, struct()}
           | {:set_psk, binary()}
           | :client_connected
+          | {:arm_disconnect_timeout, pos_integer()}
 
   @type result :: {ConnectionState.t(), [action()]}
 
@@ -166,6 +167,13 @@ defmodule Espex.Dispatch do
        {:send, %Proto.DisconnectResponse{}},
        {:close, :disconnect_requested}
      ]}
+  end
+
+  # The client acknowledging OUR DisconnectRequest (see the
+  # :espex_disconnect event) — now the socket may close. An unsolicited
+  # DisconnectResponse falls through to the catch-all debug log.
+  def handle_request(%{disconnecting: true} = state, %Proto.DisconnectResponse{}) do
+    {state, [{:close, :server_disconnect}]}
   end
 
   def handle_request(state, %Proto.GetTimeRequest{}) do
@@ -689,6 +697,42 @@ defmodule Espex.Dispatch do
 
   def handle_event(state, {:espex_state_update, %_{} = struct}) do
     {state, [{:send, struct}]}
+  end
+
+  # Server-initiated disconnect (Espex.disconnect_clients/1 fan-out). Ask
+  # the client to leave the way ESPHome firmware does before a reboot:
+  # send DisconnectRequest, then wait for its DisconnectResponse (or the
+  # grace timer) before closing. A connection that has not completed
+  # hello — which includes one still mid-Noise-handshake, since hello
+  # travels inside the encrypted channel — has no session to end
+  # gracefully and is closed outright, without a frame.
+  def handle_event(%{disconnecting: true} = state, :espex_disconnect) do
+    {state, []}
+  end
+
+  def handle_event(%{api_version: nil} = state, :espex_disconnect) do
+    {state, [{:close, :server_disconnect}]}
+  end
+
+  def handle_event(state, :espex_disconnect) do
+    {ConnectionState.put_disconnecting(state),
+     [
+       {:log, :info, "server-initiated disconnect — asking client to reconnect"},
+       {:send, %Proto.DisconnectRequest{}},
+       {:arm_disconnect_timeout, state.disconnect_grace_ms}
+     ]}
+  end
+
+  def handle_event(%{disconnecting: true} = state, :espex_disconnect_timeout) do
+    {state,
+     [
+       {:log, :warning, "no DisconnectResponse within #{state.disconnect_grace_ms} ms — closing"},
+       {:close, :server_disconnect_timeout}
+     ]}
+  end
+
+  def handle_event(state, :espex_disconnect_timeout) do
+    {state, []}
   end
 
   def handle_event(state, event) do

@@ -90,6 +90,31 @@ defmodule Espex.Server do
     GenServer.call(server, {:update_psk, key})
   end
 
+  @doc """
+  Replace or merge the stored `device_config` at runtime.
+
+  A `%DeviceConfig{}` replaces the config wholesale after
+  `DeviceConfig.validate/1` normalises its PSK. A keyword list is merged
+  onto the current config via `DeviceConfig.merge/2`, so any key omitted
+  — notably a runtime-provisioned `:psk` — keeps its value. On either
+  error the state is left untouched and the error returned.
+
+  As with `update_psk/2`, the change applies to the *next* accepted
+  connection only: each connection snapshots the config at accept time,
+  so live connections keep advertising what they saw at connect. Call
+  `Espex.disconnect_clients/1` afterwards to make clients re-read it.
+  """
+  @spec update_device_config(GenServer.server(), DeviceConfig.t() | keyword()) :: :ok | {:error, term()}
+  def update_device_config(server \\ __MODULE__, config_or_opts)
+
+  def update_device_config(server, %DeviceConfig{} = config) do
+    GenServer.call(server, {:update_device_config, config})
+  end
+
+  def update_device_config(server, opts) when is_list(opts) do
+    GenServer.call(server, {:update_device_config, opts})
+  end
+
   @impl GenServer
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
@@ -147,6 +172,19 @@ defmodule Espex.Server do
 
   def handle_call({:update_psk, key}, _from, state) do
     case DeviceConfig.put_psk(state.device_config, key) do
+      {:ok, config} -> {:reply, :ok, ServerState.put_device_config(state, config)}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:update_device_config, config_or_opts}, _from, state) do
+    result =
+      case config_or_opts do
+        %DeviceConfig{} = config -> DeviceConfig.validate(config)
+        opts when is_list(opts) -> DeviceConfig.merge(state.device_config, opts)
+      end
+
+    case result do
       {:ok, config} -> {:reply, :ok, ServerState.put_device_config(state, config)}
       {:error, _reason} = error -> {:reply, error, state}
     end

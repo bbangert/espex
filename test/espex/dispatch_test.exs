@@ -165,6 +165,19 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "DisconnectResponse" do
+    test "while disconnecting: closes the connection" do
+      s = state() |> ConnectionState.put_disconnecting()
+      {_s, actions} = Dispatch.handle_request(s, %Proto.DisconnectResponse{})
+      assert actions == [{:close, :server_disconnect}]
+    end
+
+    test "unsolicited: only a debug log, no close" do
+      {_s, actions} = Dispatch.handle_request(state(), %Proto.DisconnectResponse{})
+      assert [{:log, :debug, _}] = actions
+    end
+  end
+
   describe "GetTimeRequest" do
     test "uses injected clock_fun and masks to 32 bits" do
       {_s, [{:send, %Proto.GetTimeResponse{epoch_seconds: 1_700_000_000}}]} =
@@ -576,6 +589,56 @@ defmodule Espex.DispatchTest do
     test "without EntityProvider: logs only" do
       {_s, [{:log, :debug, _}]} =
         Dispatch.handle_request(state(), %Proto.SwitchCommandRequest{key: 1, state: true})
+    end
+  end
+
+  describe "handle_event/2 :espex_disconnect (server-initiated disconnect)" do
+    defp hello_done(overrides \\ []) do
+      state(overrides) |> ConnectionState.put_client_hello("HA", {1, 10})
+    end
+
+    test "after hello: sends DisconnectRequest, arms the grace timer, marks disconnecting" do
+      {new_state, actions} = Dispatch.handle_event(hello_done(disconnect_grace_ms: 123), :espex_disconnect)
+
+      assert [
+               {:log, :info, _},
+               {:send, %Proto.DisconnectRequest{}},
+               {:arm_disconnect_timeout, 123}
+             ] = actions
+
+      assert new_state.disconnecting
+    end
+
+    test "a second event while disconnecting does nothing (fan-out is idempotent)" do
+      {s, _} = Dispatch.handle_event(hello_done(), :espex_disconnect)
+      assert {^s, []} = Dispatch.handle_event(s, :espex_disconnect)
+    end
+
+    test "before hello: closes without sending a frame" do
+      {s, actions} = Dispatch.handle_event(state(), :espex_disconnect)
+      assert actions == [{:close, :server_disconnect}]
+      refute s.disconnecting
+    end
+
+    test "mid Noise handshake: closes without sending a frame" do
+      {_s, actions} = Dispatch.handle_event(state(encryption: :awaiting_hello), :espex_disconnect)
+      assert actions == [{:close, :server_disconnect}]
+    end
+
+    test "a client DisconnectRequest while we are disconnecting is answered and closes" do
+      s = hello_done() |> ConnectionState.put_disconnecting()
+      {_s, actions} = Dispatch.handle_request(s, %Proto.DisconnectRequest{})
+      assert [{:log, _, _}, {:send, %Proto.DisconnectResponse{}}, {:close, :disconnect_requested}] = actions
+    end
+
+    test "grace timeout while disconnecting: warns and closes" do
+      s = hello_done() |> ConnectionState.put_disconnecting()
+      {_s, actions} = Dispatch.handle_event(s, :espex_disconnect_timeout)
+      assert [{:log, :warning, _}, {:close, :server_disconnect_timeout}] = actions
+    end
+
+    test "grace timeout when not disconnecting: no-op" do
+      assert {_s, []} = Dispatch.handle_event(hello_done(), :espex_disconnect_timeout)
     end
   end
 

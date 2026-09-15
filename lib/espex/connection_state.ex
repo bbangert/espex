@@ -63,7 +63,9 @@ defmodule Espex.ConnectionState do
           keepalive_idle_ms: pos_integer(),
           keepalive_grace_ms: pos_integer(),
           keepalive_timer: reference() | nil,
-          keepalive_outstanding: boolean()
+          keepalive_outstanding: boolean(),
+          disconnecting: boolean(),
+          disconnect_grace_ms: pos_integer()
         }
 
   @enforce_keys [:device_config, :peer]
@@ -109,7 +111,14 @@ defmodule Espex.ConnectionState do
     keepalive_idle_ms: 60_000,
     keepalive_grace_ms: 60_000,
     keepalive_timer: nil,
-    keepalive_outstanding: false
+    keepalive_outstanding: false,
+    # Server-initiated disconnect (Espex.disconnect_clients/1): set once
+    # our DisconnectRequest is on the wire; the socket closes on the
+    # client's DisconnectResponse or after disconnect_grace_ms, whichever
+    # comes first (api.proto: "Do not close the connection before the
+    # acknowledgement arrives").
+    disconnecting: false,
+    disconnect_grace_ms: 2_000
   ]
 
   @doc false
@@ -339,6 +348,13 @@ defmodule Espex.ConnectionState do
   """
   @spec put_encryption(t(), encryption()) :: t()
   def put_encryption(%__MODULE__{} = state, enc), do: %{state | encryption: enc}
+
+  @doc """
+  Mark the connection as waiting for the client to acknowledge our
+  `DisconnectRequest`.
+  """
+  @spec put_disconnecting(t()) :: t()
+  def put_disconnecting(%__MODULE__{} = state), do: %{state | disconnecting: true}
 
   @doc """
   Record the client identity learned from a `HelloRequest`.

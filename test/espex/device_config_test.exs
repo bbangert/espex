@@ -3,6 +3,63 @@ defmodule Espex.DeviceConfigTest do
 
   alias Espex.DeviceConfig
 
+  describe "merge/2" do
+    @merge_psk :crypto.hash(:sha256, "merge")
+
+    test "applies the given keys and keeps the rest" do
+      base = DeviceConfig.new(name: "a", psk: @merge_psk, mac_address: "AA:BB:CC:DD:EE:FF")
+
+      assert {:ok, merged} = DeviceConfig.merge(base, name: "b", suggested_area: "Garage")
+      assert merged.name == "b"
+      assert merged.suggested_area == "Garage"
+      assert merged.psk == @merge_psk
+      assert merged.mac_address == "AA:BB:CC:DD:EE:FF"
+    end
+
+    test "psk accepts raw and base64 keys, and nil clears it" do
+      base = DeviceConfig.new(psk: @merge_psk)
+
+      assert {:ok, %{psk: @merge_psk}} = DeviceConfig.merge(base, psk: Base.encode64(@merge_psk))
+      assert {:ok, %{psk: @merge_psk}} = DeviceConfig.merge(DeviceConfig.new(), psk: @merge_psk)
+      assert {:ok, %{psk: nil}} = DeviceConfig.merge(base, psk: nil)
+    end
+
+    test "a bad psk is an error, not a raise" do
+      base = DeviceConfig.new()
+      assert DeviceConfig.merge(base, psk: "nope") == {:error, :invalid_psk_length}
+      assert DeviceConfig.merge(base, psk: 42) == {:error, :invalid_psk_length}
+    end
+
+    test ":port is immutable while the listener is bound" do
+      assert DeviceConfig.merge(DeviceConfig.new(), port: 6060) == {:error, {:immutable_key, :port}}
+    end
+
+    test "an unknown key is an error and nothing before it is applied" do
+      base = DeviceConfig.new(name: "a")
+      assert DeviceConfig.merge(base, name: "b", nope: 1) == {:error, {:unknown_key, :nope}}
+      assert DeviceConfig.merge(base, __struct__: Foo) == {:error, {:unknown_key, :__struct__}}
+    end
+  end
+
+  describe "validate/1" do
+    @validate_psk :crypto.hash(:sha256, "validate")
+
+    test "nil and raw 32-byte keys pass through" do
+      assert DeviceConfig.validate(%DeviceConfig{}) == {:ok, %DeviceConfig{}}
+      assert DeviceConfig.validate(%DeviceConfig{psk: @validate_psk}) == {:ok, %DeviceConfig{psk: @validate_psk}}
+    end
+
+    test "a hand-built struct with a base64 key is normalised" do
+      assert {:ok, %DeviceConfig{psk: @validate_psk}} =
+               DeviceConfig.validate(%DeviceConfig{psk: Base.encode64(@validate_psk)})
+    end
+
+    test "a bad key is an error" do
+      assert DeviceConfig.validate(%DeviceConfig{psk: "nope"}) == {:error, :invalid_psk_length}
+      assert DeviceConfig.validate(%DeviceConfig{psk: 42}) == {:error, :invalid_psk_length}
+    end
+  end
+
   describe "psk normalisation" do
     @raw32 :crypto.hash(:sha256, "pinky")
     @b64 Base.encode64(@raw32)

@@ -17,6 +17,9 @@ defmodule Espex.EncryptedIntegrationTest do
           name: sup_name,
           server_name: server_name,
           port: 0,
+          # Longer than any recv timeout below, so the disconnect test can
+          # only pass through the DisconnectResponse path, never the timer.
+          disconnect_grace_ms: 5_000,
           device_config: [
             name: "espex-encrypted",
             friendly_name: "Espex Encrypted",
@@ -40,7 +43,45 @@ defmodule Espex.EncryptedIntegrationTest do
       end
     end)
 
-    %{port: port}
+    %{port: port, server_name: server_name}
+  end
+
+  describe "server-initiated disconnect" do
+    test "disconnect_clients/1 sends an encrypted DisconnectRequest and the reply closes the socket", ctx do
+      %{port: port, server_name: server_name} = ctx
+      sock = connect(port)
+      {tx, rx} = do_handshake(sock)
+
+      # Hello first: a connection that has not said hello is closed outright.
+      {tx, rx} = encrypted_round_trip(sock, tx, rx, %Proto.HelloRequest{client_info: "disconnect-test"})
+
+      :ok = Espex.disconnect_clients(server_name)
+
+      {:ok, req_ct} = recv_outer_frame(sock)
+      {:ok, _rx, req_inner} = Noise.decrypt(rx, <<>>, req_ct)
+      {:ok, req_type, req_payload} = NoiseFrame.decode_inner(req_inner)
+      assert {:ok, %Proto.DisconnectRequest{}} = MessageTypes.decode_message(req_type, req_payload)
+
+      send_encrypted(sock, tx, %Proto.DisconnectResponse{})
+      assert {:error, :closed} = :gen_tcp.recv(sock, 0, 2_000)
+    end
+  end
+
+  # Send `message` encrypted with `tx`, returning the advanced cipher.
+  defp send_encrypted(sock, tx, message) do
+    {:ok, type, payload} = MessageTypes.encode_parts(message)
+    {:ok, tx, ct} = Noise.encrypt(tx, <<>>, NoiseFrame.encode_inner(type, payload))
+    :ok = :gen_tcp.send(sock, NoiseFrame.encode_outer(ct))
+    tx
+  end
+
+  # Send `message` and consume one encrypted reply frame; returns the
+  # advanced {tx, rx}.
+  defp encrypted_round_trip(sock, tx, rx, message) do
+    tx = send_encrypted(sock, tx, message)
+    {:ok, resp_ct} = recv_outer_frame(sock)
+    {:ok, rx, _inner} = Noise.decrypt(rx, <<>>, resp_ct)
+    {tx, rx}
   end
 
   describe "entity commands (security context)" do

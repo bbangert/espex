@@ -69,7 +69,8 @@ This is a protocol requirement: ESPHome clients cache
 `ListEntitiesRequest` / `DeviceInfoRequest` responses for the lifetime
 of the connection. Silently changing them mid-connection desyncs the
 client. If you need to advertise new entities, the client must
-reconnect to pick them up.
+reconnect to pick them up — `Espex.disconnect_clients/1` asks it to
+(see [Runtime reconfiguration](#runtime-reconfiguration)).
 
 ## Wire protocol
 
@@ -171,6 +172,43 @@ Under the hood:
 With no subscribers the dispatch is a silent no-op. Clients that
 subscribed via `SubscribeStatesRequest` see the update; others ignore
 unknown keys.
+
+## Runtime reconfiguration
+
+Two calls let a host change what it advertises without restarting the
+Espex tree:
+
+```elixir
+:ok = Espex.update_device_config(server_name, friendly_name: "Garage Bridge")
+:ok = Espex.disconnect_clients(server_name)
+```
+
+`Espex.update_device_config/2` replaces the `%DeviceConfig{}` held by
+`Espex.Server` (a keyword list merges, so a runtime-provisioned PSK
+survives; a struct replaces). Nothing live changes: each connection
+copied the config at accept, so the new one is seen by the *next*
+connection. `Espex.disconnect_clients/1` then uses the same
+`:subscribers` fan-out as `push_state/2` to send `:espex_disconnect`
+to every connection. Each one:
+
+1. Sends `DisconnectRequest` — the message ESPHome firmware sends before
+   a reboot or OTA — and marks itself `disconnecting`. A connection that
+   never completed hello is closed outright instead.
+2. Closes the socket on the client's `DisconnectResponse`, or after
+   `disconnect_grace_ms` (default 2 s) if none arrives. The protocol
+   requires the wait: *"Do not close the connection before the
+   acknowledgement arrives."*
+
+Home Assistant records the disconnect as *expected*, reconnects about
+five seconds later without backoff, and re-reads `DeviceInfo` and the
+entity list, adding and removing entities to match. Call update first,
+then disconnect: the update is a synchronous call, so the new config is
+in place before any client can reconnect.
+
+What does **not** change: the TCP listener keeps its port, adapters stay
+as configured (feature flags in `DeviceInfo` still derive from them at
+accept time), and an mDNS advertiser keeps the `name` / `mac_address`
+it captured at start — restart the supervisor to re-advertise.
 
 ## Configuration
 

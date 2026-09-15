@@ -4,7 +4,9 @@ defmodule Espex.KeepaliveTest do
   # more it closes. Exercised over real TCP with short intervals.
   use ExUnit.Case, async: false
 
-  alias Espex.{Frame, MessageTypes, Proto}
+  import Espex.Test.TcpClient, except: [recv_struct: 1, recv_struct: 2]
+
+  alias Espex.Proto
 
   # Generous relative to the 300 ms intervals below; absolute values stay
   # small so the suite remains fast.
@@ -44,31 +46,7 @@ defmodule Espex.KeepaliveTest do
     %{port: port}
   end
 
-  defp connect(port) do
-    {:ok, socket} =
-      :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, nodelay: true, packet: :raw])
-
-    socket
-  end
-
-  defp send_struct(socket, struct) do
-    {:ok, frame} = MessageTypes.encode_message(struct)
-    :ok = :gen_tcp.send(socket, frame)
-  end
-
-  defp recv_struct(socket, buffer \\ <<>>, timeout \\ @recv_timeout) do
-    case Frame.decode_frame(buffer) do
-      {:ok, type_id, payload, rest} ->
-        {:ok, module} = MessageTypes.module_for_id(type_id)
-        {:ok, module.decode(payload), rest}
-
-      _ ->
-        case :gen_tcp.recv(socket, 0, timeout) do
-          {:ok, data} -> recv_struct(socket, buffer <> data, timeout)
-          {:error, reason} -> {:error, reason}
-        end
-    end
-  end
+  defp recv_struct(socket, buffer \\ <<>>), do: Espex.Test.TcpClient.recv_struct(socket, buffer, @recv_timeout)
 
   test "an idle client receives a device-initiated PingRequest", %{port: port} do
     socket = connect(port)
