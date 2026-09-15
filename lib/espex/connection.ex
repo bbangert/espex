@@ -107,8 +107,7 @@ defmodule Espex.Connection do
         {:continue, state}
 
       {:halt, _reason, state} ->
-        cleanup(state)
-        {:close, state}
+        {:close, cleanup(state)}
     end
   end
 
@@ -164,7 +163,7 @@ defmodule Espex.Connection do
   def handle_info(:espex_keepalive, {socket, state}) do
     cond do
       state.keepalive_outstanding ->
-        cleanup(state)
+        state = cleanup(state)
         Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
         {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
 
@@ -183,7 +182,7 @@ defmodule Espex.Connection do
             {:noreply, {socket, state}}
 
           {:error, reason} ->
-            cleanup(state)
+            state = cleanup(state)
             {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
         end
     end
@@ -202,7 +201,7 @@ defmodule Espex.Connection do
         # {:shutdown, _} exit to handle_close/2; any other reason goes to
         # handle_error/3 with a crash report, which a deliberate close is
         # not. Same shape as the keepalive stops above.
-        cleanup(state)
+        state = cleanup(state)
         {:stop, {:shutdown, reason}, {socket, state}}
     end
   end
@@ -1078,6 +1077,11 @@ defmodule Espex.Connection do
   defp load_entities(%{entity_provider: nil}), do: []
   defp load_entities(%{entity_provider: module}), do: module.list_entities()
 
+  # Tear down every adapter-side resource and return the state with them
+  # forgotten. ThousandIsland calls one of the handle_* callbacks after an
+  # in-process close, so cleanup/1 runs twice on those paths; the cleared
+  # state makes the second pass a no-op instead of closing a handle that
+  # may by then belong to the next owner.
   defp cleanup(state) do
     if state.zwave_subscribed, do: interpret_action(nil, state, :zwave_unsubscribe)
     if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
@@ -1095,7 +1099,16 @@ defmodule Espex.Connection do
 
     cleanup_serial_owners(state)
 
-    :ok
+    %{
+      state
+      | opened_ports: %{},
+        serial_subscriptions: MapSet.new(),
+        serial_modes: %{},
+        bluetooth_owned: MapSet.new(),
+        zwave_subscribed: false,
+        infrared_subscribed: false,
+        bluetooth_scanner_subscribed: false
+    }
   end
 
   defp cleanup_serial_owners(%{server_name: nil}), do: :ok

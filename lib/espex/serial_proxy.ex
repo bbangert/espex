@@ -53,6 +53,9 @@ defmodule Espex.SerialProxy do
   closes for any reason. Both close the owner's handle (`c:close/1`)
   *before* the release, so once an instance shows as free its port really
   is: an adapter that allows one open per device works with the handoff.
+  The one exception is a connection killed outright, which espex cannot
+  tear down; its ownership is still swept, so a handle must not outlive
+  the `subscriber` pid it was opened for (see `c:open/3`).
   A recorded owner whose connection has already died is taken over by the
   next `SUBSCRIBE`, so a reconnecting client is never refused by its own
   ghost. Ownership is tracked across connections by `Espex.Server`, one
@@ -335,6 +338,14 @@ defmodule Espex.SerialProxy do
   Open the given instance with the supplied options. Data received on the
   port must be forwarded to `subscriber` as `{:espex_serial_data, handle,
   binary}`.
+
+  `subscriber` is the connection that owns the handle. Espex calls
+  `c:close/1` on every orderly teardown, but a connection killed with an
+  untrappable exit never reaches that call, while its ownership is still
+  swept so the next client can claim the instance. A handle that outlives
+  its subscriber must therefore watch that pid (`Process.monitor/1` or a
+  link) and close itself when it goes down; an exclusive-open adapter
+  would otherwise refuse the next owner's open.
   """
   @callback open(instance :: non_neg_integer(), open_opts(), subscriber :: pid()) ::
               {:ok, handle()} | {:error, term()}
