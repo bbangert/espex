@@ -833,7 +833,7 @@ defmodule Espex.Dispatch do
   """
   @spec serial_request_response(
           non_neg_integer(),
-          SerialProxy.request_type(),
+          SerialProxy.ack_type(),
           {:ok, SerialProxy.request_status()} | {:error, term()}
         ) :: Proto.SerialProxyRequestResponse.t()
   def serial_request_response(instance, type, {:ok, status}) do

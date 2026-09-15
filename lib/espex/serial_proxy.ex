@@ -96,10 +96,18 @@ defmodule Espex.SerialProxy do
   | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails, `INVALID_ARGUMENT` for an unknown instance |
   | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for an unknown instance |
   | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, `ERROR`, or `INVALID_ARGUMENT` |
-  | SUBSCRIBE / UNSUBSCRIBE / FLUSH | the status returned by `c:request/2`, `OK` when a lazy open handles the subscribe, `INVALID_ARGUMENT` for an unknown instance |
+  | SUBSCRIBE / UNSUBSCRIBE / FLUSH | the status returned by `c:request/2`, `INVALID_ARGUMENT` for an unknown instance |
 
-  A lazy open (a WRITE, SUBSCRIBE or FLUSH arriving before any CONFIGURE)
-  is not itself acknowledged; only the request that triggered it is.
+  A SUBSCRIBE that arrives before the port is open is acknowledged `OK`
+  as soon as the intent is recorded — not once the port is open. The
+  lazy open it triggers may fail; the intent survives and is reattached
+  on the next successful open (CONFIGURE), which is how ESPHome firmware
+  behaves too, where subscribe always succeeds because the UART is
+  always live.
+
+  A lazy open (a WRITE, SUBSCRIBE, FLUSH, SET_MODEM_PINS or GET_MODEM_PINS
+  arriving before any CONFIGURE) is not itself acknowledged; only the
+  request that triggered it is.
 
   ## Example: a port wrapping Circuits.UART
 
@@ -301,11 +309,17 @@ defmodule Espex.SerialProxy do
               {:ok, %{rts: boolean(), dtr: boolean()}} | {:error, term()}
 
   @typedoc """
-  Internal atom form of the `SerialProxyRequestType` enum. `:configure`
-  and `:set_modem_pins` only ever appear in a `SerialProxyRequestResponse`,
-  identifying which request is being acknowledged.
+  Internal atom form of the `SerialProxyRequestType` values a client can
+  send in a `SerialProxyRequest`; the operations `c:request/2` receives.
   """
-  @type request_type :: :subscribe | :unsubscribe | :flush | :configure | :set_modem_pins
+  @type request_type :: :subscribe | :unsubscribe | :flush
+
+  @typedoc """
+  Which request a `SerialProxyRequestResponse` acknowledges: any
+  `t:request_type/0`, or CONFIGURE / SET_MODEM_PINS, which are separate
+  messages and never reach `c:request/2`.
+  """
+  @type ack_type :: request_type() | :configure | :set_modem_pins
 
   @typedoc "Internal atom form of the `SerialProxyStatus` enum."
   @type request_status ::
