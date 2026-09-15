@@ -114,6 +114,47 @@ defmodule Espex.ServerTest do
     end
   end
 
+  describe "update_adapters/2" do
+    test "merges known keys and keeps the rest", %{server: server} do
+      assert Server.update_adapters(server, entity_provider: Espex.Test.FakeEntityProvider) == :ok
+      assert Server.update_adapters(server, %{zwave_proxy: Espex.Test.FakeZWaveProxy}) == :ok
+
+      adapters = Server.adapters(server)
+      assert adapters.entity_provider == Espex.Test.FakeEntityProvider
+      assert adapters.zwave_proxy == Espex.Test.FakeZWaveProxy
+      assert adapters.serial_proxy == nil
+    end
+
+    test "nil disables a feature", %{server: server} do
+      :ok = Server.update_adapters(server, entity_provider: Espex.Test.FakeEntityProvider)
+      :ok = Server.update_adapters(server, entity_provider: nil)
+      assert Server.adapters(server).entity_provider == nil
+    end
+
+    test "an unknown key or non-module value is rejected and nothing is applied", %{server: server} do
+      before = Server.adapters(server)
+
+      assert Server.update_adapters(server, entity_provider: Espex.Test.FakeEntityProvider, bogus: Foo) ==
+               {:error, {:unknown_adapter, :bogus}}
+
+      assert Server.update_adapters(server, zwave_proxy: "not a module") ==
+               {:error, {:invalid_adapter, :zwave_proxy, "not a module"}}
+
+      # Atoms that are not loadable modules would crash the next accept.
+      assert Server.update_adapters(server, zwave_proxy: false) == {:error, {:invalid_adapter, :zwave_proxy, false}}
+
+      assert Server.update_adapters(server, zwave_proxy: :no_such_module) ==
+               {:error, {:invalid_adapter, :zwave_proxy, :no_such_module}}
+
+      assert Server.adapters(server) == before
+    end
+
+    test "a struct is refused at the caller, never inside the server", %{server: server, server_pid: pid} do
+      assert_raise FunctionClauseError, fn -> Server.update_adapters(server, %DeviceConfig{}) end
+      assert Process.alive?(pid)
+    end
+  end
+
   describe "DOWN monitor sweep" do
     test "an owner's death releases its addresses without an explicit release call", %{server: server} do
       {:ok, owner} = Task.start(fn -> Process.sleep(:infinity) end)

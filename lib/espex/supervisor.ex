@@ -68,10 +68,10 @@ defmodule Espex.Supervisor do
   ## Runtime reconfiguration
 
   `Espex.update_device_config/2` swaps the `%DeviceConfig{}` new
-  connections are built from, and `Espex.disconnect_clients/1` asks every
-  connected client to disconnect and come back — the two together make
-  Home Assistant re-read `DeviceInfo` and the entity list without
-  restarting this tree. `disconnect_grace_ms` bounds how long a
+  connections are built from, `Espex.update_adapters/2` swaps the adapter
+  modules, and `Espex.disconnect_clients/1` asks every connected client
+  to disconnect and come back — together they make Home Assistant re-read
+  `DeviceInfo` and the entity list without restarting this tree. `disconnect_grace_ms` bounds how long a
   connection waits for the client's `DisconnectResponse` before closing
   the socket anyway.
   """
