@@ -42,7 +42,7 @@ defmodule Espex.Connection do
     # (value unused). Registered BEFORE the state snapshot below so a
     # connection accepting across `update_device_config/2` →
     # `disconnect_clients/1` cannot both read the old config and miss the
-    # fan-out: registered first, it receives :espex_disconnect; registered
+    # fan-out: registered first, it receives {:espex_disconnect, _}; registered
     # later, its snapshot already sees the update.
     {:ok, _} = Registry.register(registry_name, :subscribers, nil)
 
@@ -789,7 +789,7 @@ defmodule Espex.Connection do
     end
   end
 
-  # The DisconnectRequest is on the wire (see Dispatch's :espex_disconnect
+  # The DisconnectRequest is on the wire (see Dispatch's {:espex_disconnect, _}
   # event); if the client never answers, :espex_disconnect_timeout closes
   # the socket. The timer is armed once per connection and never cancelled:
   # the usual outcome is that the socket closed before it fires, and a

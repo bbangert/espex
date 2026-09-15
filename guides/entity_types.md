@@ -534,9 +534,15 @@ plus volume, mute, and URL-based media loading.
 | `MediaPlayerStateResponse` | State |
 | `MediaPlayerCommandRequest` | Command (uses `has_*` flags) |
 
-Advertisement fields: `supports_pause`, `supported_formats` (list of
+Advertisement fields: `feature_flags` (bitmask of ESPHome's
+`MediaPlayerEntityFeature`), `supported_formats` (list of
 `MediaPlayerSupportedFormat` structs declaring sample rate / channels
-/ format strings HA can stream to you), `feature_flags`.
+/ format strings HA can stream to you), and the deprecated
+`supports_pause`. Which one a client reads depends on the API version
+the device advertises: below 1.11 it ignores `feature_flags` and
+derives the feature set from `supports_pause`; from 1.11 it reads only
+`feature_flags`. Set both so the advertisement means the same thing on
+either side.
 
 State `state` uses `Espex.Proto.MediaPlayerState`:
 `:MEDIA_PLAYER_STATE_NONE`, `:MEDIA_PLAYER_STATE_IDLE`,
@@ -553,8 +559,17 @@ Command `command` uses `Espex.Proto.MediaPlayerCommand`:
 a handful more (enqueue, repeat_one, repeat_off, clear_playlist).
 
 ```elixir
+import Bitwise
+
+# MediaPlayerEntityFeature bits (esphome media_player.h). ESPHome always
+# reports these six; add PAUSE | PLAY when the player can pause.
+base = 1 <<< 9 ||| 1 <<< 17 ||| 1 <<< 12 ||| 1 <<< 2 ||| 1 <<< 3 ||| 1 <<< 20
+# play_media   browse_media stop       volume_set volume_mute media_announce
+pause = 1 <<< 0 ||| 1 <<< 14
+
 %Proto.ListEntitiesMediaPlayerResponse{
   object_id: "living_speaker", key: 8101, name: "Living Room Speaker",
+  feature_flags: base ||| pause,
   supports_pause: true
 }
 

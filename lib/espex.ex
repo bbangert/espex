@@ -82,6 +82,9 @@ defmodule Espex do
   alias Espex.{ClientInfo, DeviceConfig, Server}
   alias Espex.Supervisor, as: EspexSupervisor
 
+  @typedoc "Why the server is asking a client to disconnect; see `disconnect_clients/2`."
+  @type disconnect_reason :: :unspecified | :provisioning_closed
+
   @doc """
   `child_spec/1` — makes `{Espex, opts}` usable as a child spec.
   """
@@ -195,14 +198,25 @@ defmodule Espex do
   that is already being disconnected. Use an `Espex.ConnectionListener`
   or `connected_clients/1` to observe the drop and the return.
 
-  `server_name` defaults to `Espex.Server`.
+  `reason` is carried in `DisconnectRequest.reason` (ESPHome 2026.7+):
+
+    * `:unspecified` (default) — an ordinary reconnect request; Home
+      Assistant comes back after its cooldown.
+    * `:provisioning_closed` — the device's provisioning window has
+      expired and it must be reset before it accepts another
+      connection. Home Assistant surfaces this as a distinct config-flow
+      error instead of retrying.
+
+  `server_name` defaults to `Espex.Server`; pass it explicitly when you
+  also pass a reason.
   """
-  @spec disconnect_clients(atom()) :: :ok
-  def disconnect_clients(server_name \\ Server) do
+  @spec disconnect_clients(atom(), disconnect_reason()) :: :ok
+  def disconnect_clients(server_name \\ Server, reason \\ :unspecified)
+      when reason in [:unspecified, :provisioning_closed] do
     registry = EspexSupervisor.registry_name(server_name)
 
     Registry.dispatch(registry, :subscribers, fn entries ->
-      Enum.each(entries, fn {pid, _} -> send(pid, :espex_disconnect) end)
+      Enum.each(entries, fn {pid, _} -> send(pid, {:espex_disconnect, reason}) end)
     end)
   end
 

@@ -598,30 +598,36 @@ defmodule Espex.DispatchTest do
     end
 
     test "after hello: sends DisconnectRequest, arms the grace timer, marks disconnecting" do
-      {new_state, actions} = Dispatch.handle_event(hello_done(disconnect_grace_ms: 123), :espex_disconnect)
+      {new_state, actions} =
+        Dispatch.handle_event(hello_done(disconnect_grace_ms: 123), {:espex_disconnect, :unspecified})
 
       assert [
                {:log, :info, _},
-               {:send, %Proto.DisconnectRequest{}},
+               {:send, %Proto.DisconnectRequest{reason: :DISCONNECT_REASON_UNSPECIFIED}},
                {:arm_disconnect_timeout, 123}
              ] = actions
 
       assert new_state.disconnecting
     end
 
+    test "the reason is carried on the wire" do
+      {_s, actions} = Dispatch.handle_event(hello_done(), {:espex_disconnect, :provisioning_closed})
+      assert [_, {:send, %Proto.DisconnectRequest{reason: :DISCONNECT_REASON_PROVISIONING_CLOSED}}, _] = actions
+    end
+
     test "a second event while disconnecting does nothing (fan-out is idempotent)" do
-      {s, _} = Dispatch.handle_event(hello_done(), :espex_disconnect)
-      assert {^s, []} = Dispatch.handle_event(s, :espex_disconnect)
+      {s, _} = Dispatch.handle_event(hello_done(), {:espex_disconnect, :unspecified})
+      assert {^s, []} = Dispatch.handle_event(s, {:espex_disconnect, :unspecified})
     end
 
     test "before hello: closes without sending a frame" do
-      {s, actions} = Dispatch.handle_event(state(), :espex_disconnect)
+      {s, actions} = Dispatch.handle_event(state(), {:espex_disconnect, :unspecified})
       assert actions == [{:close, :server_disconnect}]
       refute s.disconnecting
     end
 
     test "mid Noise handshake: closes without sending a frame" do
-      {_s, actions} = Dispatch.handle_event(state(encryption: :awaiting_hello), :espex_disconnect)
+      {_s, actions} = Dispatch.handle_event(state(encryption: :awaiting_hello), {:espex_disconnect, :unspecified})
       assert actions == [{:close, :server_disconnect}]
     end
 

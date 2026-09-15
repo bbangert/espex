@@ -13,15 +13,22 @@ defmodule Espex.SerialProxy.Info do
   alias Espex.Proto
 
   @type port_type :: :ttl | :rs232 | :rs485
+  @typedoc "A modem control line the port can drive via `set_modem_pins/3`."
+  @type line :: :rts | :dtr
 
   @type t :: %__MODULE__{
           instance: non_neg_integer(),
           name: String.t(),
-          port_type: port_type()
+          port_type: port_type(),
+          configured_line_states: [line()]
         }
 
   @enforce_keys [:instance, :name]
-  defstruct [:instance, :name, port_type: :ttl]
+  defstruct [:instance, :name, port_type: :ttl, configured_line_states: []]
+
+  # Bit positions per ESPHome's SerialProxyLineStateFlag enum (serial_proxy.h);
+  # the same values Espex.Dispatch uses for {Set,Get}ModemPins line_states.
+  @line_bits %{rts: 0x01, dtr: 0x02}
 
   @doc """
   Build an `%Info{}` from keyword options.
@@ -37,8 +44,18 @@ defmodule Espex.SerialProxy.Info do
   def to_proto(%__MODULE__{} = info) do
     %Proto.SerialProxyInfo{
       name: info.name,
-      port_type: port_type_to_proto(info.port_type)
+      port_type: port_type_to_proto(info.port_type),
+      configured_line_states: line_states_to_bits(info.configured_line_states)
     }
+  end
+
+  @doc """
+  Encode a list of modem lines as the `configured_line_states` bitmask
+  (`:rts` → bit 0, `:dtr` → bit 1).
+  """
+  @spec line_states_to_bits([line()]) :: non_neg_integer()
+  def line_states_to_bits(lines) when is_list(lines) do
+    Enum.reduce(lines, 0, fn line, acc -> Bitwise.bor(acc, Map.fetch!(@line_bits, line)) end)
   end
 
   defp port_type_to_proto(:ttl), do: :SERIAL_PROXY_PORT_TYPE_TTL

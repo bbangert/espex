@@ -75,6 +75,10 @@ defmodule Espex.SerialProxy do
       ports by this id in all subsequent requests
     * `name` — display name shown in the Home Assistant UI
     * `port_type` — `:ttl`, `:rs232`, or `:rs485`
+    * `configured_line_states` — the modem control lines this port can
+      drive, a list of `:rts` / `:dtr` (default `[]`). Advertised to the
+      client as a bitmask so it knows which pins `set_modem_pins/3` will
+      honour. Set it when the adapter implements `c:set_modem_pins/3`.
 
   The list is snapshotted at connection-accept time and cached by the
   client; see the "Architecture" guide for why changes require a
