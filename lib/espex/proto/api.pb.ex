@@ -1,3 +1,11 @@
+defmodule Espex.Proto.DisconnectReason do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:DISCONNECT_REASON_UNSPECIFIED, 0)
+  field(:DISCONNECT_REASON_PROVISIONING_CLOSED, 1)
+end
+
 defmodule Espex.Proto.SerialProxyPortType do
   @moduledoc false
   use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -144,6 +152,15 @@ defmodule Espex.Proto.SupportsResponseType do
   field(:SUPPORTS_RESPONSE_STATUS, 100)
 end
 
+defmodule Espex.Proto.TemperatureUnit do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:TEMPERATURE_UNIT_CELSIUS, 0)
+  field(:TEMPERATURE_UNIT_FAHRENHEIT, 1)
+  field(:TEMPERATURE_UNIT_KELVIN, 2)
+end
+
 defmodule Espex.Proto.ClimateMode do
   @moduledoc false
   use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -256,6 +273,8 @@ defmodule Espex.Proto.LockState do
   field(:LOCK_STATE_JAMMED, 3)
   field(:LOCK_STATE_LOCKING, 4)
   field(:LOCK_STATE_UNLOCKING, 5)
+  field(:LOCK_STATE_OPENING, 6)
+  field(:LOCK_STATE_OPEN, 7)
 end
 
 defmodule Espex.Proto.LockCommand do
@@ -454,6 +473,15 @@ defmodule Espex.Proto.ZWaveProxyRequestType do
   field(:ZWAVE_PROXY_REQUEST_TYPE_HOME_ID_CHANGE, 2)
 end
 
+defmodule Espex.Proto.ZWaveProxyStatus do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:ZWAVE_PROXY_STATUS_OK, 0)
+  field(:ZWAVE_PROXY_STATUS_IN_USE, 1)
+  field(:ZWAVE_PROXY_STATUS_NOT_SUPPORTED, 2)
+end
+
 defmodule Espex.Proto.SerialProxyParity do
   @moduledoc false
   use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -470,6 +498,9 @@ defmodule Espex.Proto.SerialProxyRequestType do
   field(:SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE, 0)
   field(:SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE, 1)
   field(:SERIAL_PROXY_REQUEST_TYPE_FLUSH, 2)
+  field(:SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, 3)
+  field(:SERIAL_PROXY_REQUEST_TYPE_SET_MODEM_PINS, 4)
+  field(:SERIAL_PROXY_REQUEST_TYPE_SET_MODE, 5)
 end
 
 defmodule Espex.Proto.SerialProxyStatus do
@@ -481,6 +512,16 @@ defmodule Espex.Proto.SerialProxyStatus do
   field(:SERIAL_PROXY_STATUS_ERROR, 2)
   field(:SERIAL_PROXY_STATUS_TIMEOUT, 3)
   field(:SERIAL_PROXY_STATUS_NOT_SUPPORTED, 4)
+  field(:SERIAL_PROXY_STATUS_PORT_IN_USE, 5)
+  field(:SERIAL_PROXY_STATUS_INVALID_ARGUMENT, 6)
+end
+
+defmodule Espex.Proto.SerialProxyMode do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:SERIAL_PROXY_MODE_RAW, 0)
+  field(:SERIAL_PROXY_MODE_PROTOCOL, 1)
 end
 
 defmodule Espex.Proto.HelloRequest do
@@ -519,6 +560,8 @@ end
 defmodule Espex.Proto.DisconnectRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:reason, 1, type: Espex.Proto.DisconnectReason, enum: true)
 end
 
 defmodule Espex.Proto.DisconnectResponse do
@@ -564,6 +607,7 @@ defmodule Espex.Proto.SerialProxyInfo do
 
   field(:name, 1, type: :string)
   field(:port_type, 2, type: Espex.Proto.SerialProxyPortType, json_name: "portType", enum: true)
+  field(:configured_line_states, 3, type: :uint32, json_name: "configuredLineStates")
 end
 
 defmodule Espex.Proto.DeviceInfoResponse do
@@ -635,6 +679,70 @@ defmodule Espex.Proto.DeviceInfoResponse do
   field(:zwave_home_id, 24, type: :uint32, json_name: "zwaveHomeId", deprecated: false)
 
   field(:serial_proxies, 25,
+    repeated: true,
+    type: Espex.Proto.SerialProxyInfo,
+    json_name: "serialProxies",
+    deprecated: false
+  )
+
+  field(:api_encryption_provisionable, 26,
+    type: :bool,
+    json_name: "apiEncryptionProvisionable",
+    deprecated: false
+  )
+end
+
+defmodule Espex.Proto.DeviceCapabilitiesRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+end
+
+defmodule Espex.Proto.BluetoothProxyCapabilities do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:feature_flags, 1, type: :uint32, json_name: "featureFlags")
+  field(:mac_address, 2, type: :string, json_name: "macAddress", deprecated: false)
+end
+
+defmodule Espex.Proto.VoiceAssistantCapabilities do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:feature_flags, 1, type: :uint32, json_name: "featureFlags")
+end
+
+defmodule Espex.Proto.ZWaveProxyCapabilities do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:feature_flags, 1, type: :uint32, json_name: "featureFlags")
+  field(:home_id, 2, type: :uint32, json_name: "homeId")
+end
+
+defmodule Espex.Proto.DeviceCapabilitiesResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:bluetooth_proxy, 1,
+    type: Espex.Proto.BluetoothProxyCapabilities,
+    json_name: "bluetoothProxy",
+    deprecated: false
+  )
+
+  field(:voice_assistant, 2,
+    type: Espex.Proto.VoiceAssistantCapabilities,
+    json_name: "voiceAssistant",
+    deprecated: false
+  )
+
+  field(:zwave_proxy, 3,
+    type: Espex.Proto.ZWaveProxyCapabilities,
+    json_name: "zwaveProxy",
+    deprecated: false
+  )
+
+  field(:serial_proxies, 4,
     repeated: true,
     type: Espex.Proto.SerialProxyInfo,
     json_name: "serialProxies",
@@ -1173,8 +1281,13 @@ defmodule Espex.Proto.GetTimeResponse do
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
 
   field(:epoch_seconds, 1, type: :fixed32, json_name: "epochSeconds")
-  field(:timezone, 2, type: :string)
-  field(:parsed_timezone, 3, type: Espex.Proto.ParsedTimezone, json_name: "parsedTimezone")
+  field(:timezone, 2, type: :string, deprecated: true)
+
+  field(:parsed_timezone, 3,
+    type: Espex.Proto.ParsedTimezone,
+    json_name: "parsedTimezone",
+    deprecated: false
+  )
 end
 
 defmodule Espex.Proto.ListEntitiesServicesArgument do
@@ -1183,6 +1296,8 @@ defmodule Espex.Proto.ListEntitiesServicesArgument do
 
   field(:name, 1, type: :string)
   field(:type, 2, type: Espex.Proto.ServiceArgType, enum: true)
+  field(:description, 3, type: :string, deprecated: false)
+  field(:example, 4, type: :string, deprecated: false)
 end
 
 defmodule Espex.Proto.ListEntitiesServicesResponse do
@@ -1203,6 +1318,8 @@ defmodule Espex.Proto.ListEntitiesServicesResponse do
     json_name: "supportsResponse",
     enum: true
   )
+
+  field(:description, 5, type: :string, deprecated: false)
 end
 
 defmodule Espex.Proto.ExecuteServiceArgument do
@@ -1395,6 +1512,12 @@ defmodule Espex.Proto.ListEntitiesClimateResponse do
   field(:visual_max_humidity, 25, type: :float, json_name: "visualMaxHumidity")
   field(:device_id, 26, type: :uint32, json_name: "deviceId", deprecated: false)
   field(:feature_flags, 27, type: :uint32, json_name: "featureFlags")
+
+  field(:temperature_unit, 28,
+    type: Espex.Proto.TemperatureUnit,
+    json_name: "temperatureUnit",
+    enum: true
+  )
 end
 
 defmodule Espex.Proto.ClimateStateResponse do
@@ -1485,6 +1608,12 @@ defmodule Espex.Proto.ListEntitiesWaterHeaterResponse do
   )
 
   field(:supported_features, 12, type: :uint32, json_name: "supportedFeatures")
+
+  field(:temperature_unit, 13,
+    type: Espex.Proto.TemperatureUnit,
+    json_name: "temperatureUnit",
+    enum: true
+  )
 end
 
 defmodule Espex.Proto.WaterHeaterStateResponse do
@@ -1743,7 +1872,7 @@ defmodule Espex.Proto.ListEntitiesMediaPlayerResponse do
     enum: true
   )
 
-  field(:supports_pause, 8, type: :bool, json_name: "supportsPause")
+  field(:supports_pause, 8, type: :bool, json_name: "supportsPause", deprecated: true)
 
   field(:supported_formats, 9,
     repeated: true,
@@ -2150,6 +2279,7 @@ defmodule Espex.Proto.VoiceAssistantAudio do
 
   field(:data, 1, type: :bytes, deprecated: false)
   field(:end, 2, type: :bool)
+  field(:data2, 3, type: :bytes, deprecated: false)
 end
 
 defmodule Espex.Proto.VoiceAssistantTimerEventResponse do
@@ -2592,6 +2722,14 @@ defmodule Espex.Proto.ZWaveProxyRequest do
   field(:data, 2, type: :bytes)
 end
 
+defmodule Espex.Proto.ZWaveProxyRequestResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:type, 1, type: Espex.Proto.ZWaveProxyRequestType, enum: true)
+  field(:status, 2, type: Espex.Proto.ZWaveProxyStatus, enum: true)
+end
+
 defmodule Espex.Proto.ListEntitiesInfraredResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -2622,6 +2760,7 @@ defmodule Espex.Proto.InfraredRFTransmitRawTimingsRequest do
   field(:carrier_frequency, 3, type: :uint32, json_name: "carrierFrequency")
   field(:repeat_count, 4, type: :uint32, json_name: "repeatCount")
   field(:timings, 5, repeated: true, type: :sint32, packed: true, deprecated: false)
+  field(:modulation, 6, type: :uint32)
 end
 
 defmodule Espex.Proto.InfraredRFReceiveEvent do
@@ -2631,6 +2770,29 @@ defmodule Espex.Proto.InfraredRFReceiveEvent do
   field(:device_id, 1, type: :uint32, json_name: "deviceId", deprecated: false)
   field(:key, 2, type: :fixed32, deprecated: false)
   field(:timings, 3, repeated: true, type: :sint32, packed: true, deprecated: false)
+end
+
+defmodule Espex.Proto.ListEntitiesRadioFrequencyResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:object_id, 1, type: :string, json_name: "objectId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:name, 3, type: :string, deprecated: false)
+  field(:icon, 4, type: :string, deprecated: false)
+  field(:disabled_by_default, 5, type: :bool, json_name: "disabledByDefault")
+
+  field(:entity_category, 6,
+    type: Espex.Proto.EntityCategory,
+    json_name: "entityCategory",
+    enum: true
+  )
+
+  field(:device_id, 7, type: :uint32, json_name: "deviceId", deprecated: false)
+  field(:capabilities, 8, type: :uint32)
+  field(:frequency_min, 9, type: :uint32, json_name: "frequencyMin")
+  field(:frequency_max, 10, type: :uint32, json_name: "frequencyMax")
+  field(:supported_modulations, 11, type: :uint32, json_name: "supportedModulations")
 end
 
 defmodule Espex.Proto.SerialProxyConfigureRequest do
@@ -2682,6 +2844,7 @@ defmodule Espex.Proto.SerialProxyGetModemPinsResponse do
 
   field(:instance, 1, type: :uint32)
   field(:line_states, 2, type: :uint32, json_name: "lineStates")
+  field(:status, 3, type: Espex.Proto.SerialProxyStatus, enum: true)
 end
 
 defmodule Espex.Proto.SerialProxyRequest do
@@ -2700,6 +2863,14 @@ defmodule Espex.Proto.SerialProxyRequestResponse do
   field(:type, 2, type: Espex.Proto.SerialProxyRequestType, enum: true)
   field(:status, 3, type: Espex.Proto.SerialProxyStatus, enum: true)
   field(:error_message, 4, type: :string, json_name: "errorMessage")
+end
+
+defmodule Espex.Proto.SerialProxySetModeRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:instance, 1, type: :uint32)
+  field(:mode, 2, type: Espex.Proto.SerialProxyMode, enum: true)
 end
 
 defmodule Espex.Proto.BluetoothSetConnectionParamsRequest do

@@ -150,7 +150,12 @@ defmodule Espex.MessageTypes do
     144 => Proto.SerialProxyRequest,
     145 => Proto.BluetoothSetConnectionParamsRequest,
     146 => Proto.BluetoothSetConnectionParamsResponse,
-    147 => Proto.SerialProxyRequestResponse
+    147 => Proto.SerialProxyRequestResponse,
+    148 => Proto.ListEntitiesRadioFrequencyResponse,
+    149 => Proto.DeviceCapabilitiesRequest,
+    150 => Proto.DeviceCapabilitiesResponse,
+    151 => Proto.ZWaveProxyRequestResponse,
+    152 => Proto.SerialProxySetModeRequest
   }
 
   @reverse_types Map.new(@message_types, fn {id, mod} -> {mod, id} end)

@@ -108,6 +108,24 @@ defmodule Espex.ConnectionStateTest do
     end
   end
 
+  describe "SerialProxy.Info.to_proto/1" do
+    test "encodes configured_line_states as the ESPHome bitmask" do
+      base = [instance: 0, name: "modem", port_type: :rs232]
+
+      assert SerialProxy.Info.new(base).configured_line_states == []
+      assert SerialProxy.Info.to_proto(SerialProxy.Info.new(base)).configured_line_states == 0
+
+      assert SerialProxy.Info.to_proto(SerialProxy.Info.new(base ++ [configured_line_states: [:rts]])).configured_line_states ==
+               1
+
+      assert SerialProxy.Info.to_proto(SerialProxy.Info.new(base ++ [configured_line_states: [:dtr]])).configured_line_states ==
+               2
+
+      assert SerialProxy.Info.to_proto(SerialProxy.Info.new(base ++ [configured_line_states: [:rts, :dtr]])).configured_line_states ==
+               3
+    end
+  end
+
   describe "serial subscriptions" do
     test "starts empty" do
       assert base_state().serial_subscriptions == MapSet.new()

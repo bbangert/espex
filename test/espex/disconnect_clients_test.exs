@@ -119,6 +119,18 @@ defmodule Espex.DisconnectClientsTest do
     refute_receive {:connections_changed}, 200
   end
 
+  test "a reason is delivered to the client", ctx do
+    {socket, _hello, rest} = connect_and_hello(ctx.port, "reasoned")
+
+    :ok = Espex.disconnect_clients(ctx.server_name, :provisioning_closed)
+
+    assert {:ok, %Proto.DisconnectRequest{reason: :DISCONNECT_REASON_PROVISIONING_CLOSED}, rest} =
+             recv_struct(socket, rest)
+
+    send_struct(socket, %Proto.DisconnectResponse{})
+    assert {:error, :closed} = recv_struct(socket, rest)
+  end
+
   test "every connected client receives the request", ctx do
     {a, _, a_rest} = connect_and_hello(ctx.port, "a")
     {b, _, b_rest} = connect_and_hello(ctx.port, "b")

@@ -534,9 +534,12 @@ plus volume, mute, and URL-based media loading.
 | `MediaPlayerStateResponse` | State |
 | `MediaPlayerCommandRequest` | Command (uses `has_*` flags) |
 
-Advertisement fields: `supports_pause`, `supported_formats` (list of
-`MediaPlayerSupportedFormat` structs declaring sample rate / channels
-/ format strings HA can stream to you), `feature_flags`.
+Advertisement fields: `feature_flags` (bitmask of the media player
+features; this is where pause support lives since ESPHome 2026.9),
+`supported_formats` (list of `MediaPlayerSupportedFormat` structs
+declaring sample rate / channels / format strings HA can stream to
+you), and the deprecated `supports_pause` (still honoured by older
+clients; set both while they are in use).
 
 State `state` uses `Espex.Proto.MediaPlayerState`:
 `:MEDIA_PLAYER_STATE_NONE`, `:MEDIA_PLAYER_STATE_IDLE`,

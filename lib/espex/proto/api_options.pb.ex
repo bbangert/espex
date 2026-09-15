@@ -142,6 +142,20 @@ defmodule Espex.Proto.PbExtension do
     type: :uint32,
     json_name: "maxDataLength"
   )
+
+  extend(Google.Protobuf.FieldOptions, :mac_address, 50019,
+    optional: true,
+    type: :bool,
+    json_name: "macAddress",
+    default: false
+  )
+
+  extend(Google.Protobuf.FieldOptions, :track_presence, 50020,
+    optional: true,
+    type: :bool,
+    json_name: "trackPresence",
+    default: false
+  )
 end
 
 defmodule Espex.Proto.Void do

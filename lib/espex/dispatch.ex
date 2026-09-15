@@ -160,10 +160,10 @@ defmodule Espex.Dispatch do
     {state, [{:log, :debug, "#{state.peer} subscribed to HA states"}]}
   end
 
-  def handle_request(state, %Proto.DisconnectRequest{}) do
+  def handle_request(state, %Proto.DisconnectRequest{reason: reason}) do
     {state,
      [
-       {:log, :info, "#{state.peer} requested disconnect"},
+       {:log, :info, "#{state.peer} requested disconnect (reason=#{inspect(reason)})"},
        {:send, %Proto.DisconnectResponse{}},
        {:close, :disconnect_requested}
      ]}
@@ -706,19 +706,19 @@ defmodule Espex.Dispatch do
   # hello — which includes one still mid-Noise-handshake, since hello
   # travels inside the encrypted channel — has no session to end
   # gracefully and is closed outright, without a frame.
-  def handle_event(%{disconnecting: true} = state, :espex_disconnect) do
+  def handle_event(%{disconnecting: true} = state, {:espex_disconnect, _reason}) do
     {state, []}
   end
 
-  def handle_event(%{api_version: nil} = state, :espex_disconnect) do
+  def handle_event(%{api_version: nil} = state, {:espex_disconnect, _reason}) do
     {state, [{:close, :server_disconnect}]}
   end
 
-  def handle_event(state, :espex_disconnect) do
+  def handle_event(state, {:espex_disconnect, reason}) do
     {ConnectionState.put_disconnecting(state),
      [
-       {:log, :info, "server-initiated disconnect — asking client to reconnect"},
-       {:send, %Proto.DisconnectRequest{}},
+       {:log, :info, "server-initiated disconnect (#{reason}) — asking client to reconnect"},
+       {:send, %Proto.DisconnectRequest{reason: disconnect_reason_to_wire(reason)}},
        {:arm_disconnect_timeout, state.disconnect_grace_ms}
      ]}
   end
@@ -913,6 +913,9 @@ defmodule Espex.Dispatch do
         end
     end
   end
+
+  defp disconnect_reason_to_wire(:unspecified), do: :DISCONNECT_REASON_UNSPECIFIED
+  defp disconnect_reason_to_wire(:provisioning_closed), do: :DISCONNECT_REASON_PROVISIONING_CLOSED
 
   defp scanner_flag_log(0), do: []
 
