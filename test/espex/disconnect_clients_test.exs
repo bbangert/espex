@@ -194,6 +194,24 @@ defmodule Espex.DisconnectClientsTest do
     :gen_tcp.close(new)
   end
 
+  test "update_adapters/2 then disconnect: the reconnect sees the new feature set", ctx do
+    {old, _hello, rest} = connect_and_hello(ctx.port, "old")
+    send_struct(old, %Proto.DeviceInfoRequest{})
+    {:ok, %Proto.DeviceInfoResponse{bluetooth_proxy_feature_flags: 0}, rest} = recv_struct(old, rest)
+
+    assert Espex.update_adapters(ctx.server_name, bluetooth_scanner: Espex.Test.FakeBluetoothScanner) == :ok
+    :ok = Espex.disconnect_clients(ctx.server_name)
+    {:ok, %Proto.DisconnectRequest{}, rest} = recv_struct(old, rest)
+    send_struct(old, %Proto.DisconnectResponse{})
+    assert {:error, :closed} = recv_struct(old, rest)
+
+    {new, _hello, new_rest} = connect_and_hello(ctx.port, "new")
+    send_struct(new, %Proto.DeviceInfoRequest{})
+    {:ok, %Proto.DeviceInfoResponse{} = info, _} = recv_struct(new, new_rest)
+    assert info.bluetooth_proxy_feature_flags != 0
+    :gen_tcp.close(new)
+  end
+
   test "a changed entity list is picked up on reconnect", ctx do
     {old, _hello, rest} = connect_and_hello(ctx.port, "old")
     {[%Proto.ListEntitiesBinarySensorResponse{key: 1}], rest} = list_entities(old, rest)

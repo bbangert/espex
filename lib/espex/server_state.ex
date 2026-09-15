@@ -44,6 +44,29 @@ defmodule Espex.ServerState do
   end
 
   @doc """
+  Merge runtime-supplied adapter changes, returning a tagged result.
+
+  Unlike `put_adapters/2` this checks the input: every key must be a
+  known feature and every value a module or `nil`. The first offending
+  entry is `{:error, {:unknown_adapter, key}}` or
+  `{:error, {:invalid_adapter, key, value}}` and nothing is applied.
+  """
+  @spec merge_adapters(t(), keyword() | map()) ::
+          {:ok, t()} | {:error, {:unknown_adapter, term()} | {:invalid_adapter, atom(), term()}}
+  def merge_adapters(%__MODULE__{} = state, changes) when is_list(changes) or is_map(changes) do
+    Enum.reduce_while(changes, {:ok, state}, fn
+      {key, value}, {:ok, acc} when is_map_key(acc.adapters, key) and is_atom(value) ->
+        {:cont, {:ok, %{acc | adapters: Map.put(acc.adapters, key, value)}}}
+
+      {key, value}, {:ok, acc} when is_map_key(acc.adapters, key) ->
+        {:halt, {:error, {:invalid_adapter, key, value}}}
+
+      {key, _value}, _acc ->
+        {:halt, {:error, {:unknown_adapter, key}}}
+    end)
+  end
+
+  @doc """
   Return the adapter module configured for `feature`, or `nil`.
   """
   @spec adapter(t(), ConnectionState.feature()) :: module() | nil

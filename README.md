@@ -52,8 +52,9 @@ and a complete example:
 - Server-side state push via `Espex.push_state/2` so adapters and
   `EntityProvider` implementations can update live values
 - Runtime reconfiguration — `Espex.update_device_config/2` swaps the
-  advertised identity and `Espex.disconnect_clients/1` asks Home
-  Assistant to reconnect and re-read entities, no supervisor restart
+  advertised identity, `Espex.update_adapters/2` swaps adapter modules,
+  and `Espex.disconnect_clients/1` asks Home Assistant to reconnect and
+  re-read entities, no supervisor restart
 - Connected-client introspection — `Espex.connected_clients/1` enumerates
   live native-API connections (peer, client_info, API version, encrypted?,
   timestamps), with an `Espex.ConnectionListener` callback for change

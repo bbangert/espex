@@ -205,10 +205,15 @@ entity list, adding and removing entities to match. Call update first,
 then disconnect: the update is a synchronous call, so the new config is
 in place before any client can reconnect.
 
-What does **not** change: the TCP listener keeps its port, adapters stay
-as configured (feature flags in `DeviceInfo` still derive from them at
-accept time), and an mDNS advertiser keeps the `name` / `mac_address`
-it captured at start — restart the supervisor to re-advertise.
+`Espex.update_adapters/2` works the same way for the adapter modules:
+the change lands in `Espex.Server`, and the next accepted connection
+captures the new map along with everything derived from it (entity and
+serial-instance lists, the Bluetooth / Z-Wave feature flags in
+`DeviceInfo`). Disabling a feature is passing `nil` for its key.
+
+What does **not** change: the TCP listener keeps its port, and an mDNS
+advertiser keeps the `name` / `mac_address` it captured at start —
+restart the supervisor to re-advertise.
 
 ## Configuration
 

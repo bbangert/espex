@@ -73,9 +73,10 @@ defmodule Espex do
       :ok = Espex.update_device_config(MyApp.EspexServer, friendly_name: "Garage Bridge")
       :ok = Espex.disconnect_clients(MyApp.EspexServer)
 
-  `update_device_config/2` applies to the next accepted connection;
-  `disconnect_clients/1` asks the current clients to leave, and Home
-  Assistant reconnects a few seconds later and re-reads everything.
+  `update_device_config/2` and `update_adapters/2` apply to the next
+  accepted connection; `disconnect_clients/1` asks the current clients
+  to leave, and Home Assistant reconnects a few seconds later and
+  re-reads everything.
   """
 
   alias Espex.{ClientInfo, DeviceConfig, Server}
@@ -142,6 +143,37 @@ defmodule Espex do
   end
 
   @doc """
+  Replace some or all of the running server's adapter modules.
+
+  `changes` is a keyword list or map from feature to module, with `nil`
+  disabling that feature; any feature omitted keeps its current adapter.
+  The keys are the adapter options `Espex.Supervisor` accepts:
+  `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
+  `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
+  `:psk_store`, `:connection_listener`. An unknown key is
+  `{:error, {:unknown_adapter, key}}` and a value that is not a module or
+  `nil` is `{:error, {:invalid_adapter, key, value}}`; either leaves the
+  adapters untouched.
+
+      :ok = Espex.update_adapters(MyApp.EspexServer, bluetooth_scanner: nil, bluetooth_proxy: nil)
+      :ok = Espex.disconnect_clients(MyApp.EspexServer)
+
+  The change takes effect on the **next** accepted connection. A
+  connection captures the adapter map at accept time, along with
+  everything derived from it: the entity and serial-instance lists, and
+  the Bluetooth / Z-Wave feature flags in `DeviceInfo`. Clients already
+  connected keep using the adapters they started with, so call
+  `disconnect_clients/1` afterwards to have Home Assistant reconnect and
+  pick up the new feature set.
+
+  `server` defaults to `Espex.Server`.
+  """
+  @spec update_adapters(GenServer.server(), keyword() | map()) :: :ok | {:error, term()}
+  def update_adapters(server \\ Server, changes) do
+    Server.update_adapters(server, changes)
+  end
+
+  @doc """
   Ask every currently-connected client to disconnect.
 
   Each connection sends a `DisconnectRequest` — the same message ESPHome
@@ -154,9 +186,9 @@ defmodule Espex do
   about five seconds later without backoff, sends a fresh `DeviceInfoRequest`
   and `ListEntitiesRequest`, and reconciles its entity registry against
   the answer — entities added *and* removed since the last connection
-  show up. Call it after `update_device_config/2`, after the list your
-  `Espex.EntityProvider.list_entities/0` returns has changed, or after
-  your serial-proxy instances changed.
+  show up. Call it after `update_device_config/2` or `update_adapters/2`,
+  after the list your `Espex.EntityProvider.list_entities/0` returns has
+  changed, or after your serial-proxy instances changed.
 
   Fire-and-forget: this returns `:ok` as soon as the request has been
   handed to each connection process, and nothing is sent to a client

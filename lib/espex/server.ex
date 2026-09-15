@@ -115,6 +115,24 @@ defmodule Espex.Server do
     GenServer.call(server, {:update_device_config, opts})
   end
 
+  @doc """
+  Replace some or all of the configured adapter modules at runtime.
+
+  `changes` is a keyword list or map of feature → module (or `nil` to
+  disable the feature); keys omitted keep their current adapter. See
+  `ServerState.merge_adapters/2` for the validation and error shapes.
+
+  As with `update_device_config/2`, the change applies to the *next*
+  accepted connection: each connection captures the adapter map, the
+  entity lists it produces, and the `DeviceInfo` feature flags derived
+  from it at accept time. Call `Espex.disconnect_clients/1` afterwards so
+  clients re-read them.
+  """
+  @spec update_adapters(GenServer.server(), keyword() | map()) :: :ok | {:error, term()}
+  def update_adapters(server \\ __MODULE__, changes) when is_list(changes) or is_map(changes) do
+    GenServer.call(server, {:update_adapters, changes})
+  end
+
   @impl GenServer
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
@@ -186,6 +204,13 @@ defmodule Espex.Server do
 
     case result do
       {:ok, config} -> {:reply, :ok, ServerState.put_device_config(state, config)}
+      {:error, _reason} = error -> {:reply, error, state}
+    end
+  end
+
+  def handle_call({:update_adapters, changes}, _from, state) do
+    case ServerState.merge_adapters(state, changes) do
+      {:ok, new_state} -> {:reply, :ok, new_state}
       {:error, _reason} = error -> {:reply, error, state}
     end
   end
