@@ -140,7 +140,18 @@ defmodule Espex.ServerTest do
       assert Server.update_adapters(server, zwave_proxy: "not a module") ==
                {:error, {:invalid_adapter, :zwave_proxy, "not a module"}}
 
+      # Atoms that are not loadable modules would crash the next accept.
+      assert Server.update_adapters(server, zwave_proxy: false) == {:error, {:invalid_adapter, :zwave_proxy, false}}
+
+      assert Server.update_adapters(server, zwave_proxy: :no_such_module) ==
+               {:error, {:invalid_adapter, :zwave_proxy, :no_such_module}}
+
       assert Server.adapters(server) == before
+    end
+
+    test "a struct is refused at the caller, never inside the server", %{server: server, server_pid: pid} do
+      assert_raise FunctionClauseError, fn -> Server.update_adapters(server, %DeviceConfig{}) end
+      assert Process.alive?(pid)
     end
   end
 

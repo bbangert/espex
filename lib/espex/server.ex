@@ -129,7 +129,7 @@ defmodule Espex.Server do
   clients re-read them.
   """
   @spec update_adapters(GenServer.server(), keyword() | map()) :: :ok | {:error, term()}
-  def update_adapters(server \\ __MODULE__, changes) when is_list(changes) or is_map(changes) do
+  def update_adapters(server \\ __MODULE__, changes) when is_list(changes) or is_non_struct_map(changes) do
     GenServer.call(server, {:update_adapters, changes})
   end
 

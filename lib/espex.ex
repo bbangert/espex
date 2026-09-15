@@ -151,9 +151,9 @@ defmodule Espex do
   `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
   `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
   `:psk_store`, `:connection_listener`. An unknown key is
-  `{:error, {:unknown_adapter, key}}` and a value that is not a module or
-  `nil` is `{:error, {:invalid_adapter, key, value}}`; either leaves the
-  adapters untouched.
+  `{:error, {:unknown_adapter, key}}` and a value that is neither `nil`
+  nor a loadable module is `{:error, {:invalid_adapter, key, value}}`;
+  either leaves the adapters untouched.
 
       :ok = Espex.update_adapters(MyApp.EspexServer, bluetooth_scanner: nil, bluetooth_proxy: nil)
       :ok = Espex.disconnect_clients(MyApp.EspexServer)
@@ -169,7 +169,7 @@ defmodule Espex do
   `server` defaults to `Espex.Server`.
   """
   @spec update_adapters(GenServer.server(), keyword() | map()) :: :ok | {:error, term()}
-  def update_adapters(server \\ Server, changes) do
+  def update_adapters(server \\ Server, changes) when is_list(changes) or is_non_struct_map(changes) do
     Server.update_adapters(server, changes)
   end
 
