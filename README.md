@@ -81,7 +81,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:espex, "~> 0.9"}
+    {:espex, "~> 0.10"}
   ]
 end
 ```
