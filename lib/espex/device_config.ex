@@ -172,6 +172,7 @@ defmodule Espex.DeviceConfig do
     end
   end
 
+  @doc since: "0.10.0"
   @doc """
   Validate a caller-built `%DeviceConfig{}` for use at runtime, returning
   a tagged result.
@@ -186,6 +187,7 @@ defmodule Espex.DeviceConfig do
   def validate(%__MODULE__{psk: psk} = config) when is_binary(psk), do: put_psk(config, psk)
   def validate(%__MODULE__{}), do: {:error, :invalid_psk_length}
 
+  @doc since: "0.10.0"
   @doc """
   Apply runtime-supplied keyword options onto an existing config,
   returning a tagged result.

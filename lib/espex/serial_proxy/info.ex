@@ -49,6 +49,7 @@ defmodule Espex.SerialProxy.Info do
     }
   end
 
+  @doc since: "0.10.0"
   @doc """
   Encode a list of modem lines as the `configured_line_states` bitmask
   (`:rts` → bit 0, `:dtr` → bit 1).

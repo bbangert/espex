@@ -111,6 +111,7 @@ defmodule Espex do
   @spec device_config(GenServer.server()) :: DeviceConfig.t()
   def device_config(server \\ Server), do: Server.device_config(server)
 
+  @doc since: "0.10.0"
   @doc """
   Replace or merge the running server's `%DeviceConfig{}`.
 
@@ -145,6 +146,7 @@ defmodule Espex do
     Server.update_device_config(server, config_or_opts)
   end
 
+  @doc since: "0.10.0"
   @doc """
   Replace some or all of the running server's adapter modules.
 
@@ -176,6 +178,7 @@ defmodule Espex do
     Server.update_adapters(server, changes)
   end
 
+  @doc since: "0.10.0"
   @doc """
   Ask every currently-connected client to disconnect.
 
