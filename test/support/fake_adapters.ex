@@ -258,6 +258,30 @@ defmodule Espex.Test.FakeEntityProvider do
   end
 end
 
+defmodule Espex.Test.SwappableEntityProvider do
+  @moduledoc """
+  `Espex.EntityProvider` whose entity list a test can replace at runtime
+  with `put_entities/1` (held in `:persistent_term`), so a reconnect can
+  be shown to pick up a changed set. Defaults to a single binary sensor.
+  """
+  @behaviour Espex.EntityProvider
+
+  @key {__MODULE__, :entities}
+  @default [%Espex.Proto.ListEntitiesBinarySensorResponse{object_id: "one", key: 1, name: "One"}]
+
+  def put_entities(entities) when is_list(entities), do: :persistent_term.put(@key, entities)
+  def reset, do: :persistent_term.erase(@key)
+
+  @impl true
+  def list_entities, do: :persistent_term.get(@key, @default)
+
+  @impl true
+  def initial_states, do: []
+
+  @impl true
+  def handle_command(_message), do: :ok
+end
+
 defmodule Espex.Test.ContextAwareEntityProvider do
   @moduledoc """
   Entity provider exporting the optional `handle_command/2`, so a test can

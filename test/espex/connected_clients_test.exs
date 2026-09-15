@@ -1,7 +1,9 @@
 defmodule Espex.ConnectedClientsTest do
   use ExUnit.Case, async: false
 
-  alias Espex.{ClientInfo, Frame, MessageTypes, Proto}
+  import Espex.Test.TcpClient
+
+  alias Espex.{ClientInfo, Proto}
   alias Espex.Test.PidConnectionListener
 
   setup context do
@@ -35,30 +37,6 @@ defmodule Espex.ConnectedClientsTest do
     %{port: port, server_name: server_name}
   end
 
-  defp connect(port) do
-    {:ok, socket} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false, nodelay: true, packet: :raw])
-    socket
-  end
-
-  defp send_struct(socket, struct) do
-    {:ok, frame} = MessageTypes.encode_message(struct)
-    :ok = :gen_tcp.send(socket, frame)
-  end
-
-  defp recv_struct(socket, buffer \\ <<>>, timeout \\ 1_000) do
-    case Frame.decode_frame(buffer) do
-      {:ok, type_id, payload, rest} ->
-        {:ok, module} = MessageTypes.module_for_id(type_id)
-        {:ok, module.decode(payload), rest}
-
-      _ ->
-        case :gen_tcp.recv(socket, 0, timeout) do
-          {:ok, data} -> recv_struct(socket, buffer <> data, timeout)
-          {:error, reason} -> {:error, reason}
-        end
-    end
-  end
-
   # Connect and complete a hello; returns the socket once the connect
   # notification has fired (the barrier guaranteeing the Registry snapshot
   # was refreshed from the hello).
@@ -68,25 +46,6 @@ defmodule Espex.ConnectedClientsTest do
     {:ok, %Proto.HelloResponse{}, _} = recv_struct(sock)
     assert_receive {:connections_changed}, 1_000
     sock
-  end
-
-  defp wait_until(check, deadline_ms \\ 1_000) do
-    deadline = System.monotonic_time(:millisecond) + deadline_ms
-    do_wait_until(check, deadline)
-  end
-
-  defp do_wait_until(check, deadline) do
-    cond do
-      check.() ->
-        :ok
-
-      System.monotonic_time(:millisecond) > deadline ->
-        flunk("wait_until timed out")
-
-      true ->
-        Process.sleep(5)
-        do_wait_until(check, deadline)
-    end
   end
 
   test "connected_clients/1 reflects connect/disconnect and populates hello fields", ctx do

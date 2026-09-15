@@ -64,6 +64,18 @@ defmodule Espex do
 
       Espex.connected_clients(MyApp.EspexServer)
       #=> [%Espex.ClientInfo{peer: "192.168.1.5:54312", encrypted?: true, ...}]
+
+  ## Runtime reconfiguration
+
+  Change the advertised device identity, or the entity set your
+  `Espex.EntityProvider` returns, without restarting the server:
+
+      :ok = Espex.update_device_config(MyApp.EspexServer, friendly_name: "Garage Bridge")
+      :ok = Espex.disconnect_clients(MyApp.EspexServer)
+
+  `update_device_config/2` applies to the next accepted connection;
+  `disconnect_clients/1` asks the current clients to leave, and Home
+  Assistant reconnects a few seconds later and re-reads everything.
   """
 
   alias Espex.{ClientInfo, DeviceConfig, Server}
@@ -94,6 +106,73 @@ defmodule Espex do
   """
   @spec device_config(GenServer.server()) :: DeviceConfig.t()
   def device_config(server \\ Server), do: Server.device_config(server)
+
+  @doc """
+  Replace or merge the running server's `%DeviceConfig{}`.
+
+  Pass a keyword list to **merge** onto the current config — every key
+  omitted keeps its value, so a Noise PSK that Home Assistant provisioned
+  at runtime is never clobbered by a rename — or a full `%DeviceConfig{}`
+  to **replace** it wholesale. Both forms validate the PSK
+  (`{:error, :invalid_psk_length}`); the keyword form also refuses an
+  unknown key (`{:error, {:unknown_key, key}}`) and `:port`
+  (`{:error, {:immutable_key, :port}}`). Any error leaves the config
+  untouched.
+
+  The change takes effect on the **next** accepted connection. Each
+  connection snapshots the config at accept time, so clients already
+  connected keep the identity they saw at connect; call
+  `disconnect_clients/1` afterwards — in that order — to have Home
+  Assistant reconnect and re-read `DeviceInfo`.
+
+  Two things do not follow the config at runtime: the TCP listener keeps
+  the `:port` it was bound with, and an mDNS advertiser started with
+  `:mdns` keeps advertising the `name` / `mac_address` it was given at
+  start. Restart the supervisor to change either. Prefer changing
+  `:friendly_name` over `:name`: Home Assistant identifies an ESPHome
+  device by `name` and may refuse a reconnect whose name differs from the
+  one it paired with.
+
+  `server` defaults to `Espex.Server` — pass your custom name if you
+  started the supervisor with `:server_name`.
+  """
+  @spec update_device_config(GenServer.server(), DeviceConfig.t() | keyword()) :: :ok | {:error, term()}
+  def update_device_config(server \\ Server, config_or_opts) do
+    Server.update_device_config(server, config_or_opts)
+  end
+
+  @doc """
+  Ask every currently-connected client to disconnect.
+
+  Each connection sends a `DisconnectRequest` — the same message ESPHome
+  firmware sends before it reboots — and closes its socket once the
+  client answers with `DisconnectResponse`, or after `disconnect_grace_ms`
+  (see `Espex.Supervisor`) if it never does. A connection that has not
+  finished its hello or Noise handshake is closed outright.
+
+  Home Assistant treats this as an *expected* disconnect: it reconnects
+  about five seconds later without backoff, sends a fresh `DeviceInfoRequest`
+  and `ListEntitiesRequest`, and reconciles its entity registry against
+  the answer — entities added *and* removed since the last connection
+  show up. Call it after `update_device_config/2`, after the list your
+  `Espex.EntityProvider.list_entities/0` returns has changed, or after
+  your serial-proxy instances changed.
+
+  Fire-and-forget: this returns `:ok` as soon as the request has been
+  handed to each connection process, and nothing is sent to a client
+  that is already being disconnected. Use an `Espex.ConnectionListener`
+  or `connected_clients/1` to observe the drop and the return.
+
+  `server_name` defaults to `Espex.Server`.
+  """
+  @spec disconnect_clients(atom()) :: :ok
+  def disconnect_clients(server_name \\ Server) do
+    registry = EspexSupervisor.registry_name(server_name)
+
+    Registry.dispatch(registry, :subscribers, fn entries ->
+      Enum.each(entries, fn {pid, _} -> send(pid, :espex_disconnect) end)
+    end)
+  end
 
   @doc """
   Broadcast an entity-state struct to every currently-connected client.

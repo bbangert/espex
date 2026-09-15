@@ -65,6 +65,55 @@ defmodule Espex.ServerTest do
     end
   end
 
+  describe "update_device_config/2" do
+    @psk :crypto.hash(:sha256, "server-test-psk")
+
+    test "keyword form merges: unspecified keys (the PSK) keep their value", %{server: server} do
+      :ok = Server.update_psk(server, @psk)
+
+      assert Server.update_device_config(server, name: "renamed", friendly_name: "Renamed") == :ok
+
+      config = Server.device_config(server)
+      assert config.name == "renamed"
+      assert config.friendly_name == "Renamed"
+      assert config.psk == @psk
+    end
+
+    test "struct form replaces wholesale", %{server: server} do
+      :ok = Server.update_psk(server, @psk)
+      replacement = %DeviceConfig{name: "fresh"}
+
+      assert Server.update_device_config(server, replacement) == :ok
+      assert Server.device_config(server) == replacement
+      assert Server.device_config(server).psk == nil
+    end
+
+    test "struct form normalises a base64 PSK and rejects a bad one", %{server: server} do
+      assert Server.update_device_config(server, %DeviceConfig{psk: Base.encode64(@psk)}) == :ok
+      assert Server.device_config(server).psk == @psk
+
+      before = Server.device_config(server)
+      assert Server.update_device_config(server, %DeviceConfig{psk: "short"}) == {:error, :invalid_psk_length}
+      assert Server.device_config(server) == before
+    end
+
+    test "invalid :psk in keyword form is rejected and leaves the config untouched", %{server: server} do
+      before = Server.device_config(server)
+
+      assert Server.update_device_config(server, name: "renamed", psk: "too-short") ==
+               {:error, :invalid_psk_length}
+
+      assert Server.device_config(server) == before
+    end
+
+    test "unknown key is rejected and leaves the config untouched", %{server: server} do
+      before = Server.device_config(server)
+
+      assert Server.update_device_config(server, name: "renamed", bogus: 1) == {:error, {:unknown_key, :bogus}}
+      assert Server.device_config(server) == before
+    end
+  end
+
   describe "DOWN monitor sweep" do
     test "an owner's death releases its addresses without an explicit release call", %{server: server} do
       {:ok, owner} = Task.start(fn -> Process.sleep(:infinity) end)
