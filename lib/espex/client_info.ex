@@ -1,4 +1,5 @@
 defmodule Espex.ClientInfo do
+  @moduledoc since: "0.5.0"
   @moduledoc """
   A snapshot of one currently-connected ESPHome native-API client.
 

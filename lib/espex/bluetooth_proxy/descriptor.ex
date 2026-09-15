@@ -1,4 +1,5 @@
 defmodule Espex.BluetoothProxy.Descriptor do
+  @moduledoc since: "0.2.0"
   @moduledoc """
   A GATT descriptor inside a `Espex.BluetoothProxy.Characteristic`.
 

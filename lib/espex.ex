@@ -201,7 +201,8 @@ defmodule Espex do
   that is already being disconnected. Use an `Espex.ConnectionListener`
   or `connected_clients/1` to observe the drop and the return.
 
-  `reason` is carried in `DisconnectRequest.reason` (ESPHome 2026.7+):
+  `reason` is carried in `DisconnectRequest.reason` (ESPHome 2026.7+;
+  the argument is new in 0.10.0):
 
     * `:unspecified` (default) — an ordinary reconnect request; Home
       Assistant comes back after its cooldown.
@@ -243,6 +244,7 @@ defmodule Espex do
     end)
   end
 
+  @doc since: "0.7.0"
   @doc """
   Broadcast a Z-Wave home-ID change to **every** connected client.
 
@@ -273,6 +275,7 @@ defmodule Espex do
     end)
   end
 
+  @doc since: "0.5.0"
   @doc """
   List the currently-connected native-API clients as
   `Espex.ClientInfo` structs.

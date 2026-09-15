@@ -234,6 +234,7 @@ defmodule Espex.EntityProvider do
   """
   @callback handle_command(command :: struct()) :: :ok | {:error, term()}
 
+  @doc since: "0.9.0"
   @doc """
   Same as `c:handle_command/1`, but also given the originating
   connection's security context. Preferred when exported — Espex calls

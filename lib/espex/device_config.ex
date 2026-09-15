@@ -154,6 +154,7 @@ defmodule Espex.DeviceConfig do
   def encrypted?(%__MODULE__{psk: nil}), do: false
   def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
 
+  @doc since: "0.4.0"
   @doc """
   Set the PSK from runtime-supplied input (e.g. a
   `NoiseEncryptionSetKeyRequest`), returning a tagged result.
