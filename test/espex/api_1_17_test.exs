@@ -420,6 +420,34 @@ defmodule Espex.Api117Test do
       :gen_tcp.close(socket)
     end
 
+    @tag serial_proxy: Espex.Test.ModeTrackingSerialProxy
+    test "a failed PROTOCOL reapply after CONFIGURE drops the recorded mode", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+
+      set_mode(socket, 0, :SERIAL_PROXY_MODE_PROTOCOL)
+      assert_receive {:set_mode, {:tracking_handle, 0}, :protocol}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_OK)
+
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_set_mode}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_set_mode}) end)
+
+      # The reopen succeeds and is acked OK; the reapply fails, so the fresh
+      # handle is raw and espex forgets PROTOCOL rather than claiming it.
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
+      assert_receive {:open, 0, _opts, _subscriber}
+      assert_receive {:set_mode, {:tracking_handle, 0}, :protocol}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, :SERIAL_PROXY_STATUS_OK)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+      assert_receive {:open, 0, _opts2, _subscriber2}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      _rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, :protocol}
+
+      :gen_tcp.close(socket)
+    end
+
     test "a mode outside the enum is INVALID_ARGUMENT", %{port: port} do
       {socket, _hello, rest} = hello(port)
       rest = subscribe(socket, 0, rest)

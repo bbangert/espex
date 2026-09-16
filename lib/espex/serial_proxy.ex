@@ -245,14 +245,15 @@ defmodule Espex.SerialProxy do
   Upstream ESPHome has no open/close lifecycle for the serial proxy — the
   UART is always live at its YAML-configured settings, and
   `SerialProxyConfigureRequest` is optional re-tuning, not a prerequisite.
-  Espex mirrors that: a connection's first operation of any kind against
-  an *advertised* instance lazily opens the port via `c:open/3`, using
+  Espex mirrors that: the first operation that needs a port on an
+  *advertised* instance lazily opens it via `c:open/3`, using
   `c:default_open_opts/1` when you export it (or the 9600-8-N-1 fallback
-  otherwise). Every operation except GET_MODEM_PINS requires ownership
-  first (see "Ownership"), so in practice the SUBSCRIBE is the open. This
-  lets a client resume traffic after a reconnect — subscribe, then write
-  to a Zigbee coordinator without re-sending CONFIGURE — instead of
-  getting every write silently dropped.
+  otherwise). SUBSCRIBE acquires ownership and is that first operation
+  in practice; WRITE, FLUSH, SET_MODEM_PINS and SET_MODE require the
+  ownership it acquired (see "Ownership"); GET_MODEM_PINS opens without
+  it; UNSUBSCRIBE never opens. This lets a client resume traffic after a
+  reconnect — subscribe, then write to a Zigbee coordinator without
+  re-sending CONFIGURE — instead of getting every write silently dropped.
 
   SUBSCRIBE/UNSUBSCRIBE track a per-connection subscribe *intent* rather
   than a one-shot stash: after every successful `c:open/3` (whether

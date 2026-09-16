@@ -167,7 +167,15 @@ defmodule Espex.Test.ModeTrackingSerialProxy do
   @impl true
   def set_mode(handle, mode) do
     Espex.Test.TrackingSerialProxy.notify({:set_mode, handle, mode})
-    :ok
+
+    case :persistent_term.get({Espex.Test.TrackingSerialProxy, :fail_next_set_mode}, false) do
+      true ->
+        :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_set_mode})
+        {:error, :test_induced_failure}
+
+      false ->
+        :ok
+    end
   end
 end
 

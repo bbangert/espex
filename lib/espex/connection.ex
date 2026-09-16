@@ -448,7 +448,7 @@ defmodule Espex.Connection do
 
           # Reattach is best-effort and logs its own failure; the CONFIGURE
           # ack reports the open, which succeeded regardless.
-          maybe_reattach_subscription(state, adapter, instance, handle)
+          state = maybe_reattach_subscription(state, adapter, instance, handle)
 
           ack_configure(socket, state, instance, opts, {:ok, :ok})
 
@@ -1273,29 +1273,30 @@ defmodule Espex.Connection do
   # reconfiguration instead of being consumed by the first open — and the
   # PROTOCOL mode, which upstream keeps across a CONFIGURE re-init while
   # espex's fresh handle starts raw. There's no wire response here: the
-  # client's original SUBSCRIBE / SET_MODE was already acked.
+  # client's original SUBSCRIBE / SET_MODE was already acked. A reapply
+  # that fails leaves the fresh handle raw, so the recorded mode is
+  # dropped to match — the client can re-send SET_MODE.
   defp maybe_reattach_subscription(state, adapter, instance, handle) do
     if ConnectionState.serial_subscribed?(state, instance) do
-      case serial_request({:ok, handle}, adapter, :subscribe) do
-        {:error, reason} ->
-          Logger.warning("Espex #{state.peer} serial resubscribe instance #{instance} failed: #{inspect(reason)}")
-
-        _ ->
-          :ok
-      end
+      {:ok, handle}
+      |> serial_request(adapter, :subscribe)
+      |> log_adapter_error(state.peer, "serial resubscribe instance #{instance}")
 
       if ConnectionState.serial_mode(state, instance) == :protocol do
         case set_serial_mode({:ok, handle}, adapter, :protocol) do
           {:ok, :ok} ->
-            :ok
+            state
 
           other ->
             Logger.warning("Espex #{state.peer} serial mode reapply instance #{instance} failed: #{inspect(other)}")
+            ConnectionState.drop_serial_mode(state, instance)
         end
+      else
+        state
       end
+    else
+      state
     end
-
-    :ok
   end
 
   # Result shape feeds Dispatch.serial_request_response/3. A missing
