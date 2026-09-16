@@ -112,15 +112,70 @@ defmodule Espex.Test.TrackingSerialProxy do
   @impl true
   def request(handle, type) do
     notify({:request, handle, type})
-    {:ok, :ok}
+
+    case :persistent_term.get({__MODULE__, :fail_next_request}, false) do
+      true ->
+        :persistent_term.erase({__MODULE__, :fail_next_request})
+        {:error, :test_induced_failure}
+
+      false ->
+        {:ok, :ok}
+    end
   end
 
-  defp notify(event) do
+  @doc false
+  def notify(event) do
     for {{__MODULE__, _test}, pid} <- :persistent_term.get(), is_pid(pid) do
       send(pid, event)
     end
 
     :ok
+  end
+end
+
+defmodule Espex.Test.ModeTrackingSerialProxy do
+  @moduledoc """
+  `Espex.Test.TrackingSerialProxy` plus `set_mode/2` — the adapter-with-a-
+  tap case for `SerialProxySetModeRequest`. Every call is forwarded through
+  the same listener fan-out (register under
+  `{Espex.Test.TrackingSerialProxy, test}`); `set_mode/2` notifies
+  `{:set_mode, handle, mode}` and answers `:ok`.
+  """
+  @behaviour Espex.SerialProxy
+
+  @impl true
+  defdelegate list_instances, to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate open(instance, opts, subscriber), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate write(handle, data), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate close(handle), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate set_modem_pins(handle, rts, dtr), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate get_modem_pins(handle), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  defdelegate request(handle, type), to: Espex.Test.TrackingSerialProxy
+
+  @impl true
+  def set_mode(handle, mode) do
+    Espex.Test.TrackingSerialProxy.notify({:set_mode, handle, mode})
+
+    case :persistent_term.get({Espex.Test.TrackingSerialProxy, :fail_next_set_mode}, false) do
+      true ->
+        :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_set_mode})
+        {:error, :test_induced_failure}
+
+      false ->
+        :ok
+    end
   end
 end
 

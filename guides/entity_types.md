@@ -221,7 +221,7 @@ Key advertisement fields:
 Which form a client reads depends on the API version the device
 advertises: below 1.13 it ignores `feature_flags` and derives the
 capabilities from the booleans; from 1.13 it reads only `feature_flags`.
-Espex advertises 1.16, so set `feature_flags`; keep the booleans too if
+Espex advertises 1.17, so set `feature_flags`; keep the booleans too if
 older clients matter to you.
 
 ### Mode vs action

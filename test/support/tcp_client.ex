@@ -8,7 +8,7 @@ defmodule Espex.Test.TcpClient do
 
   import ExUnit.Assertions
 
-  alias Espex.{Frame, MessageTypes}
+  alias Espex.{Frame, MessageTypes, Proto}
 
   @spec connect(:inet.port_number()) :: :gen_tcp.socket()
   def connect(port) do
@@ -39,6 +39,25 @@ defmodule Espex.Test.TcpClient do
           {:error, reason} -> {:error, reason}
         end
     end
+  end
+
+  @doc """
+  SUBSCRIBE `instance` and consume its `OK` acknowledgement — the API
+  1.17 ownership step every other serial request needs first. Returns the
+  leftover buffer.
+  """
+  @spec subscribe(:gen_tcp.socket(), non_neg_integer(), binary()) :: binary()
+  def subscribe(socket, instance, buffer \\ <<>>) do
+    send_struct(socket, %Proto.SerialProxyRequest{instance: instance, type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE})
+
+    assert {:ok,
+            %Proto.SerialProxyRequestResponse{
+              instance: ^instance,
+              type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE,
+              status: :SERIAL_PROXY_STATUS_OK
+            }, rest} = recv_struct(socket, buffer)
+
+    rest
   end
 
   @doc """

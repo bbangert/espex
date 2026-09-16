@@ -51,6 +51,7 @@ defmodule Espex.ConnectionState do
           entities: [struct()],
           opened_ports: %{non_neg_integer() => term()},
           serial_subscriptions: MapSet.t(non_neg_integer()),
+          serial_modes: %{non_neg_integer() => SerialProxy.mode()},
           serial_open_failures: %{non_neg_integer() => integer()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
@@ -84,6 +85,7 @@ defmodule Espex.ConnectionState do
     entities: [],
     opened_ports: %{},
     serial_subscriptions: MapSet.new(),
+    serial_modes: %{},
     serial_open_failures: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
@@ -234,6 +236,31 @@ defmodule Espex.ConnectionState do
   @spec serial_subscribed?(t(), non_neg_integer()) :: boolean()
   def serial_subscribed?(%__MODULE__{serial_subscriptions: set}, instance) do
     MapSet.member?(set, instance)
+  end
+
+  @doc """
+  Record the port mode (`:raw` or `:protocol`) the client selected for
+  `instance` with a `SerialProxySetModeRequest`. Absent means `:raw`.
+  """
+  @spec put_serial_mode(t(), non_neg_integer(), SerialProxy.mode()) :: t()
+  def put_serial_mode(%__MODULE__{} = state, instance, mode) when mode in [:raw, :protocol] do
+    %{state | serial_modes: Map.put(state.serial_modes, instance, mode)}
+  end
+
+  @doc """
+  Return the port mode for `instance`, `:raw` when none was recorded.
+  """
+  @spec serial_mode(t(), non_neg_integer()) :: SerialProxy.mode()
+  def serial_mode(%__MODULE__{serial_modes: modes}, instance) do
+    Map.get(modes, instance, :raw)
+  end
+
+  @doc """
+  Forget the recorded port mode for `instance` (back to `:raw`).
+  """
+  @spec drop_serial_mode(t(), non_neg_integer()) :: t()
+  def drop_serial_mode(%__MODULE__{} = state, instance) do
+    %{state | serial_modes: Map.delete(state.serial_modes, instance)}
   end
 
   @doc """

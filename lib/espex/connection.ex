@@ -107,15 +107,14 @@ defmodule Espex.Connection do
         {:continue, state}
 
       {:halt, _reason, state} ->
-        cleanup(state)
         {:close, state}
     end
   end
 
   # ThousandIsland's terminate/2 dispatches to exactly ONE of these per
-  # connection, so notifying the connection_listener here fires exactly
-  # once on disconnect. (cleanup/1 can run twice on the {:close} path, so
-  # the notify must NOT live there.)
+  # connection — a {:close, _} or {:stop, {:shutdown, _}, _} from the
+  # callbacks above lands in handle_close/2 — so cleanup/1 and the
+  # connection_listener notification each run exactly once per teardown.
   @impl ThousandIsland.Handler
   def handle_close(_socket, state) do
     cleanup(state)
@@ -164,7 +163,6 @@ defmodule Espex.Connection do
   def handle_info(:espex_keepalive, {socket, state}) do
     cond do
       state.keepalive_outstanding ->
-        cleanup(state)
         Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
         {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
 
@@ -183,7 +181,6 @@ defmodule Espex.Connection do
             {:noreply, {socket, state}}
 
           {:error, reason} ->
-            cleanup(state)
             {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
         end
     end
@@ -201,8 +198,8 @@ defmodule Espex.Connection do
         # action, or a send it could not encode). ThousandIsland routes a
         # {:shutdown, _} exit to handle_close/2; any other reason goes to
         # handle_error/3 with a crash report, which a deliberate close is
-        # not. Same shape as the keepalive stops above.
-        cleanup(state)
+        # not. Same shape as the keepalive stops above. Teardown happens
+        # once, in the handle_* callback terminate/2 dispatches to.
         {:stop, {:shutdown, reason}, {socket, state}}
     end
   end
@@ -451,7 +448,7 @@ defmodule Espex.Connection do
 
           # Reattach is best-effort and logs its own failure; the CONFIGURE
           # ack reports the open, which succeeded regardless.
-          maybe_reattach_subscription(state, adapter, instance, handle)
+          state = maybe_reattach_subscription(state, adapter, instance, handle)
 
           ack_configure(socket, state, instance, opts, {:ok, :ok})
 
@@ -514,6 +511,108 @@ defmodule Espex.Connection do
       {:ok, state} -> {:cont, state}
       {:error, reason} -> {:halt, reason, state}
     end
+  end
+
+  # SUBSCRIBE claims the instance on the Server (API 1.17 single-owner
+  # rule). Only after `:ok` is the local intent recorded, which is what
+  # Dispatch's owner gate reads. A busy claim is acknowledged PORT_IN_USE
+  # and records nothing.
+  defp interpret_action(socket, state, {:serial_subscribe, instance}) do
+    case claim_serial_owner(state, instance) do
+      :ok ->
+        state = ConnectionState.put_serial_subscription(state, instance)
+
+        case ConnectionState.port_handle(state, instance) do
+          {:ok, handle} ->
+            # Ownership is taken regardless of the adapter's answer, so the
+            # ack says so: OK, as upstream (subscribe always succeeds) and
+            # as the lazy-open branch below. The adapter's status is advisory.
+            {:ok, handle}
+            |> serial_request(state.adapters.serial_proxy, :subscribe)
+            |> log_adapter_error(state.peer, "serial subscribe instance #{instance}")
+
+            send_or_halt(socket, state, Dispatch.serial_request_response(instance, :subscribe, {:ok, :ok}))
+
+          :error ->
+            # The lazy open reattaches the intent inside; the ack reports
+            # the recorded intent, not the open (SerialProxy moduledoc).
+            Logger.debug("Espex #{state.peer} lazily opening serial proxy instance #{instance}")
+
+            case interpret_action(socket, state, {:serial_open, instance, :default_opts}) do
+              {:cont, state} ->
+                send_or_halt(socket, state, Dispatch.serial_request_response(instance, :subscribe, {:ok, :ok}))
+
+              halt ->
+                halt
+            end
+        end
+
+      {:busy, other} ->
+        Logger.info(
+          "Espex #{state.peer} serial proxy subscribe for instance #{instance} refused — owned by #{inspect(other)}"
+        )
+
+        send_or_halt(socket, state, Dispatch.serial_port_in_use_response(instance, :subscribe))
+    end
+  end
+
+  # UNSUBSCRIBE ends the session: the adapter hears :unsubscribe, the
+  # handle is closed (which is the adapter's signal to drop any per-handle
+  # state, the PROTOCOL mode included), and only then is ownership
+  # released on the Server — so a nil owner means the port really is free
+  # for the next claim, even on an exclusive-open adapter. The ack is OK
+  # once that teardown has happened, as for SUBSCRIBE; the adapter's
+  # :unsubscribe answer is advisory. Idempotent for a non-owner, as upstream.
+  defp interpret_action(socket, state, {:serial_unsubscribe, instance}) do
+    if ConnectionState.serial_subscribed?(state, instance) do
+      adapter = state.adapters.serial_proxy
+      {state, handle} = ConnectionState.drop_port(state, instance)
+
+      if handle do
+        {:ok, handle}
+        |> serial_request(adapter, :unsubscribe)
+        |> log_adapter_error(state.peer, "serial unsubscribe instance #{instance}")
+
+        adapter.close(handle)
+      end
+
+      state =
+        state
+        |> ConnectionState.drop_serial_subscription(instance)
+        |> ConnectionState.drop_serial_mode(instance)
+
+      _ = release_serial_owner(state, instance)
+
+      send_or_halt(socket, state, Dispatch.serial_request_response(instance, :unsubscribe, {:ok, :ok}))
+    else
+      send_or_halt(socket, state, Dispatch.serial_request_response(instance, :unsubscribe, {:ok, :ok}))
+    end
+  end
+
+  # RAW is always OK, even with no handle (the lazy open may be backing
+  # off): there is nothing to leave, and forgetting a recorded PROTOCOL
+  # mode here keeps the next reopen from reapplying what the client just
+  # left. PROTOCOL needs a handle for the callback.
+  defp interpret_action(socket, state, {:serial_set_mode, instance, mode}) do
+    {result, state} =
+      case {ConnectionState.port_handle(state, instance), mode} do
+        {:error, :raw} ->
+          {{:ok, :ok}, ConnectionState.drop_serial_mode(state, instance)}
+
+        {handle, mode} ->
+          result = set_serial_mode(handle, state.adapters.serial_proxy, mode)
+
+          state =
+            case {result, mode} do
+              {{:ok, :ok}, :protocol} -> ConnectionState.put_serial_mode(state, instance, :protocol)
+              {{:ok, :ok}, :raw} -> ConnectionState.drop_serial_mode(state, instance)
+              _ -> state
+            end
+
+          {result, state}
+      end
+
+    send_or_halt(socket, state, Dispatch.serial_request_response(instance, :set_mode, result))
   end
 
   # The acknowledgement goes out before the initial HOME_ID_CHANGE so the
@@ -636,7 +735,7 @@ defmodule Espex.Connection do
   defp interpret_action(socket, state, {:ble_pair, address}) do
     adapter = state.adapters.bluetooth_proxy
 
-    if ble_optional?(adapter, :pair, 1) do
+    if optional_callback?(adapter, :pair, 1) do
       adapter.pair(address) |> log_adapter_error(state.peer, "BLE pair")
       {:cont, state}
     else
@@ -651,7 +750,7 @@ defmodule Espex.Connection do
   defp interpret_action(socket, state, {:ble_unpair, address}) do
     adapter = state.adapters.bluetooth_proxy
 
-    if ble_optional?(adapter, :unpair, 1) do
+    if optional_callback?(adapter, :unpair, 1) do
       adapter.unpair(address) |> log_adapter_error(state.peer, "BLE unpair")
       {:cont, state}
     else
@@ -666,7 +765,7 @@ defmodule Espex.Connection do
   defp interpret_action(socket, state, {:ble_clear_cache, address}) do
     adapter = state.adapters.bluetooth_proxy
 
-    if ble_optional?(adapter, :clear_cache, 1) do
+    if optional_callback?(adapter, :clear_cache, 1) do
       adapter.clear_cache(address) |> log_adapter_error(state.peer, "BLE clear_cache")
       {:cont, state}
     else
@@ -681,7 +780,7 @@ defmodule Espex.Connection do
   defp interpret_action(socket, state, {:ble_set_connection_params, address, params}) do
     adapter = state.adapters.bluetooth_proxy
 
-    if ble_optional?(adapter, :set_connection_params, 2) do
+    if optional_callback?(adapter, :set_connection_params, 2) do
       adapter.set_connection_params(address, params)
       |> log_adapter_error(state.peer, "BLE set_connection_params")
 
@@ -985,40 +1084,55 @@ defmodule Espex.Connection do
   defp load_entities(%{entity_provider: nil}), do: []
   defp load_entities(%{entity_provider: module}), do: module.list_entities()
 
+  # Tear down every adapter-side resource. Runs exactly once per
+  # connection, from the handle_* callback ThousandIsland's terminate/2
+  # dispatches to. Adapter handles are closed before ownership is
+  # released, so a Server owner of nil means the port really is free for
+  # the next claim; the close is also the adapter's signal to drop any
+  # per-handle state, the PROTOCOL mode included.
   defp cleanup(state) do
     if state.zwave_subscribed, do: interpret_action(nil, state, :zwave_unsubscribe)
     if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
     if state.bluetooth_scanner_subscribed, do: interpret_action(nil, state, :ble_scanner_unsubscribe)
 
-    cleanup_bluetooth_owners(state)
-
     if adapter = state.adapters.serial_proxy do
       Enum.each(state.opened_ports, fn {_instance, handle} -> adapter.close(handle) end)
     end
 
+    {addresses, _instances} = release_all_owners(state)
+    cleanup_bluetooth_owners(state, addresses)
+
     :ok
   end
 
-  defp cleanup_bluetooth_owners(%{server_name: nil}), do: :ok
+  # One round trip releases both ownership kinds. Teardown must reach the
+  # adapter even when the Server is gone (a :rest_for_one restart stops
+  # the Server before the handlers), so a dead Server means nothing to
+  # release; a stalled one still surfaces as a timeout.
+  defp release_all_owners(%{server_name: nil}), do: {[], []}
 
-  defp cleanup_bluetooth_owners(state) do
-    case state.adapters.bluetooth_proxy do
-      nil ->
-        :ok
+  defp release_all_owners(state) do
+    Server.release_all_owners(state.server_name, self())
+  catch
+    :exit, {reason, {GenServer, :call, _}} when reason != :timeout -> {[], []}
+  end
 
-      adapter ->
-        # Release everything we own atomically on the Server, then ask
-        # the adapter to disconnect. `release_all_ble_owners/2` returns
-        # the addresses so we can disconnect even if the per-connection
-        # MapSet has drifted (defence in depth — server is the truth).
-        addresses = Server.release_all_ble_owners(state.server_name, self())
+  # The Server's list covers drift in the per-connection MapSet; the
+  # MapSet covers a Server that was already down — the union reaches the
+  # adapter in both cases. Release happened first, so a disconnect
+  # notification implies the address is already free.
+  defp cleanup_bluetooth_owners(%{adapters: %{bluetooth_proxy: nil}}, _addresses), do: :ok
 
-        Enum.each(addresses, fn address ->
-          adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")
-        end)
+  defp cleanup_bluetooth_owners(state, addresses) do
+    adapter = state.adapters.bluetooth_proxy
 
-        :ok
-    end
+    MapSet.new(addresses)
+    |> MapSet.union(state.bluetooth_owned)
+    |> Enum.each(fn address ->
+      adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")
+    end)
+
+    :ok
   end
 
   defp peer_label(socket) do
@@ -1099,6 +1213,7 @@ defmodule Espex.Connection do
   defp command_context(state), do: %{encrypted?: match?({:active, _, _}, state.encryption)}
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok
+  defp log_adapter_error({:ok, _status}, _peer, _what), do: :ok
 
   defp log_adapter_error({:error, reason}, peer, what) do
     Logger.warning("Espex #{peer} #{what} failed: #{inspect(reason)}")
@@ -1153,24 +1268,62 @@ defmodule Espex.Connection do
   defp serial_request(:error, _adapter, _type), do: {:error, :not_open}
 
   # After every successful open (lazy or CONFIGURE-driven), reattach the
-  # client's subscribe intent if it's set — the SerialProxy moduledoc's
-  # contract is that a subscription survives reconfiguration instead of
-  # being consumed by the first open. There's no wire response here: the
-  # client's original SUBSCRIBE was already acked when the intent was
-  # recorded.
+  # client's session if it owns the instance: the subscribe intent — the
+  # SerialProxy moduledoc's contract is that a subscription survives
+  # reconfiguration instead of being consumed by the first open — and the
+  # PROTOCOL mode, which upstream keeps across a CONFIGURE re-init while
+  # espex's fresh handle starts raw. There's no wire response here: the
+  # client's original SUBSCRIBE / SET_MODE was already acked. A reapply
+  # that fails leaves the fresh handle raw, so the recorded mode is
+  # dropped to match — the client can re-send SET_MODE.
   defp maybe_reattach_subscription(state, adapter, instance, handle) do
     if ConnectionState.serial_subscribed?(state, instance) do
-      case serial_request({:ok, handle}, adapter, :subscribe) do
-        {:error, reason} ->
-          Logger.warning("Espex #{state.peer} serial resubscribe instance #{instance} failed: #{inspect(reason)}")
+      {:ok, handle}
+      |> serial_request(adapter, :subscribe)
+      |> log_adapter_error(state.peer, "serial resubscribe instance #{instance}")
 
-        _ ->
-          :ok
+      if ConnectionState.serial_mode(state, instance) == :protocol do
+        case set_serial_mode({:ok, handle}, adapter, :protocol) do
+          {:ok, :ok} ->
+            state
+
+          other ->
+            Logger.warning("Espex #{state.peer} serial mode reapply instance #{instance} failed: #{inspect(other)}")
+            ConnectionState.drop_serial_mode(state, instance)
+        end
+      else
+        state
       end
     else
-      :ok
+      state
     end
   end
+
+  # Result shape feeds Dispatch.serial_request_response/3. A missing
+  # callback is the same as one answering {:error, :not_supported}; RAW is
+  # then OK either way (there is no protocol mode to leave, as upstream),
+  # PROTOCOL is NOT_SUPPORTED — the port has no tap.
+  defp set_serial_mode({:ok, handle}, adapter, mode) do
+    result =
+      if optional_callback?(adapter, :set_mode, 2),
+        do: adapter.set_mode(handle, mode),
+        else: {:error, :not_supported}
+
+    case {mode, result} do
+      {_mode, :ok} -> {:ok, :ok}
+      {:raw, {:error, :not_supported}} -> {:ok, :ok}
+      {:protocol, {:error, :not_supported}} -> {:ok, :not_supported}
+      {_mode, {:error, _reason} = error} -> error
+    end
+  end
+
+  defp set_serial_mode(:error, _adapter, _mode), do: {:error, :not_open}
+
+  defp claim_serial_owner(%{server_name: nil}, _instance), do: :ok
+  defp claim_serial_owner(state, instance), do: Server.claim_serial_owner(state.server_name, instance, self())
+
+  defp release_serial_owner(%{server_name: nil}, _instance), do: :ok
+  defp release_serial_owner(state, instance), do: Server.release_serial_owner(state.server_name, instance, self())
 
   # A recent failed lazy open (:default_opts only — CONFIGURE always
   # attempts) is still within the backoff window.
@@ -1197,10 +1350,10 @@ defmodule Espex.Connection do
   defp resolve_open_opts(_adapter, _instance, opts), do: opts
 
   # Optional-callback check. Pairs `Code.ensure_loaded?/1` with
-  # `function_exported?/3` because BLE interpreter clauses can fire on
-  # an adapter the BEAM hasn't auto-loaded yet (e.g. PAIR before any
-  # CONNECT) — see scratchpad note from PR 3.
-  defp ble_optional?(adapter, fun, arity) do
+  # `function_exported?/3` because interpreter clauses can fire on an
+  # adapter the BEAM hasn't auto-loaded yet (e.g. BLE PAIR before any
+  # CONNECT, or a serial SET_MODE as the adapter's first call in a test).
+  defp optional_callback?(adapter, fun, arity) do
     Code.ensure_loaded?(adapter) and function_exported?(adapter, fun, arity)
   end
 

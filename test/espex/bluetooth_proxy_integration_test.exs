@@ -265,6 +265,24 @@ defmodule Espex.BluetoothProxyIntegrationTest do
     end
   end
 
+  describe "cleanup with Server drift" do
+    test "an address the Server no longer lists is still disconnected from the local set", %{
+      port: port,
+      server_name: server_name
+    } do
+      socket = connect(port)
+      issue_connect(socket, 0xAABB)
+      assert_receive {:connect, 0xAABB, _, _handler}, 1_000
+
+      # Forge drift: the Server forgets the address, the connection still owns it.
+      :sys.replace_state(server_name, fn state -> %{state | ble_owners: Map.delete(state.ble_owners, 0xAABB)} end)
+      assert Server.ble_owner(server_name, 0xAABB) == nil
+
+      :gen_tcp.close(socket)
+      assert_receive {:disconnect, 0xAABB}, 1_000
+    end
+  end
+
   describe "connections_free" do
     test "Subscribe pushes initial BluetoothConnectionsFreeResponse with adapter's {free, limit}", %{port: port} do
       socket = connect(port)

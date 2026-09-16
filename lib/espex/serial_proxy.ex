@@ -24,13 +24,68 @@ defmodule Espex.SerialProxy do
   | `c:get_modem_pins/1` | no | Read RTS/DTR |
   | `c:request/2` | no | Handle subscribe / unsubscribe / flush |
   | `c:default_open_opts/1` | no | Options for an espex-initiated lazy open |
+  | `c:set_mode/2` | no | Switch the port between RAW and PROTOCOL mode |
 
   Omitted optional callbacks degrade gracefully: `c:request/2`
   operations are answered with a `NOT_SUPPORTED` status,
   `c:get_modem_pins/1` reports all lines low, `c:set_modem_pins/3`
-  becomes a no-op, and `c:default_open_opts/1` falls back to
-  `default_open_opts/0` (9600-8-N-1) — your adapter can safely omit
-  whatever the hardware can't do.
+  becomes a no-op, `c:default_open_opts/1` falls back to
+  `default_open_opts/0` (9600-8-N-1), and `c:set_mode/2` answers
+  `NOT_SUPPORTED` for PROTOCOL (RAW is always `OK`) — your adapter can
+  safely omit whatever the hardware can't do.
+
+  ## Ownership
+
+  Since 0.11.0 (API 1.17) each instance has at most one owner: the
+  connection that sent `SUBSCRIBE` for it. This is ESPHome's single-owner
+  rule, and it applies even when no one is subscribed yet — a client must
+  `SUBSCRIBE` before anything else:
+
+  | Request from a non-owner | Result |
+  |--------------------------|--------|
+  | CONFIGURE, SET_MODEM_PINS, FLUSH, SET_MODE | acknowledged `PORT_IN_USE`, adapter not called |
+  | WRITE | dropped silently (WRITE has no acknowledgement) |
+  | GET_MODEM_PINS | answered — it is read-only and ungated upstream |
+  | SUBSCRIBE while another live connection owns it | acknowledged `PORT_IN_USE` |
+  | UNSUBSCRIBE | acknowledged `OK` (idempotent) |
+
+  Ownership is released by `UNSUBSCRIBE` and when the owning connection
+  closes for any reason. Both close the owner's handle (`c:close/1`)
+  *before* the release, so once an instance shows as free its port really
+  is: an adapter that allows one open per device works with the handoff.
+  The one exception is a connection killed outright, which espex cannot
+  tear down; its ownership is still swept, so a handle must not outlive
+  the `subscriber` pid it was opened for (see `c:open/3`).
+  A recorded owner whose connection *process* has already exited is taken
+  over by the next `SUBSCRIBE`. A peer that vanished without closing its
+  socket keeps its process, and so its ownership, until the keepalive
+  reaps it (about two minutes with the defaults), and a reconnecting
+  client is `PORT_IN_USE` for that window — the same as on firmware.
+  Ownership is tracked across connections by `Espex.Server`, one record
+  per instance.
+
+  The rule gates requests and data, not handles: espex still opens a
+  handle per connection via `c:open/3`, so a non-owner's `GET_MODEM_PINS`
+  may lazily open a second handle on the same instance. Whether that
+  second open is allowed is the adapter's decision, as before; bytes the
+  adapter delivers on such a handle are dropped, only the owner receives
+  `SerialProxyDataReceived`.
+
+  ## Port mode
+
+  API 1.17 adds `SerialProxySetModeRequest` with two modes. `RAW` (the
+  default) forwards bytes untouched. `PROTOCOL` asks the device to run a
+  protocol handler — a *tap* in ESPHome terms — on the port instead of,
+  or alongside, the raw stream. Espex has no tap object of its own: the
+  adapter's optional `c:set_mode/2` is the whole surface, and an adapter
+  that does not export it answers `NOT_SUPPORTED` to `PROTOCOL`.
+
+  The mode belongs to the owner's session, per instance. Espex reapplies
+  a `PROTOCOL` mode after a `CONFIGURE` reopens the port (the fresh
+  handle starts raw). The mode dies with the handle: both `UNSUBSCRIBE`
+  and disconnect close it without a `c:set_mode/2` call, so `c:close/1`
+  is where an adapter tears down its protocol handler. `c:set_mode/2`
+  with `:raw` only arrives when a client asks for it explicitly.
 
   ## Data flow
 
@@ -87,28 +142,32 @@ defmodule Espex.SerialProxy do
 
   ## Acknowledgements
 
-  Since 0.10.0 (API 1.16), every request in the API 1.16 set except WRITE
-  is answered with a `SerialProxyRequestResponse` (or, for GET_MODEM_PINS,
-  a `SerialProxyGetModemPinsResponse` carrying `status`). SET_MODE (API
-  1.17) is not implemented and is not answered:
+  Since 0.10.0 (API 1.16), every request except WRITE is answered with a
+  `SerialProxyRequestResponse` (or, for GET_MODEM_PINS, a
+  `SerialProxyGetModemPinsResponse` carrying `status`). An unknown
+  instance is always `INVALID_ARGUMENT`, checked before ownership; a
+  non-owner is `PORT_IN_USE` (see "Ownership"):
 
   | Request | Status |
   |---------|--------|
-  | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails, `INVALID_ARGUMENT` for an unknown instance |
-  | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for an unknown instance |
-  | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, `ERROR`, or `INVALID_ARGUMENT` |
-  | SUBSCRIBE / UNSUBSCRIBE / FLUSH | the status returned by `c:request/2`, `INVALID_ARGUMENT` for an unknown instance |
+  | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails |
+  | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}` |
+  | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, or `ERROR` |
+  | SUBSCRIBE | `OK` once the instance is claimed — the adapter's `c:request/2` answer is logged, not echoed, since ownership is taken regardless; `PORT_IN_USE` when another live connection owns it |
+  | UNSUBSCRIBE | `OK` once the session is torn down (the adapter hears `:unsubscribe`, the handle is closed, ownership is released) — like SUBSCRIBE, the `c:request/2` answer is logged, not echoed; always `OK` for a non-owner |
+  | FLUSH | the status returned by `c:request/2` |
+  | SET_MODE | `OK` / `ERROR` from `c:set_mode/2`; `RAW` is `OK` even while the port is not open; `NOT_SUPPORTED` for `PROTOCOL` when the adapter does not implement it or returns `{:error, :not_supported}`; `INVALID_ARGUMENT` for a mode outside the enum (checked after ownership, as upstream: a non-owner is `PORT_IN_USE` whatever it sent) |
 
   A SUBSCRIBE that arrives before the port is open is acknowledged `OK`
-  as soon as the intent is recorded — not once the port is open. The
-  lazy open it triggers may fail; the intent survives and is reattached
-  on the next successful open (CONFIGURE), which is how ESPHome firmware
-  behaves too, where subscribe always succeeds because the UART is
-  always live.
+  as soon as the claim succeeds and the intent is recorded — not once
+  the port is open. The lazy open it triggers may fail; the intent
+  survives and is reattached on the next successful open (CONFIGURE),
+  which is how ESPHome firmware behaves too, where subscribe always
+  succeeds because the UART is always live.
 
-  A lazy open (a WRITE, SUBSCRIBE, FLUSH, SET_MODEM_PINS or GET_MODEM_PINS
-  arriving before any CONFIGURE) is not itself acknowledged; only the
-  request that triggered it is.
+  A lazy open (the owner's WRITE, FLUSH, SET_MODEM_PINS or SET_MODE, or
+  any connection's GET_MODEM_PINS, arriving before any CONFIGURE) is not
+  itself acknowledged; only the request that triggered it is.
 
   ## Example: a port wrapping Circuits.UART
 
@@ -186,13 +245,15 @@ defmodule Espex.SerialProxy do
   Upstream ESPHome has no open/close lifecycle for the serial proxy — the
   UART is always live at its YAML-configured settings, and
   `SerialProxyConfigureRequest` is optional re-tuning, not a prerequisite.
-  Espex mirrors that: a connection's first serial-proxy operation of any
-  kind (write, subscribe, modem pins, flush) against an *advertised*
-  instance lazily opens it via `c:open/3`, using `c:default_open_opts/1`
-  when you export it (or the 9600-8-N-1 fallback otherwise). This lets a
-  client resume traffic after a reconnect — e.g. Home Assistant writing
-  to a Zigbee coordinator without re-sending CONFIGURE — instead of
-  getting every write silently dropped.
+  Espex mirrors that: the first operation that needs a port on an
+  *advertised* instance lazily opens it via `c:open/3`, using
+  `c:default_open_opts/1` when you export it (or the 9600-8-N-1 fallback
+  otherwise). SUBSCRIBE acquires ownership and is that first operation
+  in practice; WRITE, FLUSH, SET_MODEM_PINS and SET_MODE require the
+  ownership it acquired (see "Ownership"); GET_MODEM_PINS opens without
+  it; UNSUBSCRIBE never opens. This lets a client resume traffic after a
+  reconnect — subscribe, then write to a Zigbee coordinator without
+  re-sending CONFIGURE — instead of getting every write silently dropped.
 
   SUBSCRIBE/UNSUBSCRIBE track a per-connection subscribe *intent* rather
   than a one-shot stash: after every successful `c:open/3` (whether
@@ -280,6 +341,14 @@ defmodule Espex.SerialProxy do
   Open the given instance with the supplied options. Data received on the
   port must be forwarded to `subscriber` as `{:espex_serial_data, handle,
   binary}`.
+
+  `subscriber` is the connection that owns the handle. Espex calls
+  `c:close/1` on every orderly teardown, but a connection killed with an
+  untrappable exit never reaches that call, while its ownership is still
+  swept so the next client can claim the instance. A handle that outlives
+  its subscriber must therefore watch that pid (`Process.monitor/1` or a
+  link) and close itself when it goes down; an exclusive-open adapter
+  would otherwise refuse the next owner's open.
   """
   @callback open(instance :: non_neg_integer(), open_opts(), subscriber :: pid()) ::
               {:ok, handle()} | {:error, term()}
@@ -318,10 +387,17 @@ defmodule Espex.SerialProxy do
 
   @typedoc """
   Which request a `SerialProxyRequestResponse` acknowledges: any
-  `t:request_type/0`, or CONFIGURE / SET_MODEM_PINS, which are separate
-  messages and never reach `c:request/2`.
+  `t:request_type/0`, or CONFIGURE / SET_MODEM_PINS / SET_MODE, which are
+  separate messages and never reach `c:request/2`.
   """
-  @type ack_type :: request_type() | :configure | :set_modem_pins
+  @type ack_type :: request_type() | :configure | :set_modem_pins | :set_mode
+
+  @typedoc """
+  Port mode selected by a `SerialProxySetModeRequest` (API 1.17): `:raw`
+  forwards bytes untouched; `:protocol` asks the adapter to run its own
+  protocol handling on the port. See `c:set_mode/2`.
+  """
+  @type mode :: :raw | :protocol
 
   @typedoc "Internal atom form of the `SerialProxyStatus` enum."
   @type request_status ::
@@ -354,5 +430,21 @@ defmodule Espex.SerialProxy do
   """
   @callback default_open_opts(instance :: non_neg_integer()) :: open_opts()
 
-  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2, default_open_opts: 1
+  @doc since: "0.11.0"
+  @doc """
+  Switch an opened instance between `:raw` and `:protocol` mode
+  (`SerialProxySetModeRequest`, API 1.17). Optional.
+
+  Return `:ok` when the mode is in effect, `{:error, :not_supported}` when
+  the port has no protocol handler to enable (acknowledged
+  `NOT_SUPPORTED`), or `{:error, reason}` for a failure (acknowledged
+  `ERROR`). Espex calls this with `:raw` only when the owner leaves
+  protocol mode explicitly, and re-issues `:protocol` on the new handle
+  after a CONFIGURE reopens the port. A session ending (UNSUBSCRIBE or
+  disconnect) closes the handle instead; tear the protocol handler down
+  in `c:close/1`. See "Port mode" above.
+  """
+  @callback set_mode(handle(), mode()) :: :ok | {:error, :not_supported} | {:error, term()}
+
+  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2, default_open_opts: 1, set_mode: 2
 end

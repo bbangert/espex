@@ -52,9 +52,10 @@ defmodule Espex.Api116Test do
     {socket, hello, rest}
   end
 
-  test "hello advertises API 1.16", %{port: port} do
+  test "hello advertises at least API 1.16", %{port: port} do
     {socket, hello, _} = hello(port)
-    assert {hello.api_version_major, hello.api_version_minor} == {1, 16}
+    assert hello.api_version_major == 1
+    assert hello.api_version_minor >= 16
     :gen_tcp.close(socket)
   end
 
@@ -84,9 +85,13 @@ defmodule Espex.Api116Test do
   end
 
   describe "serial proxy acknowledgements" do
+    # Every case SUBSCRIBEs first: since API 1.17 the subscribed connection
+    # owns the instance and anything else from a non-owner is PORT_IN_USE
+    # (see api_1_17_test.exs).
     @tag adapters: %{serial_proxy: Espex.Test.FakeSerialProxyWithOne}
     test "CONFIGURE is acknowledged OK; an unknown instance is INVALID_ARGUMENT", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
@@ -112,6 +117,8 @@ defmodule Espex.Api116Test do
     @tag adapters: %{serial_proxy: Espex.Test.FailingOpenSerialProxy}
     test "a failed open is acknowledged ERROR with the adapter's reason", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      # The SUBSCRIBE's own lazy open fails too, but it is acked OK (intent recorded).
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
 
@@ -126,6 +133,7 @@ defmodule Espex.Api116Test do
     @tag adapters: %{serial_proxy: Espex.Test.FakeSerialProxyWithOne}
     test "SET_MODEM_PINS is acknowledged OK by an adapter that implements it", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x03})
 
@@ -142,6 +150,7 @@ defmodule Espex.Api116Test do
     @tag adapters: %{serial_proxy: Espex.Test.MinimalSerialProxy}
     test "SET_MODEM_PINS is NOT_SUPPORTED without the optional callback; GET reports it too", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x01})
 
@@ -157,14 +166,17 @@ defmodule Espex.Api116Test do
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "a lazy open triggered by WRITE is not acknowledged", %{port: port} do
+    test "the lazy open behind SUBSCRIBE is not acknowledged on its own, nor is WRITE", %{port: port} do
       {socket, _hello, rest} = hello(port)
 
-      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "x"})
-      # The request was processed (open + write reached the adapter)...
+      # SUBSCRIBE opens lazily and yields exactly one ack (consumed by the helper).
+      rest = subscribe(socket, 0, rest)
       assert_receive {:open, 0, _opts, _subscriber}
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "x"})
+      # The write reached the adapter...
       assert_receive {:write, {:tracking_handle, 0}, "x"}
-      # ...and nothing came back on the wire for it.
+      # ...and nothing came back on the wire for either.
       assert {:error, :timeout} = recv_struct(socket, rest, 250)
 
       :gen_tcp.close(socket)
@@ -173,6 +185,7 @@ defmodule Espex.Api116Test do
     @tag adapters: %{serial_proxy: Espex.Test.ErroringPinsSerialProxy}
     test "SET_MODEM_PINS adapter error is acknowledged ERROR with the reason", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x01})
 
@@ -187,6 +200,7 @@ defmodule Espex.Api116Test do
     @tag adapters: %{serial_proxy: Espex.Test.UnsupportedPinsSerialProxy}
     test "an adapter answering {:error, :not_supported} is acknowledged NOT_SUPPORTED, not ERROR", %{port: port} do
       {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
 
       send_struct(socket, %Proto.SerialProxySetModemPinsRequest{instance: 0, line_states: 0x01})
 
