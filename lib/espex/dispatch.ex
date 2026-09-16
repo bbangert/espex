@@ -260,33 +260,33 @@ defmodule Espex.Dispatch do
   end
 
   # SET_MODE needs a handle for the adapter's `set_mode/2`, so it takes
-  # the owner's lazy open like WRITE does. Arguments are validated before
-  # ownership, as for the instance: the enum decodes to an integer for a
-  # value outside SerialProxyMode.
+  # the owner's lazy open like WRITE does. Upstream checks the instance,
+  # then ownership, then the mode value, so a non-owner is PORT_IN_USE
+  # whatever it sent; the enum decodes to an integer for a value outside
+  # SerialProxyMode.
   def handle_request(state, %Proto.SerialProxySetModeRequest{} = req) do
-    case serial_mode_from_wire(req.mode) do
-      nil ->
+    mode = serial_mode_from_wire(req.mode)
+
+    case with_owner_lazy_open(state, req.instance, [{:serial_set_mode, req.instance, mode}]) do
+      :unknown_instance ->
+        {state,
+         [
+           {:log, :warning, "serial proxy set_mode for unknown instance #{req.instance}"},
+           {:send, serial_request_error(req.instance, :set_mode, "unknown instance", :invalid_argument)}
+         ]}
+
+      :not_owner ->
+        refuse_not_owner(state, req.instance, :set_mode)
+
+      {:ok, _actions} when is_nil(mode) ->
         {state,
          [
            {:log, :warning, "serial proxy set_mode with unknown mode #{inspect(req.mode)}"},
            {:send, serial_request_error(req.instance, :set_mode, "unknown mode", :invalid_argument)}
          ]}
 
-      mode ->
-        case with_owner_lazy_open(state, req.instance, [{:serial_set_mode, req.instance, mode}]) do
-          :unknown_instance ->
-            {state,
-             [
-               {:log, :warning, "serial proxy set_mode for unknown instance #{req.instance}"},
-               {:send, serial_request_error(req.instance, :set_mode, "unknown instance", :invalid_argument)}
-             ]}
-
-          :not_owner ->
-            refuse_not_owner(state, req.instance, :set_mode)
-
-          {:ok, actions} ->
-            {state, actions}
-        end
+      {:ok, actions} ->
+        {state, actions}
     end
   end
 

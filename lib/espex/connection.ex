@@ -1142,10 +1142,11 @@ defmodule Espex.Connection do
 
       adapter ->
         # Release everything we own atomically on the Server, then ask
-        # the adapter to disconnect. `release_all_ble_owners/2` returns
-        # the addresses so we can disconnect even if the per-connection
-        # MapSet has drifted (defence in depth — server is the truth).
-        addresses = release_all_owners(state, :ble)
+        # the adapter to disconnect. The Server's list covers drift in the
+        # per-connection MapSet; the MapSet covers a Server that is already
+        # down (the release then returns nothing) — the union reaches the
+        # adapter in both cases.
+        addresses = MapSet.union(MapSet.new(release_all_owners(state, :ble)), state.bluetooth_owned)
 
         Enum.each(addresses, fn address ->
           adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")

@@ -154,7 +154,7 @@ defmodule Espex.SerialProxy do
   | SUBSCRIBE | `OK` once the instance is claimed — the adapter's `c:request/2` answer is logged, not echoed, since ownership is taken regardless; `PORT_IN_USE` when another live connection owns it |
   | UNSUBSCRIBE | the status from `c:request/2` when the port is open (the handle is then closed), otherwise `OK`; always `OK` for a non-owner |
   | FLUSH | the status returned by `c:request/2` |
-  | SET_MODE | `OK` / `ERROR` from `c:set_mode/2`, `NOT_SUPPORTED` for `PROTOCOL` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for a mode outside the enum |
+  | SET_MODE | `OK` / `ERROR` from `c:set_mode/2`, `NOT_SUPPORTED` for `PROTOCOL` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for a mode outside the enum (checked after ownership, as upstream: a non-owner is `PORT_IN_USE` whatever it sent) |
 
   A SUBSCRIBE that arrives before the port is open is acknowledged `OK`
   as soon as the claim succeeds and the intent is recorded — not once
