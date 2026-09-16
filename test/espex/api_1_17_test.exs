@@ -215,6 +215,108 @@ defmodule Espex.Api117Test do
     end
   end
 
+  describe "session edge cases" do
+    test "inbound data reaches the owner only, not a non-owner holding a lazily opened handle", %{port: port} do
+      {a, _hello, rest_a} = hello(port)
+      _rest_a = subscribe(a, 0, rest_a)
+      assert_receive {:open, 0, _opts, pid_a}
+
+      {b, _hello, rest_b} = hello(port)
+      send_struct(b, %Proto.SerialProxyGetModemPinsRequest{instance: 0})
+      assert_receive {:open, 0, _opts_b, pid_b}
+      {:ok, %Proto.SerialProxyGetModemPinsResponse{}, rest_b} = recv_struct(b, rest_b)
+      assert pid_a != pid_b
+
+      # The fake hands both connections the same handle term, as a shared
+      # port would; deliver bytes to each connection process directly.
+      send(pid_b, {:espex_serial_data, {:tracking_handle, 0}, "leak"})
+      send(pid_a, {:espex_serial_data, {:tracking_handle, 0}, "mine"})
+
+      assert {:ok, %Proto.SerialProxyDataReceived{instance: 0, data: "mine"}, _} = recv_struct(a)
+
+      # Ordering barrier: B's next frame must be the pins reply, not data.
+      send_struct(b, %Proto.SerialProxyGetModemPinsRequest{instance: 0})
+      assert {:ok, %Proto.SerialProxyGetModemPinsResponse{}, _} = recv_struct(b, rest_b)
+
+      :gen_tcp.close(a)
+      :gen_tcp.close(b)
+    end
+
+    test "SUBSCRIBE on an already-open port acks OK and keeps ownership even when request/2 fails", ctx do
+      %{port: port, server_name: server_name} = ctx
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, pid}
+
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_request}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_request}) end)
+
+      _rest = subscribe(socket, 0, rest)
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      assert Server.serial_owner(server_name, 0) == pid
+
+      :gen_tcp.close(socket)
+    end
+
+    test "UNSUBSCRIBE while subscribed but the port is closed acks OK and releases", ctx do
+      %{port: port, server_name: server_name} = ctx
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, _pid}
+
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+      assert_receive {:close, {:tracking_handle, 0}}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, :SERIAL_PROXY_STATUS_ERROR)
+
+      request(socket, 0, @unsubscribe)
+      _rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:request, _, :unsubscribe}
+      refute_received {:close, _}
+      assert Server.serial_owner(server_name, 0) == nil
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag serial_proxy: Espex.Test.MinimalSerialProxy
+    test "UNSUBSCRIBE acks OK on an adapter without request/2", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+
+      request(socket, 0, @unsubscribe)
+      _rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
+
+      :gen_tcp.close(socket)
+    end
+
+    test "a server-side disconnect closes each handle exactly once", %{port: port} do
+      {socket, _hello, _rest} = hello(port)
+      _rest = subscribe(socket, 0)
+      assert_receive {:open, 0, _opts, _pid}
+
+      send_struct(socket, %Proto.DisconnectRequest{})
+      assert_receive {:close, {:tracking_handle, 0}}
+      refute_receive {:close, _}, 250
+
+      :gen_tcp.close(socket)
+    end
+
+    test "a dead Server does not keep teardown from closing the handle", ctx do
+      %{port: port, server_name: server_name} = ctx
+      {socket, _hello, rest} = hello(port)
+      _rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, _pid}
+
+      # :rest_for_one stops the listener (and this connection) after the
+      # Server dies; the connection's cleanup then finds no Server to call.
+      Process.exit(Process.whereis(server_name), :kill)
+      assert_receive {:close, {:tracking_handle, 0}}, 2_000
+
+      :gen_tcp.close(socket)
+    end
+  end
+
   describe "SET_MODE" do
     test "adapter without set_mode/2: RAW is OK, PROTOCOL is NOT_SUPPORTED", %{port: port} do
       {socket, _hello, rest} = hello(port)
@@ -230,7 +332,7 @@ defmodule Espex.Api117Test do
     end
 
     @tag serial_proxy: Espex.Test.ModeTrackingSerialProxy
-    test "adapter with set_mode/2: PROTOCOL is OK and observed; UNSUBSCRIBE resets to raw before its ack", %{
+    test "adapter with set_mode/2: PROTOCOL is OK and observed; UNSUBSCRIBE closes without a raw reset", %{
       port: port
     } do
       {socket, _hello, rest} = hello(port)
@@ -241,11 +343,43 @@ defmodule Espex.Api117Test do
       rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_OK)
 
       request(socket, 0, @unsubscribe)
-      # Reset, unsubscribe, close — all before the ack is written.
-      assert_receive {:set_mode, {:tracking_handle, 0}, :raw}
+      # Unsubscribe then close, before the ack; the mode dies with the handle.
       assert_receive {:request, {:tracking_handle, 0}, :unsubscribe}
       assert_receive {:close, {:tracking_handle, 0}}
       _rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, :raw}
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag serial_proxy: Espex.Test.ModeTrackingSerialProxy
+    test "RAW while the port is closed and in backoff is OK and forgets PROTOCOL", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, _subscriber}
+
+      set_mode(socket, 0, :SERIAL_PROXY_MODE_PROTOCOL)
+      assert_receive {:set_mode, {:tracking_handle, 0}, :protocol}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_OK)
+
+      # CONFIGURE's reopen fails: port closed, backoff armed, mode still recorded.
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+      assert_receive {:close, {:tracking_handle, 0}}
+      assert_receive {:open, 0, _opts2, _subscriber2}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, :SERIAL_PROXY_STATUS_ERROR)
+
+      set_mode(socket, 0, :SERIAL_PROXY_MODE_RAW)
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, _}
+
+      # The next successful open reattaches the subscription only.
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 9600})
+      assert_receive {:open, 0, _opts3, _subscriber3}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      _rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, :protocol}
 
       :gen_tcp.close(socket)
     end

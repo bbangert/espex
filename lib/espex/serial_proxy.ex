@@ -56,15 +56,20 @@ defmodule Espex.SerialProxy do
   The one exception is a connection killed outright, which espex cannot
   tear down; its ownership is still swept, so a handle must not outlive
   the `subscriber` pid it was opened for (see `c:open/3`).
-  A recorded owner whose connection has already died is taken over by the
-  next `SUBSCRIBE`, so a reconnecting client is never refused by its own
-  ghost. Ownership is tracked across connections by `Espex.Server`, one
-  record per instance.
+  A recorded owner whose connection *process* has already exited is taken
+  over by the next `SUBSCRIBE`. A peer that vanished without closing its
+  socket keeps its process, and so its ownership, until the keepalive
+  reaps it (about two minutes with the defaults), and a reconnecting
+  client is `PORT_IN_USE` for that window — the same as on firmware.
+  Ownership is tracked across connections by `Espex.Server`, one record
+  per instance.
 
-  The rule gates requests, not handles: espex still opens a handle per
-  connection via `c:open/3`, so a non-owner's `GET_MODEM_PINS` may lazily
-  open a second handle on the same instance. Whether that second open is
-  allowed is the adapter's decision, as before.
+  The rule gates requests and data, not handles: espex still opens a
+  handle per connection via `c:open/3`, so a non-owner's `GET_MODEM_PINS`
+  may lazily open a second handle on the same instance. Whether that
+  second open is allowed is the adapter's decision, as before; bytes the
+  adapter delivers on such a handle are dropped, only the owner receives
+  `SerialProxyDataReceived`.
 
   ## Port mode
 
@@ -77,13 +82,10 @@ defmodule Espex.SerialProxy do
 
   The mode belongs to the owner's session, per instance. Espex reapplies
   a `PROTOCOL` mode after a `CONFIGURE` reopens the port (the fresh
-  handle starts raw), and resets it when the session ends: on
-  `UNSUBSCRIBE` espex calls `c:set_mode/2` with `:raw` before closing the
-  handle and releasing ownership, so the adapter can tear down its
-  protocol handler in order. This is a deliberate divergence from
-  ESPHome, which resets silently — the adapter *is* the tap here, so it
-  has to be told. On disconnect the handle is closed without that call;
-  the close is the adapter's signal to drop any per-handle mode.
+  handle starts raw). The mode dies with the handle: both `UNSUBSCRIBE`
+  and disconnect close it without a `c:set_mode/2` call, so `c:close/1`
+  is where an adapter tears down its protocol handler. `c:set_mode/2`
+  with `:raw` only arrives when a client asks for it explicitly.
 
   ## Data flow
 
@@ -152,9 +154,9 @@ defmodule Espex.SerialProxy do
   | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}` |
   | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, or `ERROR` |
   | SUBSCRIBE | `OK` once the instance is claimed — the adapter's `c:request/2` answer is logged, not echoed, since ownership is taken regardless; `PORT_IN_USE` when another live connection owns it |
-  | UNSUBSCRIBE | the status from `c:request/2` when the port is open (the handle is then closed), otherwise `OK`; always `OK` for a non-owner |
+  | UNSUBSCRIBE | `OK` once the session is torn down (the adapter hears `:unsubscribe`, the handle is closed, ownership is released) — like SUBSCRIBE, the `c:request/2` answer is logged, not echoed; always `OK` for a non-owner |
   | FLUSH | the status returned by `c:request/2` |
-  | SET_MODE | `OK` / `ERROR` from `c:set_mode/2`, `NOT_SUPPORTED` for `PROTOCOL` when the adapter does not implement it or returns `{:error, :not_supported}`, `INVALID_ARGUMENT` for a mode outside the enum (checked after ownership, as upstream: a non-owner is `PORT_IN_USE` whatever it sent) |
+  | SET_MODE | `OK` / `ERROR` from `c:set_mode/2`; `RAW` is `OK` even while the port is not open; `NOT_SUPPORTED` for `PROTOCOL` when the adapter does not implement it or returns `{:error, :not_supported}`; `INVALID_ARGUMENT` for a mode outside the enum (checked after ownership, as upstream: a non-owner is `PORT_IN_USE` whatever it sent) |
 
   A SUBSCRIBE that arrives before the port is open is acknowledged `OK`
   as soon as the claim succeeds and the intent is recorded — not once
@@ -435,11 +437,11 @@ defmodule Espex.SerialProxy do
   Return `:ok` when the mode is in effect, `{:error, :not_supported}` when
   the port has no protocol handler to enable (acknowledged
   `NOT_SUPPORTED`), or `{:error, reason}` for a failure (acknowledged
-  `ERROR`). Espex calls this with `:raw` when the owner leaves protocol
-  mode explicitly and when its session ends with UNSUBSCRIBE, and
-  re-issues `:protocol` on the new handle after a CONFIGURE reopens the
-  port. A closed handle never receives a call — the close is the signal.
-  See "Port mode" above.
+  `ERROR`). Espex calls this with `:raw` only when the owner leaves
+  protocol mode explicitly, and re-issues `:protocol` on the new handle
+  after a CONFIGURE reopens the port. A session ending (UNSUBSCRIBE or
+  disconnect) closes the handle instead; tear the protocol handler down
+  in `c:close/1`. See "Port mode" above.
   """
   @callback set_mode(handle(), mode()) :: :ok | {:error, :not_supported} | {:error, term()}
 

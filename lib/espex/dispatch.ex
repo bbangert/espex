@@ -581,13 +581,21 @@ defmodule Espex.Dispatch do
   @spec handle_event(ConnectionState.t(), term()) :: result()
   def handle_event(state, event)
 
+  # Inbound bytes go to the owner only, as upstream delivers to the
+  # subscribed connection. A non-owner can hold a handle (GET_MODEM_PINS
+  # lazily opens without ownership), so the handle alone is not enough.
+  # Dropped silently — this runs at line rate.
   def handle_event(state, {:espex_serial_data, handle, data}) do
     case ConnectionState.instance_for_handle(state, handle) do
       nil ->
         {state, []}
 
       instance ->
-        {state, [{:send, %Proto.SerialProxyDataReceived{instance: instance, data: data}}]}
+        if ConnectionState.serial_subscribed?(state, instance) do
+          {state, [{:send, %Proto.SerialProxyDataReceived{instance: instance, data: data}}]}
+        else
+          {state, []}
+        end
     end
   end
 

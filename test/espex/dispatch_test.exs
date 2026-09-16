@@ -549,6 +549,15 @@ defmodule Espex.DispatchTest do
              } = ack
     end
 
+    test "non-owner with a mode outside the enum: PORT_IN_USE wins (ownership is checked first)" do
+      info = SerialProxy.Info.new(instance: 3, name: "n")
+
+      {_, [{:log, :info, _}, {:send, ack}]} =
+        Dispatch.handle_request(state(serial_proxies: [info]), %Proto.SerialProxySetModeRequest{instance: 3, mode: 7})
+
+      assert ack.status == :SERIAL_PROXY_STATUS_PORT_IN_USE
+    end
+
     test "mode outside the enum (decoded as an integer): INVALID_ARGUMENT" do
       s = owned_state([SerialProxy.Info.new(instance: 3, name: "n")], 3) |> ConnectionState.put_port(3, :h)
 
@@ -813,11 +822,17 @@ defmodule Espex.DispatchTest do
   end
 
   describe "handle_event/2" do
-    test "serial data routed to correct instance" do
-      s = state() |> ConnectionState.put_port(4, :my_handle)
+    test "serial data routed to the owner's instance" do
+      s = owned_state([], 4) |> ConnectionState.put_port(4, :my_handle)
 
       {_s, [{:send, %Proto.SerialProxyDataReceived{instance: 4, data: "bytes"}}]} =
         Dispatch.handle_event(s, {:espex_serial_data, :my_handle, "bytes"})
+    end
+
+    test "serial data on a handle this connection does not own: silently dropped" do
+      # A non-owner can hold a handle via the ungated GET_MODEM_PINS lazy open.
+      s = state() |> ConnectionState.put_port(4, :my_handle)
+      {_s, []} = Dispatch.handle_event(s, {:espex_serial_data, :my_handle, "bytes"})
     end
 
     test "serial data for unknown handle: silently dropped" do

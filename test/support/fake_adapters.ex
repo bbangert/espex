@@ -112,7 +112,15 @@ defmodule Espex.Test.TrackingSerialProxy do
   @impl true
   def request(handle, type) do
     notify({:request, handle, type})
-    {:ok, :ok}
+
+    case :persistent_term.get({__MODULE__, :fail_next_request}, false) do
+      true ->
+        :persistent_term.erase({__MODULE__, :fail_next_request})
+        {:error, :test_induced_failure}
+
+      false ->
+        {:ok, :ok}
+    end
   end
 
   @doc false

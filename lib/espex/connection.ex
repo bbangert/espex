@@ -107,14 +107,14 @@ defmodule Espex.Connection do
         {:continue, state}
 
       {:halt, _reason, state} ->
-        {:close, cleanup(state)}
+        {:close, state}
     end
   end
 
   # ThousandIsland's terminate/2 dispatches to exactly ONE of these per
-  # connection, so notifying the connection_listener here fires exactly
-  # once on disconnect. (cleanup/1 can run twice on the {:close} path, so
-  # the notify must NOT live there.)
+  # connection — a {:close, _} or {:stop, {:shutdown, _}, _} from the
+  # callbacks above lands in handle_close/2 — so cleanup/1 and the
+  # connection_listener notification each run exactly once per teardown.
   @impl ThousandIsland.Handler
   def handle_close(_socket, state) do
     cleanup(state)
@@ -163,7 +163,6 @@ defmodule Espex.Connection do
   def handle_info(:espex_keepalive, {socket, state}) do
     cond do
       state.keepalive_outstanding ->
-        state = cleanup(state)
         Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
         {:stop, {:shutdown, :keepalive_timeout}, {socket, state}}
 
@@ -182,7 +181,6 @@ defmodule Espex.Connection do
             {:noreply, {socket, state}}
 
           {:error, reason} ->
-            state = cleanup(state)
             {:stop, {:shutdown, {:keepalive_send_failed, reason}}, {socket, state}}
         end
     end
@@ -200,8 +198,8 @@ defmodule Espex.Connection do
         # action, or a send it could not encode). ThousandIsland routes a
         # {:shutdown, _} exit to handle_close/2; any other reason goes to
         # handle_error/3 with a crash report, which a deliberate close is
-        # not. Same shape as the keepalive stops above.
-        state = cleanup(state)
+        # not. Same shape as the keepalive stops above. Teardown happens
+        # once, in the handle_* callback terminate/2 dispatches to.
         {:stop, {:shutdown, reason}, {socket, state}}
     end
   end
@@ -558,26 +556,25 @@ defmodule Espex.Connection do
     end
   end
 
-  # UNSUBSCRIBE ends the session: the mode goes back to raw, the adapter
-  # hears :unsubscribe, the handle is closed, and only then is ownership
+  # UNSUBSCRIBE ends the session: the adapter hears :unsubscribe, the
+  # handle is closed (which is the adapter's signal to drop any per-handle
+  # state, the PROTOCOL mode included), and only then is ownership
   # released on the Server — so a nil owner means the port really is free
-  # for the next claim, even on an exclusive-open adapter. Idempotent for
-  # a non-owner, as upstream.
+  # for the next claim, even on an exclusive-open adapter. The ack is OK
+  # once that teardown has happened, as for SUBSCRIBE; the adapter's
+  # :unsubscribe answer is advisory. Idempotent for a non-owner, as upstream.
   defp interpret_action(socket, state, {:serial_unsubscribe, instance}) do
     if ConnectionState.serial_subscribed?(state, instance) do
       adapter = state.adapters.serial_proxy
+      {state, handle} = ConnectionState.drop_port(state, instance)
 
-      {result, state} =
-        case ConnectionState.drop_port(state, instance) do
-          {state, nil} ->
-            {{:ok, :ok}, state}
+      if handle do
+        {:ok, handle}
+        |> serial_request(adapter, :unsubscribe)
+        |> log_adapter_error(state.peer, "serial unsubscribe instance #{instance}")
 
-          {state, handle} ->
-            reset_serial_mode(state, adapter, instance, handle)
-            result = serial_request({:ok, handle}, adapter, :unsubscribe)
-            adapter.close(handle)
-            {result, state}
-        end
+        adapter.close(handle)
+      end
 
       state =
         state
@@ -586,23 +583,33 @@ defmodule Espex.Connection do
 
       _ = release_serial_owner(state, instance)
 
-      send_or_halt(socket, state, Dispatch.serial_request_response(instance, :unsubscribe, result))
+      send_or_halt(socket, state, Dispatch.serial_request_response(instance, :unsubscribe, {:ok, :ok}))
     else
       send_or_halt(socket, state, Dispatch.serial_request_response(instance, :unsubscribe, {:ok, :ok}))
     end
   end
 
+  # RAW is always OK, even with no handle (the lazy open may be backing
+  # off): there is nothing to leave, and forgetting a recorded PROTOCOL
+  # mode here keeps the next reopen from reapplying what the client just
+  # left. PROTOCOL needs a handle for the callback.
   defp interpret_action(socket, state, {:serial_set_mode, instance, mode}) do
-    result =
-      state
-      |> ConnectionState.port_handle(instance)
-      |> set_serial_mode(state.adapters.serial_proxy, mode)
+    {result, state} =
+      case {ConnectionState.port_handle(state, instance), mode} do
+        {:error, :raw} ->
+          {{:ok, :ok}, ConnectionState.drop_serial_mode(state, instance)}
 
-    state =
-      case {result, mode} do
-        {{:ok, :ok}, :protocol} -> ConnectionState.put_serial_mode(state, instance, :protocol)
-        {{:ok, :ok}, :raw} -> ConnectionState.drop_serial_mode(state, instance)
-        _ -> state
+        {handle, mode} ->
+          result = set_serial_mode(handle, state.adapters.serial_proxy, mode)
+
+          state =
+            case {result, mode} do
+              {{:ok, :ok}, :protocol} -> ConnectionState.put_serial_mode(state, instance, :protocol)
+              {{:ok, :ok}, :raw} -> ConnectionState.drop_serial_mode(state, instance)
+              _ -> state
+            end
+
+          {result, state}
       end
 
     send_or_halt(socket, state, Dispatch.serial_request_response(instance, :set_mode, result))
@@ -1077,83 +1084,55 @@ defmodule Espex.Connection do
   defp load_entities(%{entity_provider: nil}), do: []
   defp load_entities(%{entity_provider: module}), do: module.list_entities()
 
-  # Tear down every adapter-side resource and return the state with them
-  # forgotten. ThousandIsland calls one of the handle_* callbacks after an
-  # in-process close, so cleanup/1 runs twice on those paths; the cleared
-  # state makes the second pass a no-op instead of closing a handle that
-  # may by then belong to the next owner.
+  # Tear down every adapter-side resource. Runs exactly once per
+  # connection, from the handle_* callback ThousandIsland's terminate/2
+  # dispatches to. Adapter handles are closed before ownership is
+  # released, so a Server owner of nil means the port really is free for
+  # the next claim; the close is also the adapter's signal to drop any
+  # per-handle state, the PROTOCOL mode included.
   defp cleanup(state) do
     if state.zwave_subscribed, do: interpret_action(nil, state, :zwave_unsubscribe)
     if state.infrared_subscribed, do: interpret_action(nil, state, :infrared_unsubscribe)
     if state.bluetooth_scanner_subscribed, do: interpret_action(nil, state, :ble_scanner_unsubscribe)
 
-    cleanup_bluetooth_owners(state)
-
-    # Close every handle before releasing ownership, so a Server owner of
-    # nil means the port really is free for the next claim. Closing the
-    # handle is also the adapter's signal to drop any per-handle state,
-    # including a PROTOCOL mode — no set_mode(handle, :raw) here.
     if adapter = state.adapters.serial_proxy do
       Enum.each(state.opened_ports, fn {_instance, handle} -> adapter.close(handle) end)
     end
 
-    cleanup_serial_owners(state)
+    {addresses, _instances} = release_all_owners(state)
+    cleanup_bluetooth_owners(state, addresses)
 
-    %{
-      state
-      | opened_ports: %{},
-        serial_subscriptions: MapSet.new(),
-        serial_modes: %{},
-        bluetooth_owned: MapSet.new(),
-        zwave_subscribed: false,
-        infrared_subscribed: false,
-        bluetooth_scanner_subscribed: false
-    }
-  end
-
-  defp cleanup_serial_owners(%{server_name: nil}), do: :ok
-  defp cleanup_serial_owners(%{adapters: %{serial_proxy: nil}}), do: :ok
-
-  # Release on the Server so the next client can claim right away
-  # instead of waiting for the DOWN sweep; idempotent, like the BLE path.
-  defp cleanup_serial_owners(state) do
-    _ = release_all_owners(state, :serial)
     :ok
   end
 
-  # Teardown must reach the adapter even when the Server is gone (a
-  # :rest_for_one restart stops the Server before the handlers); the DOWN
-  # sweep is moot then, so a dead Server simply means nothing to release.
-  defp release_all_owners(state, kind) do
-    case kind do
-      :ble -> Server.release_all_ble_owners(state.server_name, self())
-      :serial -> Server.release_all_serial_owners(state.server_name, self())
-    end
+  # One round trip releases both ownership kinds. Teardown must reach the
+  # adapter even when the Server is gone (a :rest_for_one restart stops
+  # the Server before the handlers), so a dead Server means nothing to
+  # release; a stalled one still surfaces as a timeout.
+  defp release_all_owners(%{server_name: nil}), do: {[], []}
+
+  defp release_all_owners(state) do
+    Server.release_all_owners(state.server_name, self())
   catch
-    :exit, _reason -> []
+    :exit, {reason, {GenServer, :call, _}} when reason != :timeout -> {[], []}
   end
 
-  defp cleanup_bluetooth_owners(%{server_name: nil}), do: :ok
+  # The Server's list covers drift in the per-connection MapSet; the
+  # MapSet covers a Server that was already down — the union reaches the
+  # adapter in both cases. Release happened first, so a disconnect
+  # notification implies the address is already free.
+  defp cleanup_bluetooth_owners(%{adapters: %{bluetooth_proxy: nil}}, _addresses), do: :ok
 
-  defp cleanup_bluetooth_owners(state) do
-    case state.adapters.bluetooth_proxy do
-      nil ->
-        :ok
+  defp cleanup_bluetooth_owners(state, addresses) do
+    adapter = state.adapters.bluetooth_proxy
 
-      adapter ->
-        # Release everything we own atomically on the Server, then ask
-        # the adapter to disconnect. The Server's list covers drift in the
-        # per-connection MapSet; the MapSet covers a Server that is already
-        # down (the release then returns nothing) — the union reaches the
-        # adapter in both cases.
-        addresses = MapSet.union(MapSet.new(release_all_owners(state, :ble)), state.bluetooth_owned)
+    MapSet.new(addresses)
+    |> MapSet.union(state.bluetooth_owned)
+    |> Enum.each(fn address ->
+      adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")
+    end)
 
-        Enum.each(addresses, fn address ->
-          adapter.disconnect(address) |> log_adapter_error(state.peer, "BLE cleanup disconnect")
-        end)
-
-        :ok
-    end
+    :ok
   end
 
   defp peer_label(socket) do
@@ -1338,23 +1317,6 @@ defmodule Espex.Connection do
   end
 
   defp set_serial_mode(:error, _adapter, _mode), do: {:error, :not_open}
-
-  # Session end for a PROTOCOL port: tell the adapter to go back to raw
-  # before ownership is released (upstream resets silently, but espex has
-  # no separate tap object — the adapter is the tap).
-  defp reset_serial_mode(state, adapter, instance, handle) do
-    if ConnectionState.serial_mode(state, instance) == :protocol do
-      case set_serial_mode({:ok, handle}, adapter, :raw) do
-        {:ok, _status} ->
-          :ok
-
-        {:error, reason} ->
-          Logger.warning("Espex #{state.peer} serial mode reset instance #{instance} failed: #{inspect(reason)}")
-      end
-    end
-
-    :ok
-  end
 
   defp claim_serial_owner(%{server_name: nil}, _instance), do: :ok
   defp claim_serial_owner(state, instance), do: Server.claim_serial_owner(state.server_name, instance, self())

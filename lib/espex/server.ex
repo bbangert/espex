@@ -111,6 +111,16 @@ defmodule Espex.Server do
   end
 
   @doc """
+  Release everything `pid` owns, of both kinds, in one call and drop its
+  monitor. Returns `{ble_addresses, serial_instances}`. Used by
+  `Connection.cleanup/1` on TCP close so teardown costs one round trip.
+  """
+  @spec release_all_owners(GenServer.server(), pid()) :: {[non_neg_integer()], [non_neg_integer()]}
+  def release_all_owners(server, pid) when is_pid(pid) do
+    GenServer.call(server, {:release_all_owners, pid})
+  end
+
+  @doc """
   Return the pid currently owning serial proxy `instance`, or `nil`.
   """
   @spec serial_owner(GenServer.server(), non_neg_integer()) :: pid() | nil
@@ -237,6 +247,8 @@ defmodule Espex.Server do
         # The DOWN sweep is the durable release; this only covers the
         # window between the old owner's death and the Server processing
         # its DOWN, so a reconnecting client is not refused by a ghost.
+        # The sweep drops everything the dead pid held (BLE addresses and
+        # every serial instance), exactly what its DOWN would have done.
         if Process.alive?(other) do
           {:reply, {:busy, other}, state}
         else
@@ -253,6 +265,12 @@ defmodule Espex.Server do
   def handle_call({:release_all_serial_owners, pid}, _from, state) do
     {new_state, instances} = ServerState.drop_all_serial_owners(state, pid)
     {:reply, instances, maybe_demonitor(new_state, pid, true)}
+  end
+
+  def handle_call({:release_all_owners, pid}, _from, state) do
+    {state, addresses} = ServerState.drop_all_ble_owners(state, pid)
+    {state, instances} = ServerState.drop_all_serial_owners(state, pid)
+    {:reply, {addresses, instances}, demonitor(state, pid)}
   end
 
   def handle_call({:serial_owner, instance}, _from, state) do
