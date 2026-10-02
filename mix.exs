@@ -39,6 +39,7 @@ defmodule Espex.MixProject do
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:argus_beam, "~> 0.20", only: [:dev, :test], runtime: false},
       # Exercised by the mDNS integration test and the mdns_demo manual
       # script. Not a runtime dep — Espex.Mdns.MdnsLite uses late-binding
       # so espex loads without it for downstream apps that don't need
