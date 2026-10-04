@@ -63,6 +63,7 @@ defmodule Espex.Connection do
         peer: peer,
         server_name: server_name,
         client_registry: client_registry,
+        task_supervisor: Keyword.get(handler_options, :task_supervisor),
         adapters: adapters,
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
@@ -159,8 +160,14 @@ defmodule Espex.Connection do
   # ESPHome firmware instead: ping the client after `keepalive_idle_ms` of
   # inbound silence, and close only if `keepalive_grace_ms` more passes
   # without any inbound bytes (clients answer PingRequest immediately).
+  #
+  # The tick is an :erlang.start_timer/3 message carrying its timer ref, and
+  # only the ref currently held in :keepalive_timer is acted on: a tick that
+  # was already in the mailbox when reset_keepalive/1 cancelled its timer is
+  # stale and is dropped by the next clause, rather than firing a premature
+  # ping (or, after a grace re-arm, being mistaken for the grace expiry).
   @impl GenServer
-  def handle_info(:espex_keepalive, {socket, state}) do
+  def handle_info({:timeout, ref, :espex_keepalive}, {socket, %{keepalive_timer: ref} = state}) do
     cond do
       state.keepalive_outstanding ->
         Logger.warning("Espex client #{state.peer} keepalive ping unanswered — closing")
@@ -186,6 +193,10 @@ defmodule Espex.Connection do
     end
   end
 
+  def handle_info({:timeout, _stale_ref, :espex_keepalive}, {socket, state}) do
+    {:noreply, {socket, state}}
+  end
+
   def handle_info(event, {socket, state}) do
     {state, actions} = Dispatch.handle_event(state, event)
 
@@ -205,15 +216,15 @@ defmodule Espex.Connection do
   end
 
   # Restart the idle clock: cancel any pending tick, clear an outstanding
-  # ping, and arm a fresh idle timer. A cancel/fire race only yields a
-  # premature ping (benign — the client answers and the clock resets).
+  # ping, and arm a fresh idle timer. A tick from the cancelled timer that
+  # was already delivered is ignored by handle_info/2 (ref mismatch).
   defp reset_keepalive(state) do
     arm_keepalive(%{state | keepalive_outstanding: false}, state.keepalive_idle_ms)
   end
 
   defp arm_keepalive(state, ms) do
     if state.keepalive_timer, do: Process.cancel_timer(state.keepalive_timer)
-    %{state | keepalive_timer: Process.send_after(self(), :espex_keepalive, ms)}
+    %{state | keepalive_timer: :erlang.start_timer(ms, self(), :espex_keepalive)}
   end
 
   # A PingRequest can only be transmitted once the channel is established;
@@ -1187,24 +1198,40 @@ defmodule Espex.Connection do
   # down a live client connection, and we never retry — connected_clients/1
   # is the source of truth a listener reconciles against on its own boot.
   defp notify_connections_changed(%{adapters: %{connection_listener: nil}}), do: :ok
+  # No task supervisor outside an Espex.Supervisor tree (pure-state paths).
+  defp notify_connections_changed(%{task_supervisor: nil}), do: :ok
 
-  defp notify_connections_changed(%{adapters: %{connection_listener: module}, peer: peer}) do
-    # Run detached so a slow/blocking callback can't stall frame
-    # processing, and catch every failure kind (error/exit/throw) so a
-    # misbehaving listener can't bring the connection down. Notifications
-    # are therefore unordered — fine, since each is only a "re-query" hint
-    # and connected_clients/1 is authoritative.
-    _ =
-      spawn(fn ->
-        try do
-          module.connections_changed()
-        catch
-          kind, reason ->
-            Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
-        end
-      end)
+  defp notify_connections_changed(%{adapters: %{connection_listener: module}, peer: peer, task_supervisor: sup}) do
+    # Run detached under the instance's Task.Supervisor so a slow/blocking
+    # callback can't stall frame processing, and catch every failure kind
+    # (error/exit/throw) so a misbehaving listener can't bring the
+    # connection down. Notifications are therefore unordered — fine, since
+    # each is only a "re-query" hint and connected_clients/1 is
+    # authoritative.
+    # The supervisor is bounded (max_children): when it is full a slow
+    # listener already has notifications pending, so this one is shed —
+    # the pending ones still prompt a re-query of connected_clients/1.
+    case Task.Supervisor.start_child(sup, fn ->
+           try do
+             module.connections_changed()
+           catch
+             kind, reason ->
+               Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
+           end
+         end) do
+      {:ok, _pid} ->
+        :ok
 
-    :ok
+      {:error, reason} ->
+        Logger.debug("Espex #{peer} connection_listener notification shed: #{inspect(reason)}")
+        :ok
+    end
+  catch
+    # Best-effort: the task supervisor being down (mid-restart) only drops
+    # this hint; it must not crash the connection.
+    :exit, reason ->
+      Logger.warning("Espex #{peer} connection_listener not notified: #{inspect(reason)}")
+      :ok
   end
 
   # A Noise session is the only authentication the ESPHome protocol
