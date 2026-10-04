@@ -20,7 +20,7 @@ defmodule Espex.KeepaliveTest do
       name: sup_name,
       server_name: server_name,
       port: 0,
-      keepalive_idle_ms: 300,
+      keepalive_idle_ms: context[:keepalive_idle_ms] || 300,
       keepalive_grace_ms: 300,
       device_config: [
         name: "test-device",
@@ -104,22 +104,46 @@ defmodule Espex.KeepaliveTest do
     :gen_tcp.close(socket)
   end
 
-  test "a stale keepalive tick from a cancelled timer is ignored", %{port: port, server_name: server_name} do
+  defp keepalive_timer(conn_pid) do
+    {_socket, state} = :sys.get_state(conn_pid)
+    state.keepalive_timer
+  end
+
+  # A long idle window keeps real timers out of the way, so only the tick
+  # each test delivers by hand can produce a PingRequest.
+  @tag keepalive_idle_ms: 5_000
+  test "a tick for the armed keepalive timer is acted on", %{port: port, server_name: server_name} do
     socket = connect(port)
     send_struct(socket, %Proto.HelloRequest{client_info: "keepalive-test"})
     {:ok, %Proto.HelloResponse{}, rest} = recv_struct(socket)
-
-    # A ping is now outstanding, so a tick acted on here would close the
-    # connection as if the grace period had expired.
-    {:ok, %Proto.PingRequest{}, rest} = recv_struct(socket, rest)
     [%Espex.ClientInfo{id: conn_pid}] = Espex.connected_clients(server_name)
 
-    # Simulate a tick from a timer that was cancelled after it fired: its
-    # ref does not match the armed timer, so it must be dropped.
-    send(conn_pid, {:timeout, make_ref(), :espex_keepalive})
-    send_struct(socket, %Proto.PingResponse{})
+    # Deliver exactly what the armed timer delivers when it fires.
+    send(conn_pid, {:timeout, keepalive_timer(conn_pid), :espex_keepalive})
 
     assert {:ok, %Proto.PingRequest{}, _rest} = recv_struct(socket, rest)
+    :gen_tcp.close(socket)
+  end
+
+  @tag keepalive_idle_ms: 5_000
+  test "a tick from a timer cancelled by a reset is ignored", %{port: port, server_name: server_name} do
+    socket = connect(port)
+    send_struct(socket, %Proto.HelloRequest{client_info: "keepalive-test"})
+    {:ok, %Proto.HelloResponse{}, rest} = recv_struct(socket)
+    [%Espex.ClientInfo{id: conn_pid}] = Espex.connected_clients(server_name)
+    cancelled = keepalive_timer(conn_pid)
+
+    # Inbound traffic resets the keepalive: `cancelled` is cancelled and a
+    # new timer armed. The response proves the reset has been processed.
+    send_struct(socket, %Proto.DeviceInfoRequest{})
+    {:ok, %Proto.DeviceInfoResponse{}, rest} = recv_struct(socket, rest)
+    refute keepalive_timer(conn_pid) == cancelled
+
+    # The tick `cancelled` would have left in the mailbox had it fired just
+    # before the cancel. Acting on it would ping ~5 s early.
+    send(conn_pid, {:timeout, cancelled, :espex_keepalive})
+
+    assert {:error, :timeout} = Espex.Test.TcpClient.recv_struct(socket, rest, 500)
     assert Process.alive?(conn_pid)
     :gen_tcp.close(socket)
   end

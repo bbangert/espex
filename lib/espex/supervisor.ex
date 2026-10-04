@@ -129,6 +129,9 @@ defmodule Espex.Supervisor do
     end)
   end
 
+  # Upper bound on in-flight connection-listener notifications per instance.
+  @max_listener_tasks 16
+
   @impl Supervisor
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
@@ -155,8 +158,10 @@ defmodule Espex.Supervisor do
         # Supervises detached connection-listener notifications. Started
         # before the listener so it outlives every connection on shutdown
         # (:rest_for_one stops children in reverse order), letting the
-        # final disconnect notification still be dispatched.
-        {Task.Supervisor, name: task_supervisor_name},
+        # final disconnect notification still be dispatched. Bounded so a
+        # slow listener under connection churn sheds notifications instead
+        # of accumulating tasks (each is only a best-effort re-query hint).
+        {Task.Supervisor, name: task_supervisor_name, max_children: @max_listener_tasks},
         {Server, name: server_name, device_config: device_config, adapters: adapters},
         {
           ThousandIsland,

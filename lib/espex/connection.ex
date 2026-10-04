@@ -1208,17 +1208,24 @@ defmodule Espex.Connection do
     # connection down. Notifications are therefore unordered — fine, since
     # each is only a "re-query" hint and connected_clients/1 is
     # authoritative.
-    _ =
-      Task.Supervisor.start_child(sup, fn ->
-        try do
-          module.connections_changed()
-        catch
-          kind, reason ->
-            Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
-        end
-      end)
+    # The supervisor is bounded (max_children): when it is full a slow
+    # listener already has notifications pending, so this one is shed —
+    # the pending ones still prompt a re-query of connected_clients/1.
+    case Task.Supervisor.start_child(sup, fn ->
+           try do
+             module.connections_changed()
+           catch
+             kind, reason ->
+               Logger.warning("Espex #{peer} connection_listener #{kind}: #{inspect(reason)}")
+           end
+         end) do
+      {:ok, _pid} ->
+        :ok
 
-    :ok
+      {:error, reason} ->
+        Logger.debug("Espex #{peer} connection_listener notification shed: #{inspect(reason)}")
+        :ok
+    end
   catch
     # Best-effort: the task supervisor being down (mid-restart) only drops
     # this hint; it must not crash the connection.
