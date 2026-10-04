@@ -38,8 +38,35 @@ jobs:
             mix-test-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
 
       - run: mix deps.get --check-locked
-      - run: mix compile --warnings-as-errors
       - run: mix test
+
+  compile-format:
+    name: Compile · Format
+    runs-on: ubuntu-latest
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          otp-version: "28"
+          elixir-version: "1.19.5"
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-compile-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            mix-compile-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - run: mix deps.get --check-locked
+      - run: mix compile --warnings-as-errors
+      - run: mix format --check-formatted
 
   credo:
     name: Credo
@@ -108,6 +135,33 @@ jobs:
       - run: mix dialyzer.build
 
       - run: mix dialyzer --format github
+
+  sobelow:
+    name: Sobelow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          otp-version: "28"
+          elixir-version: "1.19.5"
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: mix-sobelow-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('**/mix.lock') }}
+          restore-keys: |
+            mix-sobelow-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - run: mix deps.get --check-locked
+      # Not a Phoenix app: Sobelow skips the router-based checks and scans
+      # the rest (Traversal, RCE, DOS, Misc, Config, ...).
+      - run: mix sobelow --skip --exit --threshold medium
 
   audit:
     name: Hex audit
