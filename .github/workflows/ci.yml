@@ -161,7 +161,7 @@ jobs:
       - run: mix deps.get --check-locked
       # Not a Phoenix app: Sobelow skips the router-based checks and scans
       # the rest (Traversal, RCE, DOS, Misc, Config, ...).
-      - run: mix sobelow --skip --exit --threshold medium
+      - run: mix sobelow --private --skip --exit --threshold medium
 
   audit:
     name: Hex audit
