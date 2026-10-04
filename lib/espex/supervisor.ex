@@ -5,11 +5,14 @@ defmodule Espex.Supervisor do
   Starts children in `:rest_for_one` order:
 
     1. `Registry` (duplicate keys) — fan-out point for `Espex.push_state/2`.
-    2. A cross-connection state server (internal) — holds the device
+    2. `Registry` (unique keys) — per-connection client-info snapshots.
+    3. `Task.Supervisor` (internal) — runs fire-and-forget work such as
+       `c:Espex.ConnectionListener.connections_changed/0` notifications.
+    4. A cross-connection state server (internal) — holds the device
        config and adapter modules.
-    3. `ThousandIsland` — TCP acceptor pool that spawns a per-client
+    5. `ThousandIsland` — TCP acceptor pool that spawns a per-client
        connection handler process (internal).
-    4. An mDNS advertiser GenServer (internal) — optional, started
+    6. An mDNS advertiser GenServer (internal) — optional, started
        only when `:mdns` is configured.
 
   If the server child crashes, the listener and advertiser restart
@@ -134,6 +137,7 @@ defmodule Espex.Supervisor do
     server_name = opts[:server_name] || Server
     registry_name = registry_name(server_name)
     client_registry_name = client_registry_name(server_name)
+    task_supervisor_name = task_supervisor_name(server_name)
     num_acceptors = opts[:num_acceptors] || 10
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
@@ -148,6 +152,11 @@ defmodule Espex.Supervisor do
         # duplicate) because Registry.update_value/3 — the per-frame
         # snapshot refresh — is only supported on unique registries.
         {Registry, keys: :unique, name: client_registry_name},
+        # Supervises detached connection-listener notifications. Started
+        # before the listener so it outlives every connection on shutdown
+        # (:rest_for_one stops children in reverse order), letting the
+        # final disconnect notification still be dispatched.
+        {Task.Supervisor, name: task_supervisor_name},
         {Server, name: server_name, device_config: device_config, adapters: adapters},
         {
           ThousandIsland,
@@ -161,6 +170,7 @@ defmodule Espex.Supervisor do
             server_name: server_name,
             registry_name: registry_name,
             client_registry: client_registry_name,
+            task_supervisor: task_supervisor_name,
             keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
             keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000,
             disconnect_grace_ms: opts[:disconnect_grace_ms] || 2_000
@@ -188,6 +198,11 @@ defmodule Espex.Supervisor do
         []
     end
   end
+
+  # Conventional name of the per-instance Task.Supervisor (internal).
+  @doc false
+  @spec task_supervisor_name(atom()) :: atom()
+  def task_supervisor_name(server_name), do: Module.concat(server_name, "TaskSupervisor")
 
   @doc """
   Return the conventional Registry name for a given server name.

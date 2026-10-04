@@ -43,7 +43,7 @@ defmodule Espex.KeepaliveTest do
       end
     end)
 
-    %{port: port}
+    %{port: port, server_name: server_name}
   end
 
   defp recv_struct(socket, buffer \\ <<>>), do: Espex.Test.TcpClient.recv_struct(socket, buffer, @recv_timeout)
@@ -101,6 +101,26 @@ defmodule Espex.KeepaliveTest do
 
     # Then go quiet: the ping shows up one idle period later.
     assert {:ok, %Proto.PingRequest{}, _rest} = recv_struct(socket, rest)
+    :gen_tcp.close(socket)
+  end
+
+  test "a stale keepalive tick from a cancelled timer is ignored", %{port: port, server_name: server_name} do
+    socket = connect(port)
+    send_struct(socket, %Proto.HelloRequest{client_info: "keepalive-test"})
+    {:ok, %Proto.HelloResponse{}, rest} = recv_struct(socket)
+
+    # A ping is now outstanding, so a tick acted on here would close the
+    # connection as if the grace period had expired.
+    {:ok, %Proto.PingRequest{}, rest} = recv_struct(socket, rest)
+    [%Espex.ClientInfo{id: conn_pid}] = Espex.connected_clients(server_name)
+
+    # Simulate a tick from a timer that was cancelled after it fired: its
+    # ref does not match the armed timer, so it must be dropped.
+    send(conn_pid, {:timeout, make_ref(), :espex_keepalive})
+    send_struct(socket, %Proto.PingResponse{})
+
+    assert {:ok, %Proto.PingRequest{}, _rest} = recv_struct(socket, rest)
+    assert Process.alive?(conn_pid)
     :gen_tcp.close(socket)
   end
 end
