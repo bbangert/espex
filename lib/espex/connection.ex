@@ -1146,9 +1146,12 @@ defmodule Espex.Connection do
     :ok
   end
 
+  # Only an IP peer is formatted as addr:port. A non-IP peer (a Unix
+  # domain socket's `{:local, path}`) or, on thousand_island < 1.6, a
+  # failed lookup, is "unknown".
   defp peer_label(socket) do
     case ThousandIsland.Socket.peername(socket) do
-      {:ok, {addr, port}} -> "#{:inet.ntoa(addr)}:#{port}"
+      {:ok, {addr, port}} when is_tuple(addr) -> "#{:inet.ntoa(addr)}:#{port}"
       _ -> "unknown"
     end
   end
