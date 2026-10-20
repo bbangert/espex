@@ -936,6 +936,36 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "Home Assistant state subscriptions" do
+    alias Espex.HomeAssistantStates.Subscription
+
+    test "the response sends no attribute as an empty string" do
+      sub = Subscription.new!(entity_id: "a.b", once: true)
+
+      assert %Proto.SubscribeHomeAssistantStateResponse{entity_id: "a.b", attribute: "", once: true} =
+               Dispatch.subscribe_state_response(sub)
+    end
+
+    test "a table change before request 38 updates the copy and sends nothing" do
+      sub = Subscription.new!(entity_id: "a.b")
+      {s, actions} = Dispatch.handle_event(state(), {:espex_ha_subscriptions, [sub], []})
+      assert actions == []
+      assert MapSet.member?(s.ha_subscriptions, sub)
+    end
+
+    test "after request 38 only entries new to the copy are sent" do
+      [a, b, c] = Enum.map(["a.a", "b.b", "c.c"], &Subscription.new!(entity_id: &1))
+      s = state(ha_subscriptions: MapSet.new([a, b]))
+
+      {s, [{:send, _}, {:send, _}]} = Dispatch.handle_request(s, %Proto.SubscribeHomeAssistantStatesRequest{})
+      assert s.ha_states_subscribed
+
+      {s, actions} = Dispatch.handle_event(s, {:espex_ha_subscriptions, [b, c], [a]})
+      assert [{:send, %Proto.SubscribeHomeAssistantStateResponse{entity_id: "c.c"}}] = actions
+      assert s.ha_subscriptions == MapSet.new([b, c])
+    end
+  end
+
   describe "entity command dispatch" do
     test "with EntityProvider: emits :entity_command" do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: nil, entity_provider: FakeEntityProvider}

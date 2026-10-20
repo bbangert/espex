@@ -2,6 +2,7 @@ defmodule Espex.ConnectionState do
   @moduledoc false
 
   alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy, Wizard}
+  alias Espex.HomeAssistantStates.Subscription
 
   @type feature ::
           :serial_proxy
@@ -14,6 +15,7 @@ defmodule Espex.ConnectionState do
           | :connection_listener
           | :sendspin
           | :wizard
+          | :home_assistant_states
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -64,6 +66,8 @@ defmodule Espex.ConnectionState do
           bluetooth_scanner_subscribed: boolean(),
           bluetooth_connections_free_subscribed: boolean(),
           bluetooth_owned: MapSet.t(non_neg_integer()),
+          ha_subscriptions: MapSet.t(Subscription.t()),
+          ha_states_subscribed: boolean(),
           adapters: adapters(),
           clock_fun: (-> non_neg_integer()),
           encryption: encryption(),
@@ -102,6 +106,12 @@ defmodule Espex.ConnectionState do
     bluetooth_scanner_subscribed: false,
     bluetooth_connections_free_subscribed: false,
     bluetooth_owned: MapSet.new(),
+    # This connection's copy of the server-wide Home Assistant state
+    # subscription table: seeded at accept, kept in step by Espex.Server's
+    # {:espex_ha_subscriptions, added, removed} broadcasts.
+    ha_subscriptions: MapSet.new(),
+    # The client sent SubscribeHomeAssistantStatesRequest.
+    ha_states_subscribed: false,
     adapters: %{
       serial_proxy: nil,
       zwave_proxy: nil,
@@ -112,7 +122,8 @@ defmodule Espex.ConnectionState do
       psk_store: nil,
       connection_listener: nil,
       sendspin: nil,
-      wizard: nil
+      wizard: nil,
+      home_assistant_states: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
@@ -374,6 +385,25 @@ defmodule Espex.ConnectionState do
   def bluetooth_owns?(%__MODULE__{bluetooth_owned: owned}, address) do
     MapSet.member?(owned, address)
   end
+
+  @doc """
+  Apply a change to this connection's copy of the Home Assistant state
+  subscription table. Returns the state and the entries of `added` that
+  are new to the copy.
+  """
+  @spec update_ha_subscriptions(t(), [Subscription.t()], [Subscription.t()]) :: {t(), [Subscription.t()]}
+  def update_ha_subscriptions(%__MODULE__{} = state, added, removed) do
+    new = Enum.reject(added, &MapSet.member?(state.ha_subscriptions, &1))
+    subscriptions = state.ha_subscriptions |> MapSet.difference(MapSet.new(removed)) |> MapSet.union(MapSet.new(new))
+    {%{state | ha_subscriptions: subscriptions}, new}
+  end
+
+  @doc """
+  Mark that the client sent `SubscribeHomeAssistantStatesRequest`. There
+  is no unsubscribe; it lasts for the connection.
+  """
+  @spec put_ha_states_subscribed(t()) :: t()
+  def put_ha_states_subscribed(%__MODULE__{} = state), do: %{state | ha_states_subscribed: true}
 
   @doc """
   Return the adapter module configured for `feature`, or `nil`.

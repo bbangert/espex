@@ -78,6 +78,7 @@ defmodule Espex.Connection do
         infrared_entities: load_infrared_entities(adapters),
         entities: load_entities(adapters),
         wizard: load_wizard(adapters),
+        ha_subscriptions: server_state.ha_subscriptions |> Map.keys() |> MapSet.new(),
         encryption: encryption,
         connected_at: now,
         last_activity_at: now,
@@ -748,6 +749,21 @@ defmodule Espex.Connection do
     |> log_adapter_error(state.peer, "wizard input_set for key #{key}")
 
     {:cont, state}
+  end
+
+  # Host code, fed by remote state values: a raise must not drop the
+  # connection, or the same state would drop it on every reconnect.
+  defp interpret_action(_socket, state, {:ha_state, entity_id, attribute, value}) do
+    case state.adapters.home_assistant_states.handle_state(entity_id, attribute, value) do
+      :ok -> :ok
+      other -> Logger.warning("Espex #{state.peer} handle_state returned an unexpected value: #{inspect(other)}")
+    end
+
+    {:cont, state}
+  catch
+    kind, reason ->
+      Logger.warning("Espex #{state.peer} handle_state for #{entity_id} crashed (#{crash_label(kind, reason)})")
+      {:cont, state}
   end
 
   defp interpret_action(_socket, state, :ble_scanner_subscribe) do

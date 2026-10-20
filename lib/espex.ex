@@ -79,7 +79,7 @@ defmodule Espex do
   re-reads everything.
   """
 
-  alias Espex.{ClientInfo, DeviceConfig, Server}
+  alias Espex.{ClientInfo, DeviceConfig, HomeAssistantStates, Server}
   alias Espex.Supervisor, as: EspexSupervisor
 
   @typedoc "Why the server is asking a client to disconnect; see `disconnect_clients/2`."
@@ -155,7 +155,8 @@ defmodule Espex do
   The keys are the adapter options `Espex.Supervisor` accepts:
   `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
   `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
-  `:psk_store`, `:connection_listener`, `:sendspin`, `:wizard`. An unknown key is
+  `:psk_store`, `:connection_listener`, `:sendspin`, `:wizard`,
+  `:home_assistant_states`. An unknown key is
   `{:error, {:unknown_adapter, key}}` and a value that is neither `nil`
   nor a loadable module is `{:error, {:invalid_adapter, key, value}}`,
   as is a `:wizard` adapter on OTP older than 28; either leaves the
@@ -297,6 +298,65 @@ defmodule Espex do
       Enum.each(entries, fn {pid, _} -> send(pid, {:espex_serial_proxy_identity, identity}) end)
     end)
   end
+
+  @doc since: "0.12.0"
+  @doc """
+  Subscribe to a Home Assistant entity's state at runtime.
+
+  `subscription` is an `Espex.HomeAssistantStates.Subscription`, an
+  entity id string, or a keyword list of its fields:
+
+      :ok = Espex.subscribe_home_assistant_state("sun.sun")
+      :ok = Espex.subscribe_home_assistant_state(MyApp.EspexServer, entity_id: "sun.sun", attribute: "elevation")
+
+  Clients that already subscribed to Home Assistant states are sent the
+  new entry at once; others get it when they subscribe. States arrive at
+  the `:home_assistant_states` adapter's
+  `c:Espex.HomeAssistantStates.handle_state/3`.
+
+  The entry lives in memory and is lost if the espex server restarts.
+  Return entries that must last from
+  `c:Espex.HomeAssistantStates.subscriptions/0` instead. An entry that
+  is already in the table from elsewhere is not sent again.
+
+  Returns `{:error, :invalid_subscription}` for a bad entity id,
+  attribute or key. `server` defaults to `Espex.Server`.
+  """
+  @spec subscribe_home_assistant_state(
+          GenServer.server(),
+          HomeAssistantStates.Subscription.t() | String.t() | keyword()
+        ) ::
+          :ok | {:error, :invalid_subscription}
+  def subscribe_home_assistant_state(server \\ Server, subscription) do
+    with {:ok, entry} <- to_subscription(subscription) do
+      Server.put_ha_subscription(server, :runtime, entry)
+    end
+  end
+
+  @doc since: "0.12.0"
+  @doc """
+  Remove an entry added with `subscribe_home_assistant_state/2`.
+
+  Takes the same forms. Entries from
+  `c:Espex.HomeAssistantStates.subscriptions/0` or wizard links stay.
+  Clients are sent nothing, as the protocol has no unsubscribe: Home
+  Assistant keeps sending the entity's state until it reconnects, and
+  espex drops it. Returns `:ok` for an entry that is not subscribed.
+  """
+  @spec unsubscribe_home_assistant_state(
+          GenServer.server(),
+          HomeAssistantStates.Subscription.t() | String.t() | keyword()
+        ) :: :ok | {:error, :invalid_subscription}
+  def unsubscribe_home_assistant_state(server \\ Server, subscription) do
+    with {:ok, entry} <- to_subscription(subscription) do
+      Server.delete_ha_subscription(server, :runtime, entry)
+    end
+  end
+
+  defp to_subscription(entity_id) when is_binary(entity_id),
+    do: HomeAssistantStates.Subscription.new(entity_id: entity_id)
+
+  defp to_subscription(subscription), do: HomeAssistantStates.Subscription.new(subscription)
 
   @doc since: "0.5.0"
   @doc """

@@ -41,6 +41,7 @@ defmodule Espex.Supervisor do
         connection_listener: MyApp.Tracker, # notified when the connected-client set changes
         sendspin: MyApp.MySendspin,         # reports a Sendspin client (Espex.Sendspin)
         wizard: MyApp.MyWizard,             # device wizard (Espex.Wizard, OTP 28+)
+        home_assistant_states: MyApp.HAStates, # Home Assistant states (Espex.HomeAssistantStates)
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -102,7 +103,8 @@ defmodule Espex.Supervisor do
     :psk_store,
     :connection_listener,
     :sendspin,
-    :wizard
+    :wizard,
+    :home_assistant_states
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -175,7 +177,7 @@ defmodule Espex.Supervisor do
         # slow listener under connection churn sheds notifications instead
         # of accumulating tasks (each is only a best-effort re-query hint).
         {Task.Supervisor, name: task_supervisor_name, max_children: @max_listener_tasks},
-        {Server, name: server_name, device_config: device_config, adapters: adapters},
+        {Server, name: server_name, device_config: device_config, adapters: adapters, registry_name: registry_name},
         # IR/RF transmits run here, off the connections. The queue comes
         # first so its restart also restarts its tasks: a new queue never
         # overlaps a frame an old one started. Its own Task.Supervisor,

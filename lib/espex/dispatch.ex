@@ -4,6 +4,7 @@ defmodule Espex.Dispatch do
   import Bitwise
 
   alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy, Wizard}
+  alias Espex.HomeAssistantStates.{Subscription, Table}
 
   # Bit positions for Proto.SerialProxy{Set,Get}ModemPins{Request,Response}.line_states,
   # per ESPHome's SerialProxyLineStateFlag enum in serial_proxy.h.
@@ -55,6 +56,7 @@ defmodule Espex.Dispatch do
           | :infrared_unsubscribe
           | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
           | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
+          | {:ha_state, entity_id :: String.t(), attribute :: String.t() | nil, state :: String.t()}
           | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
              InfraredProxy.transmit_opts(), reply? :: boolean()}
@@ -181,8 +183,39 @@ defmodule Espex.Dispatch do
     {state, [{:log, :debug, "#{state.peer} subscribed to HA services"}]}
   end
 
+  # One SubscribeHomeAssistantStateResponse per entry of the table. A
+  # second request walks it again, as upstream. Entries added later are
+  # sent as they arrive (the {:espex_ha_subscriptions, ...} event).
   def handle_request(state, %Proto.SubscribeHomeAssistantStatesRequest{}) do
-    {state, [{:log, :debug, "#{state.peer} subscribed to HA states"}]}
+    responses =
+      state.ha_subscriptions
+      |> Table.sort()
+      |> Enum.map(&{:send, subscribe_state_response(&1)})
+
+    {ConnectionState.put_ha_states_subscribed(state), responses}
+  end
+
+  # A state for a subscribed entity: an entry matches on entity_id, and
+  # on attribute, where "" means the entity's state. One call per
+  # message, however many entries match. The device does not check that
+  # this client sent request 38, as upstream.
+  def handle_request(state, %Proto.HomeAssistantStateResponse{entity_id: ""}) do
+    {state, []}
+  end
+
+  def handle_request(state, %Proto.HomeAssistantStateResponse{} = msg) do
+    attribute = if msg.attribute == "", do: nil, else: msg.attribute
+
+    cond do
+      not Enum.any?(state.ha_subscriptions, &(&1.entity_id == msg.entity_id and &1.attribute == attribute)) ->
+        {state, []}
+
+      ConnectionState.adapter?(state, :home_assistant_states) ->
+        {state, [{:ha_state, msg.entity_id, attribute, msg.state}]}
+
+      true ->
+        {state, [{:log, :debug, "Home Assistant state for #{msg.entity_id} dropped — no adapter configured"}]}
+    end
   end
 
   def handle_request(state, %Proto.DisconnectRequest{reason: reason}) do
@@ -710,6 +743,19 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # Espex.Server changed the subscription table. The copy is always
+  # updated; a client that sent request 38 is also sent the entries it
+  # has not seen. Removed entries send nothing: there is no unsubscribe.
+  def handle_event(state, {:espex_ha_subscriptions, added, removed}) do
+    {state, new} = ConnectionState.update_ha_subscriptions(state, added, removed)
+
+    if state.ha_states_subscribed do
+      {state, Enum.map(Table.sort(new), &{:send, subscribe_state_response(&1)})}
+    else
+      {state, []}
+    end
+  end
+
   def handle_event(state, {:espex_ir_transmit_complete, key, device_id, success?}) do
     {state, [{:send, infrared_transmit_complete(key, device_id, success?)}]}
   end
@@ -978,6 +1024,19 @@ defmodule Espex.Dispatch do
           Proto.InfraredRFTransmitCompleteResponse.t()
   def infrared_transmit_complete(key, device_id, success?) do
     %Proto.InfraredRFTransmitCompleteResponse{key: key, device_id: device_id, success: success?}
+  end
+
+  @doc """
+  Build the `SubscribeHomeAssistantStateResponse` for a subscription
+  entry. No attribute goes on the wire as `""`.
+  """
+  @spec subscribe_state_response(Subscription.t()) :: Proto.SubscribeHomeAssistantStateResponse.t()
+  def subscribe_state_response(%Subscription{} = entry) do
+    %Proto.SubscribeHomeAssistantStateResponse{
+      entity_id: entry.entity_id,
+      attribute: entry.attribute || "",
+      once: entry.once
+    }
   end
 
   @doc """

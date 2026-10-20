@@ -1075,3 +1075,47 @@ defmodule Espex.Test.HandBuiltWizard do
   @impl true
   def input_set(key, entity_ids), do: Espex.Test.TrackingWizard.input_set(key, entity_ids)
 end
+
+defmodule Espex.Test.FakeHomeAssistantStates do
+  @moduledoc """
+  Home Assistant states adapter. `subscriptions/0` returns the list set
+  with `put_subscriptions/1`; `handle_state/3` sends
+  `{:ha_state, entity_id, attribute, state}` to the pid set with
+  `put_test_pid/1`, and raises for entity `"boom.raise"`. Tests using it
+  MUST run `async: false`.
+  """
+  @behaviour Espex.HomeAssistantStates
+
+  @key {__MODULE__, :config}
+
+  def put_test_pid(pid), do: :persistent_term.put(@key, %{config() | test: pid})
+  def put_subscriptions(subscriptions), do: :persistent_term.put(@key, %{config() | subscriptions: subscriptions})
+  def reset, do: :persistent_term.erase(@key)
+
+  defp config, do: :persistent_term.get(@key, %{test: nil, subscriptions: []})
+
+  @impl true
+  def subscriptions, do: config().subscriptions
+
+  @impl true
+  def handle_state("boom.raise", _attribute, _state), do: raise("induced handle_state failure")
+
+  def handle_state(entity_id, attribute, state) do
+    send(config().test, {:ha_state, entity_id, attribute, state})
+    :ok
+  end
+end
+
+defmodule Espex.Test.OtherHomeAssistantStates do
+  @moduledoc """
+  A second Home Assistant states adapter, subscribed to `"weather.home"`.
+  States go to the same test pid as `FakeHomeAssistantStates`.
+  """
+  @behaviour Espex.HomeAssistantStates
+
+  @impl true
+  def subscriptions, do: [Espex.HomeAssistantStates.Subscription.new!(entity_id: "weather.home")]
+
+  @impl true
+  defdelegate handle_state(entity_id, attribute, state), to: Espex.Test.FakeHomeAssistantStates
+end
