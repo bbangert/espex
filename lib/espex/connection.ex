@@ -34,6 +34,9 @@ defmodule Espex.Connection do
   # CONFIGURE is exempt so an explicit reconfigure always retries.
   @lazy_open_backoff_ms 1_000
 
+  # SendspinPairingTokenResponse.token max_data_length in api.proto.
+  @sendspin_token_max_length 127
+
   @impl ThousandIsland.Handler
   def handle_connection(socket, handler_options) do
     server_name = Keyword.fetch!(handler_options, :server_name)
@@ -707,7 +710,7 @@ defmodule Espex.Connection do
       case read_pairing_token(state) do
         # protobuf refuses a string that is not UTF-8 with the bytes in its
         # error, which would put the token in the crash log.
-        {:ok, token} when is_binary(token) and token != "" ->
+        {:ok, token} when is_binary(token) and token != "" and byte_size(token) <= @sendspin_token_max_length ->
           if String.valid?(token), do: {:ok, token}, else: unexpected_pairing_token(state)
 
         result when result in [:not_ready, :disabled, :failed] ->
@@ -1143,8 +1146,13 @@ defmodule Espex.Connection do
 
   defp load_wizard(%{wizard: module}) do
     case module.wizard() do
-      %Wizard.Document{} = document ->
+      %Wizard.Document{blob: blob} = document when is_binary(blob) ->
         document
+
+      # Built by hand rather than with new/1: check it and fill the input
+      # keys the input-set lookup matches on.
+      %Wizard.Document{pages: pages} ->
+        Wizard.Document.new!(pages: pages)
 
       other ->
         raise ArgumentError,

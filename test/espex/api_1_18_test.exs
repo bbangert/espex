@@ -304,6 +304,16 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
+    @tag adapters: %{wizard: Espex.Test.HandBuiltWizard}
+    test "a document built without new/1 gets its input keys at accept", %{port: port} do
+      {socket, _hello, _rest} = hello(port)
+      light = Espex.Wizard.fnv1_hash("light")
+
+      send_struct(socket, %Proto.WizardInputSetRequest{key: light, entity_id: "light.kitchen"})
+      assert_receive {:wizard_input_set, ^light, ["light.kitchen"]}, 1_000
+      :gen_tcp.close(socket)
+    end
+
     test "without an adapter capabilities report no wizard and the request goes unanswered", %{port: port} do
       {socket, _hello, rest} = hello(port)
 

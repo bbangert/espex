@@ -122,6 +122,27 @@ defmodule Espex.EncryptedIntegrationTest do
       refute log =~ "secret-token"
     end
 
+    test "a token over 127 bytes answers FAILED and stays out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token" <> String.duplicate("t", 116)})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED, token: ""} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "unexpected value"
+      refute log =~ "secret-token"
+    end
+
+    test "a token of exactly 127 bytes is sent", %{port: port} do
+      token = String.duplicate("t", 127)
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, token})
+
+      assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: ^token} =
+               pairing_token(port)
+    end
+
     test "a token that is not UTF-8 answers FAILED and stays out of the log", %{port: port} do
       Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token" <> <<0xFF>>})
 

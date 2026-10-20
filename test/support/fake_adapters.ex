@@ -981,3 +981,20 @@ defmodule Espex.Test.TrackingWizard do
     :ok
   end
 end
+
+defmodule Espex.Test.HandBuiltWizard do
+  @moduledoc """
+  `wizard/0` returns a `%Document{}` struct built without `Document.new/1`,
+  so its input keys are nil. `input_set/2` reports to the same listener as
+  `Espex.Test.TrackingWizard`.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Input, Page}
+
+  @impl true
+  def wizard, do: %Document{pages: [%Page{inputs: [%Input{id: "light"}]}]}
+
+  @impl true
+  def input_set(key, entity_ids), do: Espex.Test.TrackingWizard.input_set(key, entity_ids)
+end

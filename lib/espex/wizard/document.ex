@@ -37,7 +37,9 @@ defmodule Espex.Wizard.Document do
     * input ids are unique and their hashes do not collide
     * the compressed document fits one API message (65511 bytes)
 
-  It also fills each input's `key` from its `id`.
+  It also fills each input's `key` from its `id`. A `%Document{}` built
+  as a struct without `new/1` is run through it when a connection is
+  accepted.
 
   Strings are passed to Home Assistant verbatim, so they may be
   translation placeholders such as `"[%key:component::light::title%]"`.
@@ -196,10 +198,9 @@ defmodule Espex.Wizard.Document do
 
   defp check_text(other, _max, what), do: invalid("#{what} must be a string, got #{inspect(other)}")
 
-  defp check_string(string, max, what) do
-    if string == "", do: invalid("#{what} is empty")
-    check_text(string, max, what)
-  end
+  defp check_string("", _max, what), do: invalid("#{what} is empty")
+  defp check_string(string, max, what) when is_binary(string), do: check_text(string, max, what)
+  defp check_string(other, _max, what), do: invalid("#{what} must be a string, got #{inspect(other)}")
 
   defp check_strings(strings, max, what) do
     check_list(strings, what)

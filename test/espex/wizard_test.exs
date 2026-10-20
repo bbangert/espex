@@ -83,6 +83,9 @@ defmodule Espex.WizardTest do
       assert error(input.(%EntityFilter{})) =~ "filter sets no field"
       assert error(input.(%EntityFilter{integration: ""})) =~ "filter sets no field"
       assert error(input.(%EntityFilter{domain: [""]})) =~ "domain is empty"
+      assert error(input.(%EntityFilter{domain: [nil]})) =~ "domain must be a string, got nil"
+      assert error(input.(%EntityFilter{device_class: ["door", 1]})) =~ "device_class must be a string"
+      assert error(input.(%EntityFilter{supported_features: [nil]})) =~ "supported_features must be a string"
       assert error(input.(%EntityFilter{integration: String.duplicate("i", 64)})) =~ "integration is 64 bytes"
       assert error(input.(%EntityFilter{device_class: [String.duplicate("c", 64)]})) =~ "device_class"
       assert {:ok, _} = Document.new(pages: input.(%EntityFilter{supported_features: [String.duplicate("f", 127)]}))
