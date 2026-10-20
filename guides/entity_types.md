@@ -195,6 +195,9 @@ ones (with `has_*` flags).
 | `ClimateStateResponse` | State |
 | `ClimateCommandRequest` | Command (uses `has_*` flags) |
 
+The state has `missing_state` (since API 1.18): set it `true` while the
+device has no valid state yet.
+
 Key advertisement fields:
 
 - `supported_modes` — list of `Espex.Proto.ClimateMode` atoms:
@@ -225,7 +228,7 @@ Key advertisement fields:
 Which form a client reads depends on the API version the device
 advertises: below 1.13 it ignores `feature_flags` and derives the
 capabilities from the booleans; from 1.13 it reads only `feature_flags`.
-Espex advertises 1.17, so set `feature_flags`; keep the booleans too if
+Espex advertises 1.18, so set `feature_flags`; keep the booleans too if
 older clients matter to you.
 
 ### Mode vs action
@@ -745,6 +748,9 @@ Extra field of note on the advertisement: `assumed_state` — set `true`
 if the switch cannot reliably read back its own state (i.e. the server
 is acting blind).
 
+Set `missing_state: true` on the state while the switch has no known
+state yet, as for `Sensor`. Since API 1.18.
+
 ```elixir
 @switch_key 1001
 
@@ -904,6 +910,9 @@ individual `has_*` booleans.
 | `ListEntitiesWaterHeaterResponse` | Advertisement |
 | `WaterHeaterStateResponse` | State |
 | `WaterHeaterCommandRequest` | Command (uses `has_fields` bitmask) |
+
+The state has `missing_state` (since API 1.18): set it `true` while the
+water heater has no valid state yet.
 
 Advertisement: `min_temperature`, `max_temperature`,
 `target_temperature_step`, `supported_modes` (list of

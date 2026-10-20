@@ -1,4 +1,5 @@
 defmodule Espex.SerialProxy.Identity do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   The identity of the device behind a serial proxy port (API 1.18).
 

@@ -1,4 +1,5 @@
 defmodule Espex.Wizard.Page do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   One page of the device wizard. Pages are shown in the order listed.
 

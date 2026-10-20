@@ -1,4 +1,5 @@
 defmodule Espex.Wizard.Entity do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   An entity of this device that a wizard page shows the user, for
   example a switch to turn on.

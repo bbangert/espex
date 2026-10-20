@@ -1,4 +1,5 @@
 defmodule Espex.Sendspin do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   Behaviour for Sendspin adapters (API 1.18).
 

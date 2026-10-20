@@ -1,4 +1,5 @@
 defmodule Espex.Wizard.Document do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   The device wizard: the pages Home Assistant shows when the device is
   added. Build it with `new/1` and return it from `c:Espex.Wizard.wizard/0`.
@@ -119,6 +120,7 @@ defmodule Espex.Wizard.Document do
 
   # -- Checks --
 
+  @spec invalid(String.t()) :: no_return()
   defp invalid(message), do: throw({:invalid_wizard, message})
 
   defp check_page({%Page{} = page, n}) do

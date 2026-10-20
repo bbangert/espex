@@ -1,4 +1,5 @@
 defmodule Espex.Wizard.EntityFilter do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   Which Home Assistant entities the user may pick for an
   `Espex.Wizard.Input`. Mirrors Home Assistant's

@@ -51,6 +51,12 @@ defmodule Espex.Api118Test do
     send_struct(socket, %Proto.InfraredRFTransmitRawTimingsRequest{key: key, device_id: 5, timings: timings})
   end
 
+  test "hello advertises API 1.18", %{port: port} do
+    {socket, hello, _} = hello(port)
+    assert {hello.api_version_major, hello.api_version_minor} == {1, 18}
+    :gen_tcp.close(socket)
+  end
+
   describe "InfraredRFTransmitCompleteResponse" do
     @describetag adapters: %{infrared_proxy: Espex.Test.KeyedInfraredProxy}
 

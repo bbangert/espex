@@ -1,4 +1,5 @@
 defmodule Espex.Wizard do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   Behaviour for device wizard adapters (API 1.18).
 

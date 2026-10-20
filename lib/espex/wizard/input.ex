@@ -1,4 +1,5 @@
 defmodule Espex.Wizard.Input do
+  @moduledoc since: "0.12.0"
   @moduledoc """
   A wizard input: the user picks a Home Assistant entity, and the client
   sends its entity id to the device.

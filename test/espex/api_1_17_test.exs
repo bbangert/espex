@@ -69,9 +69,10 @@ defmodule Espex.Api117Test do
     rest
   end
 
-  test "hello advertises API 1.17", %{port: port} do
+  test "hello advertises at least API 1.17", %{port: port} do
     {socket, hello, _} = hello(port)
-    assert {hello.api_version_major, hello.api_version_minor} == {1, 17}
+    assert hello.api_version_major == 1
+    assert hello.api_version_minor >= 17
     :gen_tcp.close(socket)
   end
 

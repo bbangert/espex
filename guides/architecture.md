@@ -248,7 +248,13 @@ Pass options to `Espex.start_link/1` (or `Espex.Supervisor.start_link/1`):
 | `:serial_proxy` | — | Module implementing `Espex.SerialProxy` |
 | `:zwave_proxy` | — | Module implementing `Espex.ZWaveProxy` |
 | `:infrared_proxy` | — | Module implementing `Espex.InfraredProxy` |
+| `:bluetooth_scanner` | — | Module implementing `Espex.BluetoothScanner` |
+| `:bluetooth_proxy` | — | Module implementing `Espex.BluetoothProxy` |
 | `:entity_provider` | — | Module implementing `Espex.EntityProvider` |
+| `:psk_store` | — | Module implementing `Espex.PskStore` |
+| `:connection_listener` | — | Module implementing `Espex.ConnectionListener` |
+| `:sendspin` | — | Module implementing `Espex.Sendspin` |
+| `:wizard` | — | Module implementing `Espex.Wizard` (OTP 28+) |
 | `:mdns` | — | Module implementing `Espex.Mdns`, e.g. `Espex.Mdns.MdnsLite` |
 
 Any adapter key you omit disables that feature.
