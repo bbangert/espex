@@ -886,6 +886,21 @@ defmodule Espex.DispatchTest do
       assert {resp.key, resp.device_id, resp.success} == {1, 3, false}
     end
 
+    test "with adapter, more than 30 s on air: refuses with success: false" do
+      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
+      long = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [10_000_000, -5_000_001], repeat_count: 2}
+
+      assert {_s, [{:log, :warning, message}, {:send, %Proto.InfraredRFTransmitCompleteResponse{success: false}}]} =
+               Dispatch.handle_request(state(adapters: adapters), long)
+
+      assert message =~ "longer than 30 s"
+
+      at_limit = %{long | timings: [10_000_000, -5_000_000]}
+
+      assert {_s, [:infrared_subscribe, {:infrared_transmit, 99, 0, _, _}]} =
+               Dispatch.handle_request(state(adapters: adapters), at_limit)
+    end
+
     test "with adapter, no timings: refuses with success: false without transmitting" do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
       req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 2, timings: []}

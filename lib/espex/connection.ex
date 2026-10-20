@@ -697,39 +697,27 @@ defmodule Espex.Connection do
   end
 
   defp interpret_action(socket, state, {:send_device_capabilities, response}) do
-    adapter = state.adapters.sendspin
-
-    sendspin = %Proto.SendspinCapabilities{
-      feature_flags: sendspin_feature_flags(adapter),
-      client_id: adapter.client_id() || ""
-    }
-
-    send_or_halt(socket, state, %{response | sendspin: sendspin})
+    send_or_halt(socket, state, %{response | sendspin: read_sendspin_capabilities(state)})
   end
 
   # The response carries a secret: neither it nor the adapter's return
   # value may reach a log, so a bad return or crash is logged by shape only.
   defp interpret_action(socket, state, :sendspin_pairing_token) do
-    response =
+    status =
       case read_pairing_token(state) do
-        {:ok, token} when is_binary(token) ->
-          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: token}
+        # protobuf refuses a string that is not UTF-8 with the bytes in its
+        # error, which would put the token in the crash log.
+        {:ok, token} when is_binary(token) and token != "" ->
+          if String.valid?(token), do: {:ok, token}, else: unexpected_pairing_token(state)
 
-        :not_ready ->
-          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY}
-
-        :disabled ->
-          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED}
-
-        :failed ->
-          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+        result when result in [:not_ready, :disabled, :failed] ->
+          result
 
         _other ->
-          Logger.warning("Espex #{state.peer} Sendspin pairing_token returned an unexpected value — answering FAILED")
-          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+          unexpected_pairing_token(state)
       end
 
-    send_or_halt(socket, state, response)
+    send_or_halt(socket, state, pairing_token_response(status))
   end
 
   defp interpret_action(_socket, state, {:wizard_input_set, key, entity_ids}) do
@@ -1327,6 +1315,27 @@ defmodule Espex.Connection do
     end
   end
 
+  # Read per request: the values only exist once the host's Sendspin
+  # client has started, and capabilities are read on every connect, so a
+  # failing adapter answers an empty client id rather than closing the
+  # connection.
+  defp read_sendspin_capabilities(state) do
+    adapter = state.adapters.sendspin
+    flags = sendspin_feature_flags(adapter)
+    client_id = adapter.client_id()
+
+    if is_integer(flags) and flags >= 0 and (client_id == nil or (is_binary(client_id) and String.valid?(client_id))) do
+      %Proto.SendspinCapabilities{feature_flags: flags, client_id: client_id || ""}
+    else
+      Logger.warning("Espex #{state.peer} Sendspin feature_flags/client_id returned an unexpected value")
+      %Proto.SendspinCapabilities{feature_flags: Sendspin.pairing_token_feature(), client_id: ""}
+    end
+  catch
+    kind, reason ->
+      Logger.warning("Espex #{state.peer} Sendspin capabilities crashed (#{crash_label(kind, reason)})")
+      %Proto.SendspinCapabilities{feature_flags: Sendspin.pairing_token_feature(), client_id: ""}
+  end
+
   defp sendspin_feature_flags(adapter) do
     if Code.ensure_loaded?(adapter) and function_exported?(adapter, :feature_flags, 0) do
       adapter.feature_flags()
@@ -1335,12 +1344,34 @@ defmodule Espex.Connection do
     end
   end
 
+  defp unexpected_pairing_token(state) do
+    Logger.warning("Espex #{state.peer} Sendspin pairing_token returned an unexpected value — answering FAILED")
+    :failed
+  end
+
+  defp pairing_token_response({:ok, token}),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: token}
+
+  defp pairing_token_response(:not_ready),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY}
+
+  defp pairing_token_response(:disabled),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED}
+
+  defp pairing_token_response(:failed),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+
+  defp crash_label(:error, reason) when is_exception(reason), do: inspect(reason.__struct__)
+  defp crash_label(kind, _reason), do: to_string(kind)
+
   defp read_pairing_token(state) do
     state.adapters.sendspin.pairing_token()
   catch
     kind, reason ->
-      label = if kind == :error and is_exception(reason), do: inspect(reason.__struct__), else: to_string(kind)
-      Logger.warning("Espex #{state.peer} Sendspin pairing_token crashed (#{label}) — answering FAILED")
+      Logger.warning(
+        "Espex #{state.peer} Sendspin pairing_token crashed (#{crash_label(kind, reason)}) — answering FAILED"
+      )
+
       :failed
   end
 

@@ -30,6 +30,11 @@ defmodule Espex.Sendspin do
   values each time. Keep the callbacks fast: they run in the connection
   process.
 
+  Clients read capabilities on every connect. If `c:client_id/0` or
+  `c:feature_flags/0` raises or returns something that is not a string
+  (or `nil`) and a non-negative integer, espex logs it and reports an
+  empty client id, rather than dropping the connection.
+
   ## Pairing token
 
   `c:pairing_token/0` returns one of these, sent as
@@ -42,7 +47,8 @@ defmodule Espex.Sendspin do
   | `:disabled` | `DISABLED` | Sendspin is off and has not started since boot |
   | `:failed` | `FAILED` | The client failed to start and will not until restart |
 
-  If the callback raises or returns anything else, espex logs it and
+  The token must be a non-empty UTF-8 string. If the callback raises or
+  returns anything else, espex logs that it did, without the value, and
   answers `FAILED`.
 
   ## Encryption is required

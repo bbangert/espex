@@ -35,7 +35,7 @@ defmodule Espex.Wizard.Document do
       `supported_features` entries 1-127
     * `max_length` is 255-4095 and only on a `multiple: true` input
     * input ids are unique and their hashes do not collide
-    * the compressed document fits one API message (65512 bytes)
+    * the compressed document fits one API message (65511 bytes)
 
   It also fills each input's `key` from its `id`.
 
@@ -61,10 +61,11 @@ defmodule Espex.Wizard.Document do
   @json_version 1
   @zstd_level 19
 
-  # One API message holds at most 65535 bytes with the largest frame
-  # header (7, Noise) and footer (16, the MAC) included; aioesphomeapi
-  # refuses more than 1 MiB of decompressed JSON.
-  @blob_max_size 65_535 - 7 - 16
+  # A Noise frame's 16-bit size covers the inner header (4), the
+  # DeviceWizardResponse encoding (a 1-byte tag and a 3-byte length ahead
+  # of the blob) and the MAC (16). aioesphomeapi refuses more than 1 MiB
+  # of decompressed JSON.
+  @blob_max_size 65_535 - 4 - 4 - 16
   @json_max_size 1 <<< 20
 
   @title_max 127

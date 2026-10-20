@@ -110,11 +110,29 @@ defmodule Espex.EncryptedIntegrationTest do
       reply
     end
 
-    test "OK carries the token", %{port: port} do
+    test "OK carries the token, which stays out of the log", %{port: port} do
       Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token"})
 
-      assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: "secret-token"} =
-               pairing_token(port)
+      log =
+        ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: "secret-token"} =
+                   pairing_token(port)
+        end)
+
+      refute log =~ "secret-token"
+    end
+
+    test "a token that is not UTF-8 answers FAILED and stays out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token" <> <<0xFF>>})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED, token: ""} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "unexpected value"
+      refute log =~ "secret-token"
     end
 
     for {result, status} <- [

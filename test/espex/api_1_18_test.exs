@@ -108,7 +108,7 @@ defmodule Espex.Api118Test do
 
       transmit(a, 42)
       assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(a, rest_a)
-      assert {:error, :timeout} = recv_struct(b, rest_b, 200)
+      assert_nothing_sent(b, rest_b)
 
       :gen_tcp.close(a)
       :gen_tcp.close(b)
@@ -126,7 +126,7 @@ defmodule Espex.Api118Test do
       assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: nil}, rest} = recv_struct(socket, rest)
 
       send_struct(socket, %Proto.SendspinPairingTokenRequest{})
-      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
 
@@ -155,14 +155,39 @@ defmodule Espex.Api118Test do
     end
 
     @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
-    test "a plaintext connection gets ENCRYPTION_REQUIRED and no token", %{port: port} do
-      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token"})
-      {socket, _hello, rest} = hello(port)
-      send_struct(socket, %Proto.SendspinPairingTokenRequest{})
+    test "a plaintext connection gets ENCRYPTION_REQUIRED without asking the adapter", %{port: port} do
+      # A raising adapter would log a crash if it were asked.
+      Espex.Test.FakeSendspin.put(pairing_token: :raise)
 
-      assert {:ok, %Proto.SendspinPairingTokenResponse{} = resp, _} = recv_struct(socket, rest)
-      assert {resp.status, resp.token} == {:SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED, ""}
-      :gen_tcp.close(socket)
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {socket, _hello, rest} = hello(port)
+          send_struct(socket, %Proto.SendspinPairingTokenRequest{})
+
+          assert {:ok, %Proto.SendspinPairingTokenResponse{} = resp, _} = recv_struct(socket, rest)
+          assert {resp.status, resp.token} == {:SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED, ""}
+          :gen_tcp.close(socket)
+        end)
+
+      refute log =~ "pairing_token"
+      refute log =~ "secret-token"
+    end
+
+    @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
+    test "a crashing client_id/0 reports an empty client id and keeps the connection", %{port: port} do
+      Espex.Test.FakeSendspin.put(client_id: :raise)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {socket, _hello, rest} = hello(port)
+          send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+          assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: sendspin}, rest} = recv_struct(socket, rest)
+          assert sendspin == %Proto.SendspinCapabilities{feature_flags: 1, client_id: ""}
+          assert_nothing_sent(socket, rest)
+          :gen_tcp.close(socket)
+        end)
+
+      assert log =~ "Sendspin capabilities crashed (RuntimeError)"
     end
   end
 
@@ -211,7 +236,7 @@ defmodule Espex.Api118Test do
       :ok = Espex.push_serial_proxy_identity(server_name, identity)
 
       assert {:ok, %Proto.SerialProxyIdentity{instance: 1, product: "Stick"}, _} = recv_struct(subscribed, rest)
-      assert {:error, :timeout} = recv_struct(other, other_rest, 200)
+      assert_nothing_sent(other, other_rest)
 
       :gen_tcp.close(subscribed)
       :gen_tcp.close(other)
@@ -224,13 +249,13 @@ defmodule Espex.Api118Test do
       {:ok, _, rest} = recv_struct(socket, rest)
 
       :ok = Espex.push_serial_proxy_identity(server_name, %Espex.SerialProxy.Identity{instance: 5})
-      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
 
     test "without a serial adapter the subscribe goes unanswered", %{port: port} do
       {socket, rest} = subscribe_identity(port)
-      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
   end
@@ -274,9 +299,7 @@ defmodule Espex.Api118Test do
 
       send_struct(socket, %Proto.WizardInputSetRequest{key: calendars, entity_id: "calendar.a,"})
       send_struct(socket, %Proto.WizardInputSetRequest{key: 1, entity_id: "light.kitchen"})
-      # A ping after the ignored requests proves the connection has handled them.
-      send_struct(socket, %Proto.PingRequest{})
-      assert {:ok, %Proto.PingResponse{}, _} = recv_struct(socket)
+      assert_nothing_sent(socket)
       refute_received {:wizard_input_set, _, _}
       :gen_tcp.close(socket)
     end
@@ -288,7 +311,7 @@ defmodule Espex.Api118Test do
       assert {:ok, %Proto.DeviceCapabilitiesResponse{wizard: nil}, rest} = recv_struct(socket, rest)
 
       send_struct(socket, %Proto.DeviceWizardRequest{})
-      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
   end

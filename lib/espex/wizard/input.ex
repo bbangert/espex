@@ -31,8 +31,10 @@ defmodule Espex.Wizard.Input do
   @enforce_keys [:id]
   defstruct [:id, key: nil, description: nil, multiple: false, max_length: nil, entity_filters: []]
 
-  # Home Assistant entity ids are at most 255 bytes (api_wizard.h).
+  # Home Assistant entity ids are at most 255 bytes (api_wizard.h); no
+  # input accepts more than 4095 (api.proto max_data_length).
   @entity_id_max_length 255
+  @value_max_length 4095
 
   @doc false
   # Validate the entity_id of a WizardInputSetRequest as ESPHome's
@@ -41,6 +43,8 @@ defmodule Espex.Wizard.Input do
   # spaces, must be non-empty with a '.', and the list joined without the
   # spaces must fit max_length.
   @spec parse_entity_ids(t(), String.t()) :: {:ok, [String.t()]} | :error
+  def parse_entity_ids(%__MODULE__{}, value) when byte_size(value) > @value_max_length, do: :error
+
   def parse_entity_ids(%__MODULE__{multiple: false}, value) do
     if entity_id?(value) and byte_size(value) <= @entity_id_max_length, do: {:ok, [value]}, else: :error
   end

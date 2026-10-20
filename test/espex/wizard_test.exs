@@ -223,6 +223,13 @@ defmodule Espex.WizardTest do
       assert Input.parse_entity_ids(%{@multiple | max_length: 299}, spaced) == {:ok, ids}
     end
 
+    test "a value over 4095 bytes is refused before it is split" do
+      ids = Enum.map_join(1..400, ",", &"light.l#{&1}")
+      assert byte_size(ids) > 4095
+      assert Input.parse_entity_ids(%{@multiple | max_length: 4095}, ids) == :error
+      assert Input.parse_entity_ids(@single, String.duplicate("a.", 2048)) == :error
+    end
+
     test "a multiple input defaults max_length to 255" do
       at_limit = "calendar." <> String.duplicate("a", 246)
       assert byte_size(at_limit) == 255

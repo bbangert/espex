@@ -10,6 +10,11 @@ defmodule Espex.Dispatch do
   @rts_bit 0x01
   @dtr_bit 0x02
 
+  # transmit_raw/3 blocks the connection for the frame's air time, so a
+  # request that would hold it longer than this is refused. Upstream
+  # reports a transmit 30 s overdue as failed.
+  @infrared_max_air_time_us 30_000_000
+
   # Every protobuf struct in this list routes through
   # Espex.EntityProvider.handle_command/1 when a provider is configured.
   @entity_command_types [
@@ -384,6 +389,13 @@ defmodule Espex.Dispatch do
         {state,
          [
            {:log, :warning, "infrared transmit for key #{req.key} refused — no timings"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
+
+      infrared_air_time_us(req) > @infrared_max_air_time_us ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit for key #{req.key} refused — longer than 30 s on air"},
            {:send, infrared_transmit_complete(req.key, req.device_id, false)}
          ]}
 
@@ -1197,6 +1209,10 @@ defmodule Espex.Dispatch do
          {:send, response}
        ]}
     end
+  end
+
+  defp infrared_air_time_us(req) do
+    Enum.reduce(req.timings, 0, &(abs(&1) + &2)) * max(req.repeat_count, 1)
   end
 
   defp handle_infrared_transmit(state, req) do

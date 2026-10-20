@@ -857,7 +857,8 @@ defmodule Espex.Test.FakeSendspin do
   @moduledoc """
   Sendspin adapter whose answers come from `:persistent_term`, so a test
   can change them between requests. Set with `put/1`, clear with
-  `reset/0`. A `pairing_token: :raise` makes the callback raise with the
+  `reset/0`. `client_id: :raise` makes `client_id/0` raise. A
+  `pairing_token: :raise` makes the callback raise with the
   token-shaped string "secret-token" in the message. Tests using it MUST
   run `async: false`.
   """
@@ -872,7 +873,12 @@ defmodule Espex.Test.FakeSendspin do
   defp config, do: :persistent_term.get(@key, @defaults)
 
   @impl true
-  def client_id, do: config().client_id
+  def client_id do
+    case config().client_id do
+      :raise -> raise "client not started"
+      other -> other
+    end
+  end
 
   @impl true
   def pairing_token do

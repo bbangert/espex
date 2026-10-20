@@ -65,7 +65,8 @@ defmodule Espex.InfraredProxy do
 
   The reply is the return of `c:transmit_raw/3`. `:ok` reports
   `success: true`, `{:error, _}` reports `success: false`. espex refuses
-  a request with no timings with `success: false` without calling the
+  a request with no timings, or one whose timings times repeats come to
+  more than 30 s on air, with `success: false` without calling the
   adapter.
 
   So return from `c:transmit_raw/3` once the frame, all repeats included,
