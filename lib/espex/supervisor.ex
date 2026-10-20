@@ -325,6 +325,7 @@ defmodule Espex.Supervisor do
     end
   end
 
+  @spec outgoing_invalid!(String.t()) :: no_return()
   defp outgoing_invalid!(message), do: raise(ArgumentError, "invalid :outgoing_connection: " <> message)
 
   # The dialer goes first: its crash restarts the dialed connection's

@@ -52,13 +52,16 @@ defmodule Espex.InfraredQueue do
 
   @doc false
   @spec air_time_us([integer()], non_neg_integer()) :: non_neg_integer()
-  def air_time_us(timings, repeat_count) do
-    Enum.reduce(timings, 0, &(abs(&1) + &2)) * max(repeat_count, 1)
+  def air_time_us(timings, repeat_count) when is_integer(repeat_count) do
+    sum_abs(timings, 0) * max(repeat_count, 1)
   end
+
+  defp sum_abs([], total), do: total
+  defp sum_abs([timing | rest], total) when is_integer(timing), do: sum_abs(rest, total + abs(timing))
 
   @doc false
   @spec deadline_ms(non_neg_integer(), non_neg_integer()) :: non_neg_integer()
-  def deadline_ms(air_time_us, grace_ms) do
+  def deadline_ms(air_time_us, grace_ms) when is_integer(air_time_us) and is_integer(grace_ms) do
     grace_ms + min(div(air_time_us + 999, 1_000), @max_air_ms)
   end
 

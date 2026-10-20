@@ -15,13 +15,16 @@ defmodule Espex.Dialer.Backoff do
   def initial, do: @min_ms
 
   @spec next(pos_integer()) :: pos_integer()
-  def next(backoff), do: min(backoff * 2, @max_ms)
+  def next(backoff) when is_integer(backoff), do: min(backoff * 2, @max_ms)
 
   @doc "The wait for `backoff`: uniform within ±20 %."
   @spec jittered(pos_integer(), random()) :: non_neg_integer()
-  def jittered(backoff, random \\ &default_random/1) do
+  def jittered(backoff, random \\ &default_random/1) when is_integer(backoff) do
     spread = div(backoff, 5)
-    backoff - spread + random.(2 * spread + 1)
+
+    case random.(2 * spread + 1) do
+      offset when is_integer(offset) -> backoff - spread + offset
+    end
   end
 
   defp default_random(n), do: :rand.uniform(n) - 1
