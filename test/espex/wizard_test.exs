@@ -77,6 +77,26 @@ defmodule Espex.WizardTest do
                "max_length only applies to an input with multiple: true"
     end
 
+    test "turns links into subscriptions without an entity id" do
+      alias Espex.HomeAssistantStates.Subscription
+
+      {:ok, document} =
+        Document.new(pages: [%Page{inputs: [%Input{id: "x", links: [[], %Subscription{attribute: "unit"}]}]}])
+
+      assert [%Page{inputs: [%Input{links: links}]}] = document.pages
+      assert links == [%Subscription{}, %Subscription{attribute: "unit"}]
+    end
+
+    test "refuses links on a multiple input, with an entity id, or with a bad field" do
+      assert error([%Page{inputs: [%Input{id: "x", multiple: true, links: [[]]}]}]) =~ "cannot be multiple"
+
+      assert error([%Page{inputs: [%Input{id: "x", links: [[entity_id: "a.b"]]}]}]) =~
+               "takes its entity_id from the input"
+
+      assert error([%Page{inputs: [%Input{id: "x", links: [[once: 1]]}]}]) =~ "once must be a boolean"
+      assert error([%Page{inputs: [%Input{id: "x", links: :none}]}]) =~ "links must be a list"
+    end
+
     test "a filter sets at least one field, with strings of 1-63 bytes (supported_features 1-127)" do
       input = fn filter -> [%Page{inputs: [%Input{id: "x", entity_filters: [filter]}]}] end
 
@@ -123,6 +143,12 @@ defmodule Espex.WizardTest do
   end
 
   describe "Document.to_blob/1" do
+    test "leaves links out: they stay on the device" do
+      linked = Document.new!(pages: [%Page{inputs: [%Input{id: "x", links: [[]]}]}])
+      plain = Document.new!(pages: [%Page{inputs: [%Input{id: "x"}]}])
+      assert decode(linked) == decode(plain)
+    end
+
     test "is version 1 JSON with empty and unset values left out" do
       document =
         Document.new!(

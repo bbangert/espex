@@ -339,6 +339,114 @@ defmodule Espex.Api118Test do
     end
   end
 
+  describe "linked wizard inputs" do
+    @describetag adapters: %{wizard: Espex.Test.LinkedWizard, home_assistant_states: Espex.Test.FakeHomeAssistantStates}
+
+    setup do
+      Espex.Test.FakeHomeAssistantStates.put_test_pid(self())
+      :persistent_term.put({Espex.Test.TrackingWizard, :listener}, self())
+
+      on_exit(fn ->
+        Espex.Test.FakeHomeAssistantStates.reset()
+        :persistent_term.erase({Espex.Test.TrackingWizard, :listener})
+      end)
+
+      %{outdoor: Espex.Wizard.fnv1_hash("outdoor")}
+    end
+
+    defp subscribe_states(socket, rest) do
+      send_struct(socket, %Proto.SubscribeHomeAssistantStatesRequest{})
+      sync(socket, rest)
+    end
+
+    defp set_input(socket, key, value),
+      do: send_struct(socket, %Proto.WizardInputSetRequest{key: key, entity_id: value})
+
+    # The two entries of the "outdoor" input for `entity_id`, as sent.
+    defp recv_links(socket, rest, entity_id) do
+      {:ok, %Proto.SubscribeHomeAssistantStateResponse{} = first, rest} = recv_struct(socket, rest)
+      {:ok, %Proto.SubscribeHomeAssistantStateResponse{} = second, rest} = recv_struct(socket, rest)
+
+      assert [{first.entity_id, first.attribute}, {second.entity_id, second.attribute}] ==
+               [{entity_id, ""}, {entity_id, "unit_of_measurement"}]
+
+      rest
+    end
+
+    # A ping round trip orders every earlier frame's handling before it.
+    defp sync(socket, rest) do
+      send_struct(socket, %Proto.PingRequest{})
+      {:ok, %Proto.PingResponse{}, rest} = recv_struct(socket, rest)
+      rest
+    end
+
+    test "a set sends the linked entries to every subscribed client, the sender included",
+         %{port: port, outdoor: outdoor} do
+      {sender, _hello, rest_s} = hello(port)
+      rest_s = subscribe_states(sender, rest_s)
+      {other, _hello, rest_o} = hello(port)
+      rest_o = subscribe_states(other, rest_o)
+      {quiet, _hello, rest_q} = hello(port)
+
+      set_input(sender, outdoor, "sensor.outdoor")
+      assert_receive {:wizard_input_set, ^outdoor, ["sensor.outdoor"]}
+
+      _ = recv_links(sender, rest_s, "sensor.outdoor")
+      _ = recv_links(other, rest_o, "sensor.outdoor")
+      assert_nothing_sent(quiet, rest_q)
+
+      # Any client's states for the entity now reach the adapter.
+      send_struct(quiet, %Proto.HomeAssistantStateResponse{
+        entity_id: "sensor.outdoor",
+        attribute: "unit_of_measurement",
+        state: "°C"
+      })
+
+      assert_receive {:ha_state, "sensor.outdoor", "unit_of_measurement", "°C"}
+
+      Enum.each([sender, other, quiet], &:gen_tcp.close/1)
+    end
+
+    test "only a new valid value resends, and it replaces the old entries", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe_states(socket, rest)
+
+      set_input(socket, outdoor, "sensor.a")
+      rest = recv_links(socket, rest, "sensor.a")
+
+      # Invalid, the same value again, and an unlinked input: nothing.
+      set_input(socket, outdoor, "nodot")
+      set_input(socket, outdoor, "sensor.a")
+      set_input(socket, Espex.Wizard.fnv1_hash("light"), "light.kitchen")
+      rest = sync(socket, rest)
+
+      set_input(socket, outdoor, "sensor.b")
+      rest = recv_links(socket, rest, "sensor.b")
+
+      send_struct(socket, %Proto.HomeAssistantStateResponse{entity_id: "sensor.a", state: "1"})
+      send_struct(socket, %Proto.HomeAssistantStateResponse{entity_id: "sensor.b", state: "2"})
+      rest = sync(socket, rest)
+      refute_received {:ha_state, "sensor.a", _, _}
+      assert_received {:ha_state, "sensor.b", nil, "2"}
+
+      # Back to A: its entries are sent again, so the device gets A's state.
+      set_input(socket, outdoor, "sensor.a")
+      _ = recv_links(socket, rest, "sensor.a")
+      :gen_tcp.close(socket)
+    end
+
+    test "a client that sets an input before subscribing gets it in the walk", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+      set_input(socket, outdoor, "sensor.outdoor")
+      rest = sync(socket, rest)
+
+      send_struct(socket, %Proto.SubscribeHomeAssistantStatesRequest{})
+      rest = recv_links(socket, rest, "sensor.outdoor")
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+  end
+
   describe "device wizard" do
     setup do
       key = {Espex.Test.TrackingWizard, :listener}

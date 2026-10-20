@@ -13,10 +13,43 @@ defmodule Espex.Wizard.Input do
       bytes joined by `,`, the device accepts. 255-4095; 255 when `nil`.
     * `entity_filters` — `Espex.Wizard.EntityFilter` structs limiting
       what the user may pick; any entity when empty
+    * `links` — Home Assistant state subscriptions that follow the
+      picked entity (see "Linked inputs" below); none by default
 
   espex hands the chosen ids to `c:Espex.Wizard.input_set/2` by `key`.
+
+  ## Linked inputs
+
+  An input with `links` also subscribes to the picked entity's state,
+  like ESPHome's `homeassistant` sensors linked to a wizard input. Each
+  link is an `Espex.HomeAssistantStates.Subscription` without an
+  `entity_id` (or a keyword list of its fields); the picked entity id
+  fills it in:
+
+      %Input{
+        id: "outdoor_temperature",
+        entity_filters: [%EntityFilter{domain: ["sensor"]}],
+        links: [[], [attribute: "unit_of_measurement"]]
+      }
+
+  When the client sets the input, the filled-in entries join the
+  subscription table, replacing the ones from the input's previous
+  value. Clients that subscribed to Home Assistant states, the one that
+  set the input included, are sent the new entries, and the states
+  arrive at `c:Espex.HomeAssistantStates.handle_state/3`.
+
+    * A `multiple: true` input cannot have links.
+    * Setting the value the input already has sends nothing. ESPHome
+      firmware sends the entries again, which makes Home Assistant track
+      the entity twice.
+    * Changing the value from A to B and back to A sends A's entries
+      again, so the device gets A's current state. Home Assistant then
+      tracks A twice on that connection, as with firmware.
+    * Links live in memory. Clients send every input again when they
+      connect, before subscribing to states, so nothing is stored.
   """
 
+  alias Espex.HomeAssistantStates.Subscription
   alias Espex.Wizard.EntityFilter
 
   @type t :: %__MODULE__{
@@ -25,11 +58,12 @@ defmodule Espex.Wizard.Input do
           description: String.t() | nil,
           multiple: boolean(),
           max_length: 255..4095 | nil,
-          entity_filters: [EntityFilter.t()]
+          entity_filters: [EntityFilter.t()],
+          links: [Subscription.t() | keyword()]
         }
 
   @enforce_keys [:id]
-  defstruct [:id, key: nil, description: nil, multiple: false, max_length: nil, entity_filters: []]
+  defstruct [:id, key: nil, description: nil, multiple: false, max_length: nil, entity_filters: [], links: []]
 
   # Home Assistant entity ids are at most 255 bytes (api_wizard.h); no
   # input accepts more than 4095 (api.proto max_data_length).

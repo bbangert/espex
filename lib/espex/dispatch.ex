@@ -57,6 +57,7 @@ defmodule Espex.Dispatch do
           | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
           | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
           | {:ha_state, entity_id :: String.t(), attribute :: String.t() | nil, state :: String.t()}
+          | {:ha_link_set, key :: non_neg_integer(), [Subscription.t()]}
           | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
              InfraredProxy.transmit_opts(), reply? :: boolean()}
@@ -441,11 +442,12 @@ defmodule Espex.Dispatch do
   end
 
   # As api_wizard.cpp: no reply, and an ignored request is only logged.
-  # The value stays out of the log.
+  # The value stays out of the log. A linked input's entries follow the
+  # value into the subscription table (see Espex.Wizard.Input).
   def handle_request(state, %Proto.WizardInputSetRequest{key: key, entity_id: value}) do
     with %Wizard.Input{} = input <- Wizard.Document.find_input(state.wizard, key),
          {:ok, entity_ids} <- Wizard.Input.parse_entity_ids(input, value) do
-      {state, [{:wizard_input_set, key, entity_ids}]}
+      {state, [{:wizard_input_set, key, entity_ids} | ha_link_set(input, entity_ids)]}
     else
       nil -> {state, [{:log, :warning, "wizard input set ignored — no input has key #{key}"}]}
       :error -> {state, [{:log, :warning, "wizard input set for key #{key} ignored — not a valid entity id"}]}
@@ -1259,6 +1261,13 @@ defmodule Espex.Dispatch do
          {:send, response}
        ]}
     end
+  end
+
+  defp ha_link_set(%Wizard.Input{links: []}, _entity_ids), do: []
+
+  # A linked input is never multiple, so there is one id.
+  defp ha_link_set(%Wizard.Input{key: key, links: links}, [entity_id]) do
+    [{:ha_link_set, key, Enum.map(links, &%{&1 | entity_id: entity_id})}]
   end
 
   defp refuse_infrared_transmit(state, req, reply?, message) do

@@ -751,6 +751,16 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
+  # Server broadcasts the change to every connection, this one included.
+  defp interpret_action(_socket, state, {:ha_link_set, key, entries}) do
+    Server.replace_ha_subscriptions(state.server_name, {:wizard, key}, entries)
+    {:cont, state}
+  catch
+    :exit, {reason, {GenServer, :call, _}} ->
+      Logger.warning("Espex #{state.peer} wizard input #{key} links not applied: #{inspect(reason)}")
+      {:cont, state}
+  end
+
   # Host code, fed by remote state values: a raise must not drop the
   # connection, or the same state would drop it on every reconnect.
   defp interpret_action(_socket, state, {:ha_state, entity_id, attribute, value}) do

@@ -1119,3 +1119,29 @@ defmodule Espex.Test.OtherHomeAssistantStates do
   @impl true
   defdelegate handle_state(entity_id, attribute, state), to: Espex.Test.FakeHomeAssistantStates
 end
+
+defmodule Espex.Test.LinkedWizard do
+  @moduledoc """
+  Wizard adapter with a linked input "outdoor" (the entity's state and
+  its "unit_of_measurement") and an unlinked input "light". `input_set/2`
+  reports to `TrackingWizard`'s listener.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Input, Page}
+
+  @impl true
+  def wizard do
+    Document.new!(
+      pages: [
+        %Page{
+          title: "Setup",
+          inputs: [%Input{id: "outdoor", links: [[], [attribute: "unit_of_measurement"]]}, %Input{id: "light"}]
+        }
+      ]
+    )
+  end
+
+  @impl true
+  defdelegate input_set(key, entity_ids), to: Espex.Test.TrackingWizard
+end
