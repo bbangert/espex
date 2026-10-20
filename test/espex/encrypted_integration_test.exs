@@ -269,7 +269,8 @@ defmodule Espex.EncryptedIntegrationTest do
       [name, rest_after_name] = :binary.split(rest, <<0>>)
       assert name == "espex-encrypted"
       [mac, _tail] = :binary.split(rest_after_name, <<0>>)
-      assert mac == "AA:BB:CC:DD:EE:FF"
+      # Firmware form: bare lowercase hex, whatever the configured form.
+      assert mac == "aabbccddeeff"
 
       # 5) Receive server's handshake response frame: 0x00 + noise e,ee msg
       {:ok, <<0x00, noise_msg2::binary>>} = recv_outer_frame(sock)

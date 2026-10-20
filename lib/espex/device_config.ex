@@ -155,6 +155,24 @@ defmodule Espex.DeviceConfig do
   def encrypted?(%__MODULE__{psk: nil}), do: false
   def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
 
+  @doc since: "0.12.0"
+  @doc """
+  The MAC address in the form the Noise server hello carries it: the
+  hex digits only, lowercase (`"aabbccddeeff"`).
+
+  ESPHome firmware sends this form on every server hello, and
+  aioesphomeapi's dial-back listener refuses any other.
+  `DeviceInfoResponse.mac_address` keeps the configured colon form, as
+  firmware does.
+
+      iex> Espex.DeviceConfig.hello_mac(%Espex.DeviceConfig{mac_address: "AA:BB:CC:DD:EE:FF"})
+      "aabbccddeeff"
+  """
+  @spec hello_mac(t()) :: String.t()
+  def hello_mac(%__MODULE__{mac_address: mac}) do
+    mac |> String.replace([":", "-"], "") |> String.downcase()
+  end
+
   @doc since: "0.4.0"
   @doc """
   Set the PSK from runtime-supplied input (e.g. a

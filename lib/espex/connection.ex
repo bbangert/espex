@@ -379,7 +379,7 @@ defmodule Espex.Connection do
 
   defp send_server_hello(socket, state) do
     config = state.device_config
-    body = <<@noise_proto_selector, config.name::binary, 0, config.mac_address::binary, 0>>
+    body = <<@noise_proto_selector, config.name::binary, 0, DeviceConfig.hello_mac(config)::binary, 0>>
     :ok = ThousandIsland.Socket.send(socket, Noise.Frame.encode_outer(body))
     Noise.init(:responder, config.psk, @noise_prologue)
   end
