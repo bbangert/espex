@@ -16,8 +16,10 @@ defmodule Espex.Connection do
     MessageTypes,
     Noise,
     Proto,
+    Sendspin,
     Server,
-    SerialProxy
+    SerialProxy,
+    Wizard
   }
 
   @noise_prologue "NoiseAPIInit" <> <<0, 0>>
@@ -31,6 +33,11 @@ defmodule Espex.Connection do
   # per instance while a client loops writes at an unopenable port;
   # CONFIGURE is exempt so an explicit reconfigure always retries.
   @lazy_open_backoff_ms 1_000
+
+  # max_data_length in api.proto of SendspinPairingTokenResponse.token and
+  # SendspinCapabilities.client_id.
+  @sendspin_token_max_length 127
+  @sendspin_client_id_max_length 43
 
   @impl ThousandIsland.Handler
   def handle_connection(socket, handler_options) do
@@ -68,6 +75,7 @@ defmodule Espex.Connection do
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
         entities: load_entities(adapters),
+        wizard: load_wizard(adapters),
         encryption: encryption,
         connected_at: now,
         last_activity_at: now,
@@ -626,6 +634,19 @@ defmodule Espex.Connection do
     send_or_halt(socket, state, Dispatch.serial_request_response(instance, :set_mode, result))
   end
 
+  defp interpret_action(socket, state, :serial_identity_snapshot) do
+    adapter = state.adapters.serial_proxy
+
+    Enum.reduce_while(state.serial_proxies, {:cont, state}, fn %SerialProxy.Info{instance: instance}, {:cont, state} ->
+      identity = serial_identity(adapter, instance)
+
+      case send_or_halt(socket, state, SerialProxy.Identity.to_proto(identity)) do
+        {:cont, state} -> {:cont, {:cont, state}}
+        halt -> {:halt, halt}
+      end
+    end)
+  end
+
   # The acknowledgement goes out before the initial HOME_ID_CHANGE so the
   # client's subscribe-and-await resolves first.
   defp interpret_action(socket, state, :zwave_subscribe) do
@@ -670,9 +691,43 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_action(_socket, state, {:infrared_transmit, key, timings, opts}) do
-    state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
-    |> log_adapter_error(state.peer, "IR transmit")
+  # The completion goes only to this connection, once the adapter has
+  # returned: transmit_raw/3 blocks for the frame's air time, and the
+  # client paces its next frame on this reply (API 1.18).
+  defp interpret_action(socket, state, {:infrared_transmit, key, device_id, timings, opts}) do
+    result = state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
+    log_adapter_error(result, state.peer, "IR transmit")
+
+    send_or_halt(socket, state, Dispatch.infrared_transmit_complete(key, device_id, result == :ok))
+  end
+
+  defp interpret_action(socket, state, {:send_device_capabilities, response}) do
+    send_or_halt(socket, state, %{response | sendspin: read_sendspin_capabilities(state)})
+  end
+
+  # The response carries a secret: neither it nor the adapter's return
+  # value may reach a log, so a bad return or crash is logged by shape only.
+  defp interpret_action(socket, state, :sendspin_pairing_token) do
+    status =
+      case read_pairing_token(state) do
+        # protobuf refuses a string that is not UTF-8 with the bytes in its
+        # error, which would put the token in the crash log.
+        {:ok, token} when is_binary(token) and token != "" and byte_size(token) <= @sendspin_token_max_length ->
+          if String.valid?(token), do: {:ok, token}, else: unexpected_pairing_token(state)
+
+        result when result in [:not_ready, :disabled, :failed] ->
+          result
+
+        _other ->
+          unexpected_pairing_token(state)
+      end
+
+    send_or_halt(socket, state, pairing_token_response(status))
+  end
+
+  defp interpret_action(_socket, state, {:wizard_input_set, key, entity_ids}) do
+    state.adapters.wizard.input_set(key, entity_ids)
+    |> log_adapter_error(state.peer, "wizard input_set for key #{key}")
 
     {:cont, state}
   end
@@ -1089,6 +1144,24 @@ defmodule Espex.Connection do
   defp load_serial_proxies(%{serial_proxy: nil}), do: []
   defp load_serial_proxies(%{serial_proxy: module}), do: module.list_instances()
 
+  defp load_wizard(%{wizard: nil}), do: nil
+
+  defp load_wizard(%{wizard: module}) do
+    case module.wizard() do
+      %Wizard.Document{blob: blob} = document when is_binary(blob) ->
+        document
+
+      # Built by hand rather than with new/1: check it and fill the input
+      # keys the input-set lookup matches on.
+      %Wizard.Document{pages: pages} ->
+        Wizard.Document.new!(pages: pages)
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(module)}.wizard/0 must return an %Espex.Wizard.Document{}, got: #{inspect(other)}"
+    end
+  end
+
   defp load_infrared_entities(%{infrared_proxy: nil}), do: []
   defp load_infrared_entities(%{infrared_proxy: module}), do: module.list_entities()
 
@@ -1241,6 +1314,82 @@ defmodule Espex.Connection do
   # actually provides here: AuthenticationRequest is answered
   # unconditionally, so a keyless connection is anonymous by construction.
   defp command_context(state), do: %{encrypted?: match?({:active, _, _}, state.encryption)}
+
+  # The instance is forced to the one asked about, so an adapter that
+  # returns a stale struct cannot report it under another port.
+  defp serial_identity(adapter, instance) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :identity, 1) do
+      case adapter.identity(instance) do
+        %SerialProxy.Identity{} = identity -> %{identity | instance: instance}
+        nil -> %SerialProxy.Identity{instance: instance}
+      end
+    else
+      %SerialProxy.Identity{instance: instance}
+    end
+  end
+
+  # Read per request: the values only exist once the host's Sendspin
+  # client has started, and capabilities are read on every connect, so a
+  # failing adapter answers an empty client id rather than closing the
+  # connection.
+  defp read_sendspin_capabilities(state) do
+    adapter = state.adapters.sendspin
+    flags = sendspin_feature_flags(adapter)
+    client_id = adapter.client_id()
+
+    if is_integer(flags) and flags >= 0 and (client_id == nil or valid_client_id?(client_id)) do
+      %Proto.SendspinCapabilities{feature_flags: flags, client_id: client_id || ""}
+    else
+      Logger.warning("Espex #{state.peer} Sendspin feature_flags/client_id returned an unexpected value")
+      %Proto.SendspinCapabilities{feature_flags: Sendspin.pairing_token_feature(), client_id: ""}
+    end
+  catch
+    kind, reason ->
+      Logger.warning("Espex #{state.peer} Sendspin capabilities crashed (#{crash_label(kind, reason)})")
+      %Proto.SendspinCapabilities{feature_flags: Sendspin.pairing_token_feature(), client_id: ""}
+  end
+
+  defp valid_client_id?(id),
+    do: is_binary(id) and byte_size(id) <= @sendspin_client_id_max_length and String.valid?(id)
+
+  defp sendspin_feature_flags(adapter) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :feature_flags, 0) do
+      adapter.feature_flags()
+    else
+      Sendspin.pairing_token_feature()
+    end
+  end
+
+  defp unexpected_pairing_token(state) do
+    Logger.warning("Espex #{state.peer} Sendspin pairing_token returned an unexpected value — answering FAILED")
+    :failed
+  end
+
+  defp pairing_token_response({:ok, token}),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: token}
+
+  defp pairing_token_response(:not_ready),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY}
+
+  defp pairing_token_response(:disabled),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED}
+
+  defp pairing_token_response(:failed),
+    do: %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+
+  defp crash_label(:error, reason) when is_exception(reason), do: inspect(reason.__struct__)
+  defp crash_label(kind, _reason), do: to_string(kind)
+
+  defp read_pairing_token(state) do
+    state.adapters.sendspin.pairing_token()
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Espex #{state.peer} Sendspin pairing_token crashed (#{crash_label(kind, reason)}) — answering FAILED"
+      )
+
+      :failed
+  end
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok
   defp log_adapter_error({:ok, _status}, _peer, _what), do: :ok

@@ -84,6 +84,117 @@ defmodule Espex.EncryptedIntegrationTest do
     {tx, rx}
   end
 
+  # Send `message` and decode one encrypted reply; returns {reply, tx, rx}.
+  defp encrypted_request(sock, tx, rx, message) do
+    tx = send_encrypted(sock, tx, message)
+    {:ok, resp_ct} = recv_outer_frame(sock)
+    {:ok, rx, inner} = Noise.decrypt(rx, <<>>, resp_ct)
+    {:ok, type, payload} = NoiseFrame.decode_inner(inner)
+    {:ok, reply} = MessageTypes.decode_message(type, payload)
+    {reply, tx, rx}
+  end
+
+  describe "Sendspin pairing token" do
+    @describetag adapters: %{sendspin: Espex.Test.FakeSendspin}
+
+    setup do
+      on_exit(&Espex.Test.FakeSendspin.reset/0)
+    end
+
+    defp pairing_token(port) do
+      sock = connect(port)
+      {tx, rx} = do_handshake(sock)
+      {tx, rx} = encrypted_round_trip(sock, tx, rx, %Proto.HelloRequest{client_info: "sendspin-test"})
+      {reply, _tx, _rx} = encrypted_request(sock, tx, rx, %Proto.SendspinPairingTokenRequest{})
+      :gen_tcp.close(sock)
+      reply
+    end
+
+    test "OK carries the token, which stays out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token"})
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :debug], fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: "secret-token"} =
+                   pairing_token(port)
+        end)
+
+      refute log =~ "secret-token"
+    end
+
+    test "a token over 127 bytes answers FAILED and stays out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token" <> String.duplicate("t", 116)})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED, token: ""} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "unexpected value"
+      refute log =~ "secret-token"
+    end
+
+    test "a token of exactly 127 bytes is sent", %{port: port} do
+      token = String.duplicate("t", 127)
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, token})
+
+      assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: ^token} =
+               pairing_token(port)
+    end
+
+    test "a token that is not UTF-8 answers FAILED and stays out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token" <> <<0xFF>>})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED, token: ""} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "unexpected value"
+      refute log =~ "secret-token"
+    end
+
+    for {result, status} <- [
+          not_ready: :SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY,
+          disabled: :SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED,
+          failed: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED
+        ] do
+      test "#{result} maps to #{status} with no token", %{port: port} do
+        Espex.Test.FakeSendspin.put(pairing_token: unquote(result))
+
+        assert %Proto.SendspinPairingTokenResponse{status: unquote(status), token: ""} = pairing_token(port)
+      end
+    end
+
+    test "a crashing adapter answers FAILED and keeps the token out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: :raise)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "Sendspin pairing_token crashed (RuntimeError)"
+      refute log =~ "secret-token"
+    end
+
+    test "an unexpected return answers FAILED and keeps it out of the log", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:token, "secret-token"})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED} =
+                   pairing_token(port)
+        end)
+
+      assert log =~ "unexpected value"
+      refute log =~ "secret-token"
+    end
+  end
+
   describe "entity commands (security context)" do
     setup do
       :persistent_term.put(:espex_entity_command_test_pid, self())

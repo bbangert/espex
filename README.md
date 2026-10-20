@@ -32,14 +32,17 @@ and a complete example:
 - `Espex.BluetoothScanner`
 - `Espex.BluetoothProxy`
 - `Espex.EntityProvider`
+- `Espex.Sendspin`
+- `Espex.Wizard`
 - `Espex.Mdns`
 
 ## Features
 
 - ESPHome Native API frame encoding/decoding — plaintext and
   `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports; advertises
-  API 1.17 (device capabilities RPC, proxy request acknowledgements,
-  serial proxy ownership and port mode)
+  API 1.18 (device capabilities RPC, proxy request acknowledgements,
+  serial proxy ownership, port mode and identity, IR/RF transmit
+  completion)
 - Runtime Noise PSK provisioning and rotation — Home Assistant can
   bootstrap a keyless node's key over plaintext (opt-in) or rotate it
   over the encrypted channel, with host-app persistence via
@@ -61,6 +64,13 @@ and a complete example:
   live native-API connections (peer, client_info, API version, encrypted?,
   timestamps), with an `Espex.ConnectionListener` callback for change
   notifications
+- Sendspin (`Espex.Sendspin`) — report a host's Sendspin client in the
+  device capabilities and hand Home Assistant its pairing token over
+  the encrypted channel
+- Device wizard (`Espex.Wizard`) — onboarding pages Home Assistant
+  shows when the device is added, showing your entities and asking the
+  user to pick Home Assistant entities, which espex hands to your
+  adapter (OTP 28+)
 - Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
   `Espex.Mdns.MdnsLite` adapter over the
   [`mdns_lite`](https://hex.pm/packages/mdns_lite) library for the Nerves
@@ -74,6 +84,8 @@ and a complete example:
   - `Espex.EntityProvider`
   - `Espex.PskStore` (persist a runtime-provisioned Noise PSK)
   - `Espex.ConnectionListener` (observe the connected-client set)
+  - `Espex.Sendspin` (Sendspin client id and pairing token)
+  - `Espex.Wizard` (device wizard pages and inputs)
 
 ## Installation
 
@@ -82,7 +94,7 @@ Add to your `mix.exs`:
 ```elixir
 def deps do
   [
-    {:espex, "~> 0.11"}
+    {:espex, "~> 0.12"}
   ]
 end
 ```

@@ -13,6 +13,7 @@ defmodule Espex.Proto.SerialProxyPortType do
   field(:SERIAL_PROXY_PORT_TYPE_TTL, 0)
   field(:SERIAL_PROXY_PORT_TYPE_RS232, 1)
   field(:SERIAL_PROXY_PORT_TYPE_RS485, 2)
+  field(:SERIAL_PROXY_PORT_TYPE_USB_SERIAL, 3)
 end
 
 defmodule Espex.Proto.EntityCategory do
@@ -524,6 +525,35 @@ defmodule Espex.Proto.SerialProxyMode do
   field(:SERIAL_PROXY_MODE_PROTOCOL, 1)
 end
 
+defmodule Espex.Proto.SerialProxyIdentitySource do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:SERIAL_PROXY_IDENTITY_SOURCE_NONE, 0)
+  field(:SERIAL_PROXY_IDENTITY_SOURCE_CONFIGURED, 1)
+  field(:SERIAL_PROXY_IDENTITY_SOURCE_USB, 2)
+end
+
+defmodule Espex.Proto.SerialProxyIdentityFlag do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:SERIAL_PROXY_IDENTITY_FLAG_NONE, 0)
+  field(:SERIAL_PROXY_IDENTITY_FLAG_CONNECTED, 1)
+  field(:SERIAL_PROXY_IDENTITY_FLAG_ERROR, 2)
+end
+
+defmodule Espex.Proto.SendspinPairingTokenStatus do
+  @moduledoc false
+  use Protobuf, enum: true, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY, 0)
+  field(:SENDSPIN_PAIRING_TOKEN_STATUS_OK, 1)
+  field(:SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED, 2)
+  field(:SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED, 3)
+  field(:SENDSPIN_PAIRING_TOKEN_STATUS_FAILED, 4)
+end
+
 defmodule Espex.Proto.HelloRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -531,6 +561,12 @@ defmodule Espex.Proto.HelloRequest do
   field(:client_info, 1, type: :string, json_name: "clientInfo")
   field(:api_version_major, 2, type: :uint32, json_name: "apiVersionMajor")
   field(:api_version_minor, 3, type: :uint32, json_name: "apiVersionMinor")
+
+  field(:outgoing_connection_target, 4,
+    type: :bool,
+    json_name: "outgoingConnectionTarget",
+    deprecated: false
+  )
 end
 
 defmodule Espex.Proto.HelloResponse do
@@ -690,6 +726,12 @@ defmodule Espex.Proto.DeviceInfoResponse do
     json_name: "apiEncryptionProvisionable",
     deprecated: false
   )
+
+  field(:api_outgoing_connection_supported, 27,
+    type: :bool,
+    json_name: "apiOutgoingConnectionSupported",
+    deprecated: false
+  )
 end
 
 defmodule Espex.Proto.DeviceCapabilitiesRequest do
@@ -720,6 +762,21 @@ defmodule Espex.Proto.ZWaveProxyCapabilities do
   field(:home_id, 2, type: :uint32, json_name: "homeId")
 end
 
+defmodule Espex.Proto.WizardCapabilities do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:configured, 1, type: :bool)
+end
+
+defmodule Espex.Proto.SendspinCapabilities do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:feature_flags, 1, type: :uint32, json_name: "featureFlags")
+  field(:client_id, 2, type: :string, json_name: "clientId", deprecated: false)
+end
+
 defmodule Espex.Proto.DeviceCapabilitiesResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -748,6 +805,29 @@ defmodule Espex.Proto.DeviceCapabilitiesResponse do
     json_name: "serialProxies",
     deprecated: false
   )
+
+  field(:wizard, 5, type: Espex.Proto.WizardCapabilities, deprecated: false)
+  field(:sendspin, 6, type: Espex.Proto.SendspinCapabilities, deprecated: false)
+end
+
+defmodule Espex.Proto.DeviceWizardRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+end
+
+defmodule Espex.Proto.DeviceWizardResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:data, 1, type: :bytes, deprecated: false)
+end
+
+defmodule Espex.Proto.WizardInputSetRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:key, 1, type: :fixed32)
+  field(:entity_id, 2, type: :string, json_name: "entityId", deprecated: false)
 end
 
 defmodule Espex.Proto.ListEntitiesRequest do
@@ -1106,6 +1186,7 @@ defmodule Espex.Proto.SwitchStateResponse do
   field(:key, 1, type: :fixed32, deprecated: false)
   field(:state, 2, type: :bool)
   field(:device_id, 3, type: :uint32, json_name: "deviceId", deprecated: false)
+  field(:missing_state, 4, type: :bool, json_name: "missingState")
 end
 
 defmodule Espex.Proto.SwitchCommandRequest do
@@ -1186,15 +1267,15 @@ defmodule Espex.Proto.HomeassistantServiceMap do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
 
-  field(:key, 1, type: :string)
-  field(:value, 2, type: :string)
+  field(:key, 1, type: :string, deprecated: false)
+  field(:value, 2, type: :string, deprecated: false)
 end
 
 defmodule Espex.Proto.HomeassistantActionRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
 
-  field(:service, 1, type: :string)
+  field(:service, 1, type: :string, deprecated: false)
   field(:data, 2, repeated: true, type: Espex.Proto.HomeassistantServiceMap, deprecated: false)
 
   field(:data_template, 3,
@@ -1294,7 +1375,7 @@ defmodule Espex.Proto.ListEntitiesServicesArgument do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
 
-  field(:name, 1, type: :string)
+  field(:name, 1, type: :string, deprecated: false)
   field(:type, 2, type: Espex.Proto.ServiceArgType, enum: true)
   field(:description, 3, type: :string, deprecated: false)
   field(:example, 4, type: :string, deprecated: false)
@@ -1304,7 +1385,7 @@ defmodule Espex.Proto.ListEntitiesServicesResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
 
-  field(:name, 1, type: :string)
+  field(:name, 1, type: :string, deprecated: false)
   field(:key, 2, type: :fixed32, deprecated: false)
 
   field(:args, 3,
@@ -1540,6 +1621,7 @@ defmodule Espex.Proto.ClimateStateResponse do
   field(:current_humidity, 14, type: :float, json_name: "currentHumidity")
   field(:target_humidity, 15, type: :float, json_name: "targetHumidity")
   field(:device_id, 16, type: :uint32, json_name: "deviceId", deprecated: false)
+  field(:missing_state, 17, type: :bool, json_name: "missingState")
 end
 
 defmodule Espex.Proto.ClimateCommandRequest do
@@ -1628,6 +1710,7 @@ defmodule Espex.Proto.WaterHeaterStateResponse do
   field(:state, 6, type: :uint32)
   field(:target_temperature_low, 7, type: :float, json_name: "targetTemperatureLow")
   field(:target_temperature_high, 8, type: :float, json_name: "targetTemperatureHigh")
+  field(:missing_state, 9, type: :bool, json_name: "missingState")
 end
 
 defmodule Espex.Proto.WaterHeaterCommandRequest do
@@ -2772,6 +2855,15 @@ defmodule Espex.Proto.InfraredRFReceiveEvent do
   field(:timings, 3, repeated: true, type: :sint32, packed: true, deprecated: false)
 end
 
+defmodule Espex.Proto.InfraredRFTransmitCompleteResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:device_id, 1, type: :uint32, json_name: "deviceId", deprecated: false)
+  field(:key, 2, type: :fixed32, deprecated: false)
+  field(:success, 3, type: :bool)
+end
+
 defmodule Espex.Proto.ListEntitiesRadioFrequencyResponse do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -2873,6 +2965,36 @@ defmodule Espex.Proto.SerialProxySetModeRequest do
   field(:mode, 2, type: Espex.Proto.SerialProxyMode, enum: true)
 end
 
+defmodule Espex.Proto.SubscribeSerialProxyIdentityRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+end
+
+defmodule Espex.Proto.UsbDeviceDescriptor do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:vendor_id, 1, type: :uint32, json_name: "vendorId")
+  field(:product_id, 2, type: :uint32, json_name: "productId")
+  field(:bcd_device, 3, type: :uint32, json_name: "bcdDevice")
+  field(:interface_number, 4, type: :uint32, json_name: "interfaceNumber")
+  field(:interface_class, 5, type: :uint32, json_name: "interfaceClass")
+  field(:port_number, 6, type: :uint32, json_name: "portNumber")
+end
+
+defmodule Espex.Proto.SerialProxyIdentity do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:instance, 1, type: :uint32)
+  field(:source, 2, type: Espex.Proto.SerialProxyIdentitySource, enum: true)
+  field(:flags, 3, type: :uint32)
+  field(:manufacturer, 4, type: :string)
+  field(:product, 5, type: :string)
+  field(:serial_number, 6, type: :string, json_name: "serialNumber")
+  field(:usb, 7, type: Espex.Proto.UsbDeviceDescriptor)
+end
+
 defmodule Espex.Proto.BluetoothSetConnectionParamsRequest do
   @moduledoc false
   use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
@@ -2890,4 +3012,17 @@ defmodule Espex.Proto.BluetoothSetConnectionParamsResponse do
 
   field(:address, 1, type: :uint64)
   field(:error, 2, type: :int32)
+end
+
+defmodule Espex.Proto.SendspinPairingTokenRequest do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+end
+
+defmodule Espex.Proto.SendspinPairingTokenResponse do
+  @moduledoc false
+  use Protobuf, protoc_gen_elixir_version: "0.17.0", syntax: :proto3
+
+  field(:status, 1, type: Espex.Proto.SendspinPairingTokenStatus, enum: true)
+  field(:token, 2, type: :string, deprecated: false)
 end

@@ -2,7 +2,7 @@ defmodule Espex.DispatchTest do
   use ExUnit.Case, async: true
 
   alias Espex.{ConnectionState, DeviceConfig, Dispatch, InfraredProxy, Proto, SerialProxy}
-  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy}
+  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy, FakeSendspin, FakeSerialProxy}
 
   defp state(overrides \\ []) do
     defaults = [
@@ -432,6 +432,98 @@ defmodule Espex.DispatchTest do
       assert caps.voice_assistant.feature_flags == 0
       assert caps.bluetooth_proxy.mac_address == ""
     end
+
+    test "without a Sendspin adapter: sends the response with sendspin unset" do
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{sendspin: nil}}]} =
+        Dispatch.handle_request(state(), %Proto.DeviceCapabilitiesRequest{})
+    end
+
+    test "with a Sendspin adapter: hands the response to the handler to fill sendspin" do
+      s = state(adapters: %{sendspin: FakeSendspin})
+
+      {_s, [{:send_device_capabilities, %Proto.DeviceCapabilitiesResponse{sendspin: nil}}]} =
+        Dispatch.handle_request(s, %Proto.DeviceCapabilitiesRequest{})
+    end
+  end
+
+  describe "device wizard" do
+    @wizard Espex.Test.TrackingWizard.wizard()
+    @light Espex.Wizard.fnv1_hash("light")
+    @calendars Espex.Wizard.fnv1_hash("calendars")
+
+    test "capabilities report a configured wizard only when one is captured" do
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{wizard: nil}}]} =
+        Dispatch.handle_request(state(), %Proto.DeviceCapabilitiesRequest{})
+
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{wizard: %Proto.WizardCapabilities{configured: true}}}]} =
+        Dispatch.handle_request(state(wizard: @wizard), %Proto.DeviceCapabilitiesRequest{})
+    end
+
+    test "DeviceWizardRequest sends the blob, or is ignored without a wizard" do
+      {_s, [{:send, %Proto.DeviceWizardResponse{data: data}}]} =
+        Dispatch.handle_request(state(wizard: @wizard), %Proto.DeviceWizardRequest{})
+
+      assert data == Espex.Wizard.Document.to_blob(@wizard)
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.DeviceWizardRequest{})
+    end
+
+    test "WizardInputSetRequest for a single input emits :wizard_input_set" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "light.kitchen"}
+      {_s, [{:wizard_input_set, @light, ["light.kitchen"]}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+    end
+
+    test "WizardInputSetRequest for a multiple input emits the trimmed ids" do
+      req = %Proto.WizardInputSetRequest{key: @calendars, entity_id: "calendar.a, calendar.b"}
+
+      {_s, [{:wizard_input_set, @calendars, ["calendar.a", "calendar.b"]}]} =
+        Dispatch.handle_request(state(wizard: @wizard), req)
+    end
+
+    test "WizardInputSetRequest with an invalid value warns without the value" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "not-an-entity"}
+      {_s, [{:log, :warning, message}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+      assert message =~ "#{@light}"
+      refute message =~ "not-an-entity"
+    end
+
+    test "WizardInputSetRequest for an unknown key warns" do
+      req = %Proto.WizardInputSetRequest{key: 1, entity_id: "light.kitchen"}
+      {_s, [{:log, :warning, message}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+      assert message =~ "no input has key 1"
+    end
+
+    test "WizardInputSetRequest without a wizard is ignored" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "light.kitchen"}
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), req)
+    end
+  end
+
+  describe "SendspinPairingTokenRequest" do
+    test "without an adapter: only a debug log, no reply" do
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.SendspinPairingTokenRequest{})
+    end
+
+    test "over plaintext: ENCRYPTION_REQUIRED without asking the adapter" do
+      s = state(adapters: %{sendspin: FakeSendspin})
+
+      {_s, [{:send, %Proto.SendspinPairingTokenResponse{} = resp}]} =
+        Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
+
+      assert resp.status == :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED
+      assert resp.token == ""
+    end
+
+    test "before the Noise handshake completes: ENCRYPTION_REQUIRED" do
+      s = state(adapters: %{sendspin: FakeSendspin}, encryption: :awaiting_hello)
+
+      {_s, [{:send, %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED}}]} =
+        Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
+    end
+
+    test "over Noise: emits :sendspin_pairing_token" do
+      s = state(adapters: %{sendspin: FakeSendspin}, encryption: {:active, :tx, :rx})
+      {_s, [:sendspin_pairing_token]} = Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
+    end
   end
 
   describe "SerialProxyRequest" do
@@ -718,13 +810,52 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "SubscribeSerialProxyIdentityRequest" do
+    test "without a serial adapter: only a debug log, no reply" do
+      {new_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.SubscribeSerialProxyIdentityRequest{})
+      refute new_s.serial_identity_subscribed
+    end
+
+    test "with a serial adapter: subscribes and emits the snapshot action" do
+      s = state(adapters: %{serial_proxy: FakeSerialProxy})
+      {new_s, [:serial_identity_snapshot]} = Dispatch.handle_request(s, %Proto.SubscribeSerialProxyIdentityRequest{})
+      assert new_s.serial_identity_subscribed
+    end
+  end
+
+  describe ":espex_serial_proxy_identity event" do
+    @identity %SerialProxy.Identity{instance: 0, source: :usb, product: "ZBT-2"}
+
+    test "forwarded when subscribed and the instance is advertised" do
+      s =
+        state(serial_proxies: [SerialProxy.Info.new(instance: 0, name: "zigbee")])
+        |> ConnectionState.put_serial_identity_subscribed()
+
+      {_s, [{:send, %Proto.SerialProxyIdentity{instance: 0, product: "ZBT-2"}}]} =
+        Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
+    end
+
+    test "dropped when not subscribed" do
+      s = state(serial_proxies: [SerialProxy.Info.new(instance: 0, name: "zigbee")])
+      assert {_s, []} = Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
+    end
+
+    test "dropped for an instance this connection does not advertise" do
+      s =
+        state(serial_proxies: [SerialProxy.Info.new(instance: 1, name: "aux")])
+        |> ConnectionState.put_serial_identity_subscribed()
+
+      assert {_s, []} = Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
+    end
+  end
+
   describe "InfraredRFTransmitRawTimingsRequest" do
     test "with adapter, first time: subscribes and transmits with defaults" do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
-      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [100, 200]}
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 7, timings: [100, 200]}
       {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
 
-      assert [:infrared_subscribe, {:infrared_transmit, 99, [100, 200], opts}] = actions
+      assert [:infrared_subscribe, {:infrared_transmit, 99, 7, [100, 200], opts}] = actions
       assert opts[:carrier_frequency] == 38_000
       assert opts[:repeat_count] == 1
       assert new_s.infrared_subscribed
@@ -741,14 +872,43 @@ defmodule Espex.DispatchTest do
         repeat_count: 3
       }
 
-      {_s, [{:infrared_transmit, 99, [1], opts}]} = Dispatch.handle_request(s, req)
+      {_s, [{:infrared_transmit, 99, 0, [1], opts}]} = Dispatch.handle_request(s, req)
       assert opts[:carrier_frequency] == 40_000
       assert opts[:repeat_count] == 3
     end
 
-    test "without adapter: logs warning" do
-      {_s, [{:log, :warning, _}]} =
-        Dispatch.handle_request(state(), %Proto.InfraredRFTransmitRawTimingsRequest{key: 1, timings: []})
+    test "without adapter: logs a warning and refuses with success: false" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 1, device_id: 3, timings: [100]}
+
+      assert {_s, [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}]} =
+               Dispatch.handle_request(state(), req)
+
+      assert {resp.key, resp.device_id, resp.success} == {1, 3, false}
+    end
+
+    test "with adapter, more than 30 s on air: refuses with success: false" do
+      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
+      long = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [10_000_000, -5_000_001], repeat_count: 2}
+
+      assert {_s, [{:log, :warning, message}, {:send, %Proto.InfraredRFTransmitCompleteResponse{success: false}}]} =
+               Dispatch.handle_request(state(adapters: adapters), long)
+
+      assert message =~ "longer than 30 s"
+
+      at_limit = %{long | timings: [10_000_000, -5_000_000]}
+
+      assert {_s, [:infrared_subscribe, {:infrared_transmit, 99, 0, _, _}]} =
+               Dispatch.handle_request(state(adapters: adapters), at_limit)
+    end
+
+    test "with adapter, no timings: refuses with success: false without transmitting" do
+      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 2, timings: []}
+      {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
+
+      assert [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}] = actions
+      assert {resp.key, resp.device_id, resp.success} == {99, 2, false}
+      refute new_s.infrared_subscribed
     end
   end
 

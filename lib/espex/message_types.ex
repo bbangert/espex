@@ -155,7 +155,15 @@ defmodule Espex.MessageTypes do
     149 => Proto.DeviceCapabilitiesRequest,
     150 => Proto.DeviceCapabilitiesResponse,
     151 => Proto.ZWaveProxyRequestResponse,
-    152 => Proto.SerialProxySetModeRequest
+    152 => Proto.SerialProxySetModeRequest,
+    153 => Proto.InfraredRFTransmitCompleteResponse,
+    154 => Proto.SubscribeSerialProxyIdentityRequest,
+    155 => Proto.SerialProxyIdentity,
+    156 => Proto.DeviceWizardRequest,
+    157 => Proto.DeviceWizardResponse,
+    158 => Proto.WizardInputSetRequest,
+    159 => Proto.SendspinPairingTokenRequest,
+    160 => Proto.SendspinPairingTokenResponse
   }
 
   @reverse_types Map.new(@message_types, fn {id, mod} -> {mod, id} end)

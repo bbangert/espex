@@ -155,10 +155,11 @@ defmodule Espex do
   The keys are the adapter options `Espex.Supervisor` accepts:
   `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
   `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
-  `:psk_store`, `:connection_listener`. An unknown key is
+  `:psk_store`, `:connection_listener`, `:sendspin`, `:wizard`. An unknown key is
   `{:error, {:unknown_adapter, key}}` and a value that is neither `nil`
-  nor a loadable module is `{:error, {:invalid_adapter, key, value}}`;
-  either leaves the adapters untouched.
+  nor a loadable module is `{:error, {:invalid_adapter, key, value}}`,
+  as is a `:wizard` adapter on OTP older than 28; either leaves the
+  adapters untouched.
 
       :ok = Espex.update_adapters(MyApp.EspexServer, bluetooth_scanner: nil, bluetooth_proxy: nil)
       :ok = Espex.disconnect_clients(MyApp.EspexServer)
@@ -272,6 +273,28 @@ defmodule Espex do
       Enum.each(entries, fn {pid, _} ->
         send(pid, {:espex_zwave_home_id_changed, home_id_bytes})
       end)
+    end)
+  end
+
+  @doc since: "0.12.0"
+  @doc """
+  Broadcast a serial proxy port's new identity (API 1.18).
+
+  Call this from an `Espex.SerialProxy` adapter when the device behind a
+  port changes, for example when a USB device is attached or removed.
+  Each connection forwards it as a `SerialProxyIdentity` only if its
+  client sent `SubscribeSerialProxyIdentityRequest` and the connection
+  advertises `identity.instance`; others drop it. See "Identity" in
+  `Espex.SerialProxy`.
+
+  `server_name` defaults to `Espex.Server`.
+  """
+  @spec push_serial_proxy_identity(atom(), Espex.SerialProxy.Identity.t()) :: :ok
+  def push_serial_proxy_identity(server_name \\ Server, %Espex.SerialProxy.Identity{} = identity) do
+    registry = EspexSupervisor.registry_name(server_name)
+
+    Registry.dispatch(registry, :subscribers, fn entries ->
+      Enum.each(entries, fn {pid, _} -> send(pid, {:espex_serial_proxy_identity, identity}) end)
     end)
   end
 

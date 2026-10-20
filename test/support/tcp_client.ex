@@ -42,6 +42,18 @@ defmodule Espex.Test.TcpClient do
   end
 
   @doc """
+  Assert the server sent nothing more: a PingRequest's PingResponse must
+  be the next frame. The server handles frames in order, so everything
+  sent before the ping has been dealt with by then.
+  """
+  @spec assert_nothing_sent(:gen_tcp.socket(), binary()) :: :ok
+  def assert_nothing_sent(socket, buffer \\ <<>>) do
+    send_struct(socket, %Proto.PingRequest{})
+    assert {:ok, %Proto.PingResponse{}, _rest} = recv_struct(socket, buffer)
+    :ok
+  end
+
+  @doc """
   SUBSCRIBE `instance` and consume its `OK` acknowledgement — the API
   1.17 ownership step every other serial request needs first. Returns the
   leftover buffer.

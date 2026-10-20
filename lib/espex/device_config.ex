@@ -62,7 +62,7 @@ defmodule Espex.DeviceConfig do
 
   @default_port 6053
   @api_version_major 1
-  @api_version_minor 17
+  @api_version_minor 18
   @compilation_time (fn ->
                        {{y, mo, d}, {h, mi, s}} = :erlang.universaltime()
                        months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
@@ -260,6 +260,7 @@ defmodule Espex.DeviceConfig do
   Returns the API version minor number this server advertises.
 
   Changed in 0.10.0: 1.10 → 1.16. Changed in 0.11.0: 1.16 → 1.17.
+  Changed in 0.12.0: 1.17 → 1.18.
 
   The version is an espex constant, not a host option: it states which
   client-gated behaviours espex implements, and a host cannot add
@@ -274,6 +275,11 @@ defmodule Espex.DeviceConfig do
       owns the instance; others get `PORT_IN_USE`) and
       `SerialProxySetModeRequest` (RAW / PROTOCOL) acknowledged with
       `SET_MODE`
+    * 1.18 — every `InfraredRFTransmitRawTimingsRequest` answered with
+      `InfraredRFTransmitCompleteResponse` (clients pace IR/RF frames on
+      it); `SubscribeSerialProxyIdentityRequest` answered per port; the
+      optional Sendspin (`Espex.Sendspin`) and device wizard
+      (`Espex.Wizard`) messages
   """
   @spec api_version_minor() :: non_neg_integer()
   def api_version_minor, do: @api_version_minor
@@ -321,6 +327,10 @@ defmodule Espex.DeviceConfig do
   config struct and the same serial-proxy list, so they cannot drift.
   `voice_assistant` is reported with no features and
   `bluetooth_proxy.mac_address` is empty — espex advertises neither.
+
+  `sendspin` is left `nil` here. Its values change at runtime, so the
+  connection fills it from the `Espex.Sendspin` adapter on each request
+  when one is configured.
   """
   @spec to_device_capabilities_response(t(), [struct()]) :: Proto.DeviceCapabilitiesResponse.t()
   def to_device_capabilities_response(%__MODULE__{} = config, serial_proxies \\ []) do

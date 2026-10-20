@@ -16,7 +16,7 @@ defmodule Espex.InfraredProxy do
   | Callback | Purpose |
   |----------|---------|
   | `c:list_entities/0` | Advertise the IR devices |
-  | `c:transmit_raw/3` | Transmit a raw-timing pattern |
+  | `c:transmit_raw/3` | Transmit a raw-timing pattern and return once it is sent |
   | `c:subscribe/1` | Register a connection handler for receive events |
   | `c:unsubscribe/1` | Deregister (idempotent) |
 
@@ -54,6 +54,30 @@ defmodule Espex.InfraredProxy do
   |-----|---------|-------|
   | `:carrier_frequency` | `38_000` | Hz; 38 kHz is the de-facto standard |
   | `:repeat_count` | `1` | how many times to emit the pattern |
+
+  ### Transmit completion (API 1.18)
+
+  espex answers every transmit request with an
+  `InfraredRFTransmitCompleteResponse`, sent only to the connection that
+  asked. Clients that see API 1.18 pace their queue on this reply: they
+  send the next frame only once the previous one is reported complete,
+  and otherwise wait up to 35 s past the frame's air time.
+
+  The reply is the return of `c:transmit_raw/3`. `:ok` reports
+  `success: true`, `{:error, _}` reports `success: false`. espex refuses
+  a request with no timings, or one whose timings times repeats come to
+  more than 30 s on air, with `success: false` without calling the
+  adapter.
+
+  So return from `c:transmit_raw/3` once the frame, all repeats included,
+  has left the transmitter. An adapter that returns as soon as the frame
+  is queued lets the client send the next one too early. Unknown keys
+  should return `{:error, _}`, which tells the client at once.
+
+  `c:transmit_raw/3` runs in the connection process and blocks it for the
+  frame's air time. Messages for that connection, keepalive pings
+  included, wait behind it. Even a long burst stays well under the
+  keepalive timeout.
 
   ### Receive
 
@@ -132,6 +156,12 @@ defmodule Espex.InfraredProxy do
 
   @doc """
   Transmit a raw timing pattern on the device identified by `key`.
+
+  Return once the frame, all repeats included, has left the transmitter:
+  the return is reported to the client as the transmit's completion, and
+  the client paces its next frame on it. Return `{:error, _}` for an
+  unknown key or a failed transmit. See "Transmit completion (API 1.18)"
+  in the moduledoc.
   """
   @callback transmit_raw(key :: non_neg_integer(), timings :: [integer()], transmit_opts()) ::
               :ok | {:error, term()}

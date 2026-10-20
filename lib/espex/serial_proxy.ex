@@ -25,13 +25,15 @@ defmodule Espex.SerialProxy do
   | `c:request/2` | no | Handle subscribe / unsubscribe / flush |
   | `c:default_open_opts/1` | no | Options for an espex-initiated lazy open |
   | `c:set_mode/2` | no | Switch the port between RAW and PROTOCOL mode |
+  | `c:identity/1` | no | Identify the device behind a port (API 1.18) |
 
   Omitted optional callbacks degrade gracefully: `c:request/2`
   operations are answered with a `NOT_SUPPORTED` status,
   `c:get_modem_pins/1` reports all lines low, `c:set_modem_pins/3`
   becomes a no-op, `c:default_open_opts/1` falls back to
   `default_open_opts/0` (9600-8-N-1), and `c:set_mode/2` answers
-  `NOT_SUPPORTED` for PROTOCOL (RAW is always `OK`) — your adapter can
+  `NOT_SUPPORTED` for PROTOCOL (RAW is always `OK`), `c:identity/1`
+  reports every port with source `NONE` — your adapter can
   safely omit whatever the hardware can't do.
 
   ## Ownership
@@ -129,7 +131,8 @@ defmodule Espex.SerialProxy do
     * `instance` — stable `non_neg_integer()` id; the client refers to
       ports by this id in all subsequent requests
     * `name` — display name shown in the Home Assistant UI
-    * `port_type` — `:ttl`, `:rs232`, or `:rs485`
+    * `port_type` — `:ttl`, `:rs232`, `:rs485`, or `:usb_serial`
+      (a USB serial adapter, since 0.12.0)
     * `configured_line_states` — the modem control lines this port can
       drive, a list of `:rts` / `:dtr` (default `[]`). Advertised to the
       client as a bitmask so it knows which pins `set_modem_pins/3` will
@@ -139,6 +142,27 @@ defmodule Espex.SerialProxy do
   The list is snapshotted at connection-accept time and cached by the
   client; see the "Architecture" guide for why changes require a
   reconnect.
+
+  ## Identity
+
+  Since 0.12.0 (API 1.18) a client can subscribe to the identity of the
+  device behind each port. espex answers with one
+  `Espex.SerialProxy.Identity` per advertised port, from
+  `c:identity/1`, then forwards every change you push:
+
+      Espex.push_serial_proxy_identity(server_name, %Espex.SerialProxy.Identity{
+        instance: 0,
+        source: :usb,
+        connected?: true,
+        manufacturer: "Nabu Casa",
+        product: "ZBT-2",
+        serial_number: "3c2f19a0",
+        usb: %{vendor_id: 0x303A, product_id: 0x4001}
+      })
+
+  Push a change when a USB device is attached to or removed from a port.
+  Each connection forwards it only if it subscribed and advertises that
+  instance. Without `c:identity/1`, every port reports source `:none`.
 
   ## Acknowledgements
 
@@ -283,7 +307,7 @@ defmodule Espex.SerialProxy do
   """
 
   alias Espex.Proto
-  alias Espex.SerialProxy.Info
+  alias Espex.SerialProxy.{Identity, Info}
 
   @typedoc "Opaque handle returned by the adapter from `c:open/3`."
   @type handle :: term()
@@ -446,5 +470,20 @@ defmodule Espex.SerialProxy do
   """
   @callback set_mode(handle(), mode()) :: :ok | {:error, :not_supported} | {:error, term()}
 
-  @optional_callbacks set_modem_pins: 3, get_modem_pins: 1, request: 2, default_open_opts: 1, set_mode: 2
+  @doc since: "0.12.0"
+  @doc """
+  The current identity of the device behind `instance`, or `nil` when the
+  port carries none (reported with source `:none`). Optional. espex
+  calls it when a client subscribes to identities (API 1.18); push later
+  changes with `Espex.push_serial_proxy_identity/2`. See "Identity"
+  above.
+  """
+  @callback identity(instance :: non_neg_integer()) :: Identity.t() | nil
+
+  @optional_callbacks set_modem_pins: 3,
+                      get_modem_pins: 1,
+                      request: 2,
+                      default_open_opts: 1,
+                      set_mode: 2,
+                      identity: 1
 end

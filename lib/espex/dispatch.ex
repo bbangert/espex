@@ -3,12 +3,17 @@ defmodule Espex.Dispatch do
 
   import Bitwise
 
-  alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy}
+  alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy, Wizard}
 
   # Bit positions for Proto.SerialProxy{Set,Get}ModemPins{Request,Response}.line_states,
   # per ESPHome's SerialProxyLineStateFlag enum in serial_proxy.h.
   @rts_bit 0x01
   @dtr_bit 0x02
+
+  # transmit_raw/3 blocks the connection for the frame's air time, so a
+  # request that would hold it longer than this is refused. Upstream
+  # reports a transmit 30 s overdue as failed.
+  @infrared_max_air_time_us 30_000_000
 
   # Every protobuf struct in this list routes through
   # Espex.EntityProvider.handle_command/1 when a provider is configured.
@@ -47,12 +52,17 @@ defmodule Espex.Dispatch do
           | {:serial_subscribe, instance :: non_neg_integer()}
           | {:serial_unsubscribe, instance :: non_neg_integer()}
           | {:serial_set_mode, instance :: non_neg_integer(), SerialProxy.mode()}
+          | :serial_identity_snapshot
           | :zwave_subscribe
           | :zwave_unsubscribe
           | {:zwave_send_frame, binary()}
           | :infrared_subscribe
           | :infrared_unsubscribe
-          | {:infrared_transmit, key :: non_neg_integer(), timings :: [integer()], SerialProxy.open_opts()}
+          | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
+          | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
+          | :sendspin_pairing_token
+          | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
+             InfraredProxy.transmit_opts()}
           | :ble_scanner_subscribe
           | :ble_scanner_unsubscribe
           | {:ble_scanner_set_mode, :passive | :active}
@@ -127,10 +137,21 @@ defmodule Espex.Dispatch do
     {state, [{:send, response}]}
   end
 
+  # Sendspin values change at runtime, so the handler reads them from the
+  # adapter and fills `sendspin` before sending.
   def handle_request(state, %Proto.DeviceCapabilitiesRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
-    response = DeviceConfig.to_device_capabilities_response(state.device_config, serial_protos)
-    {state, [{:send, response}]}
+
+    response =
+      state.device_config
+      |> DeviceConfig.to_device_capabilities_response(serial_protos)
+      |> Map.put(:wizard, if(state.wizard, do: %Proto.WizardCapabilities{configured: true}))
+
+    if ConnectionState.adapter?(state, :sendspin) do
+      {state, [{:send_device_capabilities, response}]}
+    else
+      {state, [{:send, response}]}
+    end
   end
 
   def handle_request(state, %Proto.ListEntitiesRequest{}) do
@@ -339,25 +360,96 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # Answered with one SerialProxyIdentity per advertised port (the
+  # handler reads the adapter), then each pushed change. Unanswered
+  # without a serial adapter, as upstream without USE_SERIAL_PROXY.
+  def handle_request(state, %Proto.SubscribeSerialProxyIdentityRequest{}) do
+    if ConnectionState.adapter?(state, :serial_proxy) do
+      {ConnectionState.put_serial_identity_subscribed(state), [:serial_identity_snapshot]}
+    else
+      {state, [{:log, :debug, "serial proxy identity subscribe ignored — no adapter configured"}]}
+    end
+  end
+
   # -- Infrared Proxy --
 
+  # Every request is answered with InfraredRFTransmitCompleteResponse
+  # (API 1.18): refusals here at once with success=false, transmits once
+  # the adapter's transmit_raw/3 returns (see Espex.Connection).
   def handle_request(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
-    if ConnectionState.adapter?(state, :infrared_proxy) do
-      opts = [
-        carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
-        repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
-      ]
+    cond do
+      not ConnectionState.adapter?(state, :infrared_proxy) ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit ignored — no adapter configured"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
 
-      {sub_actions, state} =
-        if state.infrared_subscribed do
-          {[], state}
-        else
-          {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
-        end
+      req.timings == [] ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit for key #{req.key} refused — no timings"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
 
-      {state, sub_actions ++ [{:infrared_transmit, req.key, req.timings, opts}]}
+      infrared_air_time_us(req) > @infrared_max_air_time_us ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit for key #{req.key} refused — longer than 30 s on air"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
+
+      true ->
+        handle_infrared_transmit(state, req)
+    end
+  end
+
+  # -- Device wizard --
+
+  # The document is captured at accept, so all three wizard messages are
+  # pure. Without one they are ignored, as upstream without
+  # USE_API_WIZARD; clients send them only when capabilities say so.
+  def handle_request(%{wizard: nil} = state, %Proto.DeviceWizardRequest{}) do
+    {state, [{:log, :debug, "device wizard request ignored — no wizard configured"}]}
+  end
+
+  def handle_request(state, %Proto.DeviceWizardRequest{}) do
+    {state, [{:send, %Proto.DeviceWizardResponse{data: Wizard.Document.to_blob(state.wizard)}}]}
+  end
+
+  def handle_request(%{wizard: nil} = state, %Proto.WizardInputSetRequest{}) do
+    {state, [{:log, :debug, "wizard input set ignored — no wizard configured"}]}
+  end
+
+  # As api_wizard.cpp: no reply, and an ignored request is only logged.
+  # The value stays out of the log.
+  def handle_request(state, %Proto.WizardInputSetRequest{key: key, entity_id: value}) do
+    with %Wizard.Input{} = input <- Wizard.Document.find_input(state.wizard, key),
+         {:ok, entity_ids} <- Wizard.Input.parse_entity_ids(input, value) do
+      {state, [{:wizard_input_set, key, entity_ids}]}
     else
-      {state, [{:log, :warning, "infrared transmit ignored — no adapter configured"}]}
+      nil -> {state, [{:log, :warning, "wizard input set ignored — no input has key #{key}"}]}
+      :error -> {state, [{:log, :warning, "wizard input set for key #{key} ignored — not a valid entity id"}]}
+    end
+  end
+
+  # -- Sendspin --
+
+  # Unanswered without an adapter, as upstream without USE_SENDSPIN;
+  # clients send it only when the capability says so. The token goes
+  # only over Noise: a plaintext session never proved a key (a key
+  # provisioned at runtime applies to later connections only).
+  def handle_request(state, %Proto.SendspinPairingTokenRequest{}) do
+    cond do
+      not ConnectionState.adapter?(state, :sendspin) ->
+        {state, [{:log, :debug, "Sendspin pairing token request ignored — no adapter configured"}]}
+
+      not match?({:active, _, _}, state.encryption) ->
+        {state,
+         [{:send, %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED}}]}
+
+      true ->
+        {state, [:sendspin_pairing_token]}
     end
   end
 
@@ -614,6 +706,14 @@ defmodule Espex.Dispatch do
     }
 
     {state, [{:send, message}]}
+  end
+
+  def handle_event(state, {:espex_serial_proxy_identity, %SerialProxy.Identity{instance: instance} = identity}) do
+    if state.serial_identity_subscribed and ConnectionState.find_serial_proxy(state, instance) do
+      {state, [{:send, SerialProxy.Identity.to_proto(identity)}]}
+    else
+      {state, []}
+    end
   end
 
   def handle_event(state, {:espex_ir_receive, key, timings}) do
@@ -879,6 +979,17 @@ defmodule Espex.Dispatch do
   end
 
   @doc """
+  Build the `InfraredRFTransmitCompleteResponse` (API 1.18) for a
+  transmit request. Dispatch emits it for refusals; the handler sends it
+  once `:infrared_transmit` has run, with `success` from the adapter.
+  """
+  @spec infrared_transmit_complete(non_neg_integer(), non_neg_integer(), boolean()) ::
+          Proto.InfraredRFTransmitCompleteResponse.t()
+  def infrared_transmit_complete(key, device_id, success?) do
+    %Proto.InfraredRFTransmitCompleteResponse{key: key, device_id: device_id, success: success?}
+  end
+
+  @doc """
   Build a `ZWaveProxyRequestResponse` acknowledging a SUBSCRIBE or
   UNSUBSCRIBE. The handler calls this after resolving `:zwave_subscribe`;
   Dispatch emits it directly for the cases that need no adapter call.
@@ -1098,6 +1209,26 @@ defmodule Espex.Dispatch do
          {:send, response}
        ]}
     end
+  end
+
+  defp infrared_air_time_us(req) do
+    Enum.reduce(req.timings, 0, &(abs(&1) + &2)) * max(req.repeat_count, 1)
+  end
+
+  defp handle_infrared_transmit(state, req) do
+    opts = [
+      carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
+      repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
+    ]
+
+    {sub_actions, state} =
+      if state.infrared_subscribed do
+        {[], state}
+      else
+        {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
+      end
+
+    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts}]}
   end
 
   defp disconnect_reason_to_wire(:unspecified), do: :DISCONNECT_REASON_UNSPECIFIED

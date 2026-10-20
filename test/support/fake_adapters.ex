@@ -412,6 +412,31 @@ defmodule Espex.Test.FakeInfraredProxy do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.KeyedInfraredProxy do
+  @moduledoc """
+  Infrared adapter with one transmitter, key 42. `transmit_raw/3` succeeds
+  for it and returns `{:error, :no_such_entity}` for any other key.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @key 42
+
+  @impl true
+  def list_entities do
+    [%Espex.InfraredProxy.Entity{key: @key, object_id: "ir_blaster", name: "IR Blaster", capabilities: [:transmit]}]
+  end
+
+  @impl true
+  def transmit_raw(@key, _timings, _opts), do: :ok
+  def transmit_raw(_key, _timings, _opts), do: {:error, :no_such_entity}
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
 defmodule Espex.Test.FakeEntityProvider do
   @moduledoc false
   @behaviour Espex.EntityProvider
@@ -826,4 +851,150 @@ defmodule Espex.Test.MinimalBluetoothProxy do
 
   @impl true
   def connections_free, do: {3, 3}
+end
+
+defmodule Espex.Test.FakeSendspin do
+  @moduledoc """
+  Sendspin adapter whose answers come from `:persistent_term`, so a test
+  can change them between requests. Set with `put/1`, clear with
+  `reset/0`. `client_id: :raise` makes `client_id/0` raise. A
+  `pairing_token: :raise` makes the callback raise with the
+  token-shaped string "secret-token" in the message. Tests using it MUST
+  run `async: false`.
+  """
+  @behaviour Espex.Sendspin
+
+  @key {__MODULE__, :config}
+  @defaults %{client_id: nil, pairing_token: :not_ready}
+
+  def put(config), do: :persistent_term.put(@key, Map.merge(config(), Map.new(config)))
+  def reset, do: :persistent_term.erase(@key)
+
+  defp config, do: :persistent_term.get(@key, @defaults)
+
+  @impl true
+  def client_id do
+    case config().client_id do
+      :raise -> raise "client not started"
+      other -> other
+    end
+  end
+
+  @impl true
+  def pairing_token do
+    case config().pairing_token do
+      :raise -> raise "pairing failed for secret-token"
+      other -> other
+    end
+  end
+end
+
+defmodule Espex.Test.FlaggedSendspin do
+  @moduledoc false
+  @behaviour Espex.Sendspin
+
+  @impl true
+  def client_id, do: "flagged-client"
+
+  @impl true
+  def pairing_token, do: :disabled
+
+  @impl true
+  def feature_flags, do: 0b11
+end
+
+defmodule Espex.Test.IdentitySerialProxy do
+  @moduledoc """
+  Serial adapter with two ports and `identity/1`: instance 0 is a USB
+  device (returned with a wrong `instance`, which espex must correct),
+  instance 1 carries no identity.
+  """
+  @behaviour Espex.SerialProxy
+
+  alias Espex.SerialProxy.{Identity, Info}
+
+  @impl true
+  def list_instances do
+    [
+      Info.new(instance: 0, name: "zigbee", port_type: :usb_serial),
+      Info.new(instance: 1, name: "aux", port_type: :ttl)
+    ]
+  end
+
+  @impl true
+  def identity(0) do
+    Identity.new(
+      instance: 99,
+      source: :usb,
+      connected?: true,
+      manufacturer: "Nabu Casa",
+      product: "ZBT-2",
+      serial_number: "3c2f19a0",
+      usb: %{vendor_id: 0x303A, product_id: 0x4001, interface_number: 1}
+    )
+  end
+
+  def identity(1), do: nil
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :fake_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+end
+
+defmodule Espex.Test.TrackingWizard do
+  @moduledoc """
+  Wizard adapter with one page: entity 1001, a single input "light" and a
+  multiple input "calendars" with max_length 300. `input_set/2` sends
+  `{:wizard_input_set, key, entity_ids}` to the pid stored under
+  `{__MODULE__, :listener}` in `:persistent_term`. Tests using it MUST
+  run `async: false`.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Entity, EntityFilter, Input, Page}
+
+  @impl true
+  def wizard do
+    Document.new!(
+      pages: [
+        %Page{
+          title: "Setup",
+          description: "[%key:component::espex::wizard::setup%]",
+          entities: [%Entity{key: 1001, description: "Test the backlight"}],
+          inputs: [
+            %Input{id: "light", entity_filters: [%EntityFilter{domain: ["light"]}]},
+            %Input{id: "calendars", multiple: true, max_length: 300}
+          ]
+        }
+      ]
+    )
+  end
+
+  @impl true
+  def input_set(key, entity_ids) do
+    if pid = :persistent_term.get({__MODULE__, :listener}, nil), do: send(pid, {:wizard_input_set, key, entity_ids})
+    :ok
+  end
+end
+
+defmodule Espex.Test.HandBuiltWizard do
+  @moduledoc """
+  `wizard/0` returns a `%Document{}` struct built without `Document.new/1`,
+  so its input keys are nil. `input_set/2` reports to the same listener as
+  `Espex.Test.TrackingWizard`.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Input, Page}
+
+  @impl true
+  def wizard, do: %Document{pages: [%Page{inputs: [%Input{id: "light"}]}]}
+
+  @impl true
+  def input_set(key, entity_ids), do: Espex.Test.TrackingWizard.input_set(key, entity_ids)
 end

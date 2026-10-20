@@ -1,7 +1,7 @@
 defmodule Espex.ConnectionState do
   @moduledoc false
 
-  alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy}
+  alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy, Wizard}
 
   @type feature ::
           :serial_proxy
@@ -12,6 +12,8 @@ defmodule Espex.ConnectionState do
           | :entity_provider
           | :psk_store
           | :connection_listener
+          | :sendspin
+          | :wizard
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -50,12 +52,14 @@ defmodule Espex.ConnectionState do
           serial_proxies: [SerialProxy.Info.t()],
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
+          wizard: Wizard.Document.t() | nil,
           opened_ports: %{non_neg_integer() => term()},
           serial_subscriptions: MapSet.t(non_neg_integer()),
           serial_modes: %{non_neg_integer() => SerialProxy.mode()},
           serial_open_failures: %{non_neg_integer() => integer()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
+          serial_identity_subscribed: boolean(),
           bluetooth_scanner_subscribed: boolean(),
           bluetooth_connections_free_subscribed: boolean(),
           bluetooth_owned: MapSet.t(non_neg_integer()),
@@ -85,12 +89,14 @@ defmodule Espex.ConnectionState do
     serial_proxies: [],
     infrared_entities: [],
     entities: [],
+    wizard: nil,
     opened_ports: %{},
     serial_subscriptions: MapSet.new(),
     serial_modes: %{},
     serial_open_failures: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
+    serial_identity_subscribed: false,
     bluetooth_scanner_subscribed: false,
     bluetooth_connections_free_subscribed: false,
     bluetooth_owned: MapSet.new(),
@@ -102,7 +108,9 @@ defmodule Espex.ConnectionState do
       bluetooth_proxy: nil,
       entity_provider: nil,
       psk_store: nil,
-      connection_listener: nil
+      connection_listener: nil,
+      sendspin: nil,
+      wizard: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
@@ -308,6 +316,13 @@ defmodule Espex.ConnectionState do
   def put_infrared_subscribed(%__MODULE__{} = state, subscribed?) do
     %{state | infrared_subscribed: subscribed?}
   end
+
+  @doc """
+  Mark the serial proxy identity subscription (API 1.18). There is no
+  unsubscribe; it lasts for the connection.
+  """
+  @spec put_serial_identity_subscribed(t()) :: t()
+  def put_serial_identity_subscribed(%__MODULE__{} = state), do: %{state | serial_identity_subscribed: true}
 
   @doc """
   Mark whether the client is subscribed to BLE raw advertisements.
