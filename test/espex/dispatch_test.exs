@@ -721,10 +721,10 @@ defmodule Espex.DispatchTest do
   describe "InfraredRFTransmitRawTimingsRequest" do
     test "with adapter, first time: subscribes and transmits with defaults" do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
-      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [100, 200]}
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 7, timings: [100, 200]}
       {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
 
-      assert [:infrared_subscribe, {:infrared_transmit, 99, [100, 200], opts}] = actions
+      assert [:infrared_subscribe, {:infrared_transmit, 99, 7, [100, 200], opts}] = actions
       assert opts[:carrier_frequency] == 38_000
       assert opts[:repeat_count] == 1
       assert new_s.infrared_subscribed
@@ -741,14 +741,28 @@ defmodule Espex.DispatchTest do
         repeat_count: 3
       }
 
-      {_s, [{:infrared_transmit, 99, [1], opts}]} = Dispatch.handle_request(s, req)
+      {_s, [{:infrared_transmit, 99, 0, [1], opts}]} = Dispatch.handle_request(s, req)
       assert opts[:carrier_frequency] == 40_000
       assert opts[:repeat_count] == 3
     end
 
-    test "without adapter: logs warning" do
-      {_s, [{:log, :warning, _}]} =
-        Dispatch.handle_request(state(), %Proto.InfraredRFTransmitRawTimingsRequest{key: 1, timings: []})
+    test "without adapter: logs a warning and refuses with success: false" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 1, device_id: 3, timings: [100]}
+
+      assert {_s, [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}]} =
+               Dispatch.handle_request(state(), req)
+
+      assert {resp.key, resp.device_id, resp.success} == {1, 3, false}
+    end
+
+    test "with adapter, no timings: refuses with success: false without transmitting" do
+      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 2, timings: []}
+      {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
+
+      assert [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}] = actions
+      assert {resp.key, resp.device_id, resp.success} == {99, 2, false}
+      refute new_s.infrared_subscribed
     end
   end
 

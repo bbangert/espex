@@ -412,6 +412,31 @@ defmodule Espex.Test.FakeInfraredProxy do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.KeyedInfraredProxy do
+  @moduledoc """
+  Infrared adapter with one transmitter, key 42. `transmit_raw/3` succeeds
+  for it and returns `{:error, :no_such_entity}` for any other key.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @key 42
+
+  @impl true
+  def list_entities do
+    [%Espex.InfraredProxy.Entity{key: @key, object_id: "ir_blaster", name: "IR Blaster", capabilities: [:transmit]}]
+  end
+
+  @impl true
+  def transmit_raw(@key, _timings, _opts), do: :ok
+  def transmit_raw(_key, _timings, _opts), do: {:error, :no_such_entity}
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
 defmodule Espex.Test.FakeEntityProvider do
   @moduledoc false
   @behaviour Espex.EntityProvider

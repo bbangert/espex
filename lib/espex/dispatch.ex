@@ -52,7 +52,8 @@ defmodule Espex.Dispatch do
           | {:zwave_send_frame, binary()}
           | :infrared_subscribe
           | :infrared_unsubscribe
-          | {:infrared_transmit, key :: non_neg_integer(), timings :: [integer()], SerialProxy.open_opts()}
+          | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
+             InfraredProxy.transmit_opts()}
           | :ble_scanner_subscribe
           | :ble_scanner_unsubscribe
           | {:ble_scanner_set_mode, :passive | :active}
@@ -341,23 +342,27 @@ defmodule Espex.Dispatch do
 
   # -- Infrared Proxy --
 
+  # Every request is answered with InfraredRFTransmitCompleteResponse
+  # (API 1.18): refusals here at once with success=false, transmits once
+  # the adapter's transmit_raw/3 returns (see Espex.Connection).
   def handle_request(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
-    if ConnectionState.adapter?(state, :infrared_proxy) do
-      opts = [
-        carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
-        repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
-      ]
+    cond do
+      not ConnectionState.adapter?(state, :infrared_proxy) ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit ignored — no adapter configured"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
 
-      {sub_actions, state} =
-        if state.infrared_subscribed do
-          {[], state}
-        else
-          {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
-        end
+      req.timings == [] ->
+        {state,
+         [
+           {:log, :warning, "infrared transmit for key #{req.key} refused — no timings"},
+           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
+         ]}
 
-      {state, sub_actions ++ [{:infrared_transmit, req.key, req.timings, opts}]}
-    else
-      {state, [{:log, :warning, "infrared transmit ignored — no adapter configured"}]}
+      true ->
+        handle_infrared_transmit(state, req)
     end
   end
 
@@ -879,6 +884,17 @@ defmodule Espex.Dispatch do
   end
 
   @doc """
+  Build the `InfraredRFTransmitCompleteResponse` (API 1.18) for a
+  transmit request. Dispatch emits it for refusals; the handler sends it
+  once `:infrared_transmit` has run, with `success` from the adapter.
+  """
+  @spec infrared_transmit_complete(non_neg_integer(), non_neg_integer(), boolean()) ::
+          Proto.InfraredRFTransmitCompleteResponse.t()
+  def infrared_transmit_complete(key, device_id, success?) do
+    %Proto.InfraredRFTransmitCompleteResponse{key: key, device_id: device_id, success: success?}
+  end
+
+  @doc """
   Build a `ZWaveProxyRequestResponse` acknowledging a SUBSCRIBE or
   UNSUBSCRIBE. The handler calls this after resolving `:zwave_subscribe`;
   Dispatch emits it directly for the cases that need no adapter call.
@@ -1098,6 +1114,22 @@ defmodule Espex.Dispatch do
          {:send, response}
        ]}
     end
+  end
+
+  defp handle_infrared_transmit(state, req) do
+    opts = [
+      carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
+      repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
+    ]
+
+    {sub_actions, state} =
+      if state.infrared_subscribed do
+        {[], state}
+      else
+        {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
+      end
+
+    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts}]}
   end
 
   defp disconnect_reason_to_wire(:unspecified), do: :DISCONNECT_REASON_UNSPECIFIED

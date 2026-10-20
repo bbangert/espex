@@ -670,11 +670,14 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  defp interpret_action(_socket, state, {:infrared_transmit, key, timings, opts}) do
-    state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
-    |> log_adapter_error(state.peer, "IR transmit")
+  # The completion goes only to this connection, once the adapter has
+  # returned: transmit_raw/3 blocks for the frame's air time, and the
+  # client paces its next frame on this reply (API 1.18).
+  defp interpret_action(socket, state, {:infrared_transmit, key, device_id, timings, opts}) do
+    result = state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
+    log_adapter_error(result, state.peer, "IR transmit")
 
-    {:cont, state}
+    send_or_halt(socket, state, Dispatch.infrared_transmit_complete(key, device_id, result == :ok))
   end
 
   defp interpret_action(_socket, state, :ble_scanner_subscribe) do
