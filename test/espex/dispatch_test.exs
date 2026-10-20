@@ -850,20 +850,26 @@ defmodule Espex.DispatchTest do
   end
 
   describe "InfraredRFTransmitRawTimingsRequest" do
-    test "with adapter, first time: subscribes and transmits with defaults" do
+    defp ir_state(api_version \\ {1, 18}) do
       adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
-      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 7, timings: [100, 200]}
-      {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
+      entity = InfraredProxy.Entity.new(key: 99, object_id: "ir", name: "IR", capabilities: [:transmit])
 
-      assert [:infrared_subscribe, {:infrared_transmit, 99, 7, [100, 200], opts}] = actions
+      state(adapters: adapters, infrared_entities: [entity])
+      |> ConnectionState.put_client_hello("test", api_version)
+    end
+
+    test "with adapter, first time: subscribes and transmits with defaults" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 7, timings: [100, 200]}
+      {new_s, actions} = Dispatch.handle_request(ir_state(), req)
+
+      assert [:infrared_subscribe, {:infrared_transmit, 99, 7, [100, 200], opts, true}] = actions
       assert opts[:carrier_frequency] == 38_000
       assert opts[:repeat_count] == 1
       assert new_s.infrared_subscribed
     end
 
     test "with adapter, already subscribed: just transmits" do
-      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
-      s = state(adapters: adapters) |> ConnectionState.put_infrared_subscribed(true)
+      s = ConnectionState.put_infrared_subscribed(ir_state(), true)
 
       req = %Proto.InfraredRFTransmitRawTimingsRequest{
         key: 99,
@@ -872,43 +878,61 @@ defmodule Espex.DispatchTest do
         repeat_count: 3
       }
 
-      {_s, [{:infrared_transmit, 99, 0, [1], opts}]} = Dispatch.handle_request(s, req)
+      {_s, [{:infrared_transmit, 99, 0, [1], opts, true}]} = Dispatch.handle_request(s, req)
       assert opts[:carrier_frequency] == 40_000
       assert opts[:repeat_count] == 3
     end
 
+    test "a client below 1.18 transmits without asking for a reply" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [100]}
+
+      assert {_s, [:infrared_subscribe, {:infrared_transmit, 99, 0, [100], _opts, false}]} =
+               Dispatch.handle_request(ir_state({1, 17}), req)
+    end
+
+    test "a frame of any length is queued; the queue enforces the deadline" do
+      long = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [10_000_000, -5_000_001], repeat_count: 2}
+
+      assert {_s, [:infrared_subscribe, {:infrared_transmit, 99, 0, _, _, true}]} =
+               Dispatch.handle_request(ir_state(), long)
+    end
+
     test "without adapter: logs a warning and refuses with success: false" do
       req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 1, device_id: 3, timings: [100]}
+      s = ConnectionState.put_client_hello(state(), "test", {1, 18})
 
       assert {_s, [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}]} =
-               Dispatch.handle_request(state(), req)
+               Dispatch.handle_request(s, req)
 
       assert {resp.key, resp.device_id, resp.success} == {1, 3, false}
     end
 
-    test "with adapter, more than 30 s on air: refuses with success: false" do
-      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
-      long = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, timings: [10_000_000, -5_000_001], repeat_count: 2}
-
-      assert {_s, [{:log, :warning, message}, {:send, %Proto.InfraredRFTransmitCompleteResponse{success: false}}]} =
-               Dispatch.handle_request(state(adapters: adapters), long)
-
-      assert message =~ "longer than 30 s"
-
-      at_limit = %{long | timings: [10_000_000, -5_000_000]}
-
-      assert {_s, [:infrared_subscribe, {:infrared_transmit, 99, 0, _, _}]} =
-               Dispatch.handle_request(state(adapters: adapters), at_limit)
-    end
-
     test "with adapter, no timings: refuses with success: false without transmitting" do
-      adapters = %{serial_proxy: nil, zwave_proxy: nil, infrared_proxy: FakeInfraredProxy, entity_provider: nil}
       req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 99, device_id: 2, timings: []}
-      {new_s, actions} = Dispatch.handle_request(state(adapters: adapters), req)
+      {new_s, actions} = Dispatch.handle_request(ir_state(), req)
 
       assert [{:log, :warning, _}, {:send, %Proto.InfraredRFTransmitCompleteResponse{} = resp}] = actions
       assert {resp.key, resp.device_id, resp.success} == {99, 2, false}
       refute new_s.infrared_subscribed
+    end
+
+    test "an unknown key is refused without transmitting" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 7, device_id: 2, timings: [100]}
+
+      assert {_s, [{:log, :warning, message}, {:send, %Proto.InfraredRFTransmitCompleteResponse{success: false}}]} =
+               Dispatch.handle_request(ir_state(), req)
+
+      assert message =~ "unknown key 7"
+    end
+
+    test "a client below 1.18 gets no reply to a refusal" do
+      req = %Proto.InfraredRFTransmitRawTimingsRequest{key: 7, timings: [100]}
+      assert {_s, [{:log, :warning, _}]} = Dispatch.handle_request(ir_state({1, 17}), req)
+    end
+
+    test "the queue's completion event is sent as the response" do
+      assert {_s, [{:send, %Proto.InfraredRFTransmitCompleteResponse{key: 99, device_id: 4, success: true}}]} =
+               Dispatch.handle_event(ir_state(), {:espex_ir_transmit_complete, 99, 4, true})
     end
   end
 

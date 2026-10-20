@@ -10,13 +10,18 @@ defmodule Espex.Supervisor do
        `c:Espex.ConnectionListener.connections_changed/0` notifications.
     4. A cross-connection state server (internal) — holds the device
        config and adapter modules.
-    5. `ThousandIsland` — TCP acceptor pool that spawns a per-client
+    5. An IR/RF transmit queue (internal) — runs
+       `c:Espex.InfraredProxy.transmit_raw/3` calls off the connections.
+    6. A `Task.Supervisor` (internal) for the transmit queue's tasks.
+    7. `ThousandIsland` — TCP acceptor pool that spawns a per-client
        connection handler process (internal).
-    6. An mDNS advertiser GenServer (internal) — optional, started
+    8. An mDNS advertiser GenServer (internal) — optional, started
        only when `:mdns` is configured.
 
-  If the server child crashes, the listener and advertiser restart
-  too, so live connections drop rather than hold stale references.
+  If the server child crashes, everything after it restarts too, so live
+  connections drop rather than hold stale references. A crash of the
+  transmit queue likewise drops the connections, so no client waits on a
+  transmit reply that can never come.
 
   Configuration is passed as keyword options:
 
@@ -84,7 +89,7 @@ defmodule Espex.Supervisor do
 
   use Supervisor
 
-  alias Espex.{Connection, DeviceConfig, Server}
+  alias Espex.{Connection, DeviceConfig, InfraredQueue, Server}
   alias Espex.Mdns.Advertiser, as: MdnsAdvertiser
 
   @adapter_keys [
@@ -136,6 +141,9 @@ defmodule Espex.Supervisor do
   # Upper bound on in-flight connection-listener notifications per instance.
   @max_listener_tasks 16
 
+  # Upper bound on concurrent IR/RF transmits: one per adapter module.
+  @max_infrared_tasks 8
+
   @impl Supervisor
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
@@ -168,6 +176,13 @@ defmodule Espex.Supervisor do
         # of accumulating tasks (each is only a best-effort re-query hint).
         {Task.Supervisor, name: task_supervisor_name, max_children: @max_listener_tasks},
         {Server, name: server_name, device_config: device_config, adapters: adapters},
+        # IR/RF transmits run here, off the connections. The queue comes
+        # first so its restart also restarts its tasks: a new queue never
+        # overlaps a frame an old one started. Its own Task.Supervisor,
+        # because the one above sheds work by design.
+        {InfraredQueue,
+         name: infrared_queue_name(server_name), task_supervisor: infrared_task_supervisor_name(server_name)},
+        {Task.Supervisor, name: infrared_task_supervisor_name(server_name), max_children: @max_infrared_tasks},
         {
           ThousandIsland,
           # Hard backstop only: the Connection-level keepalive ping keeps the
@@ -181,6 +196,7 @@ defmodule Espex.Supervisor do
             registry_name: registry_name,
             client_registry: client_registry_name,
             task_supervisor: task_supervisor_name,
+            infrared_queue: infrared_queue_name(server_name),
             keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
             keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000,
             disconnect_grace_ms: opts[:disconnect_grace_ms] || 2_000
@@ -223,6 +239,15 @@ defmodule Espex.Supervisor do
   @doc false
   @spec task_supervisor_name(atom()) :: atom()
   def task_supervisor_name(server_name), do: Module.concat(server_name, "TaskSupervisor")
+
+  # Conventional names of the IR/RF transmit queue and its Task.Supervisor (internal).
+  @doc false
+  @spec infrared_queue_name(atom()) :: atom()
+  def infrared_queue_name(server_name), do: Module.concat(server_name, "InfraredQueue")
+
+  @doc false
+  @spec infrared_task_supervisor_name(atom()) :: atom()
+  def infrared_task_supervisor_name(server_name), do: Module.concat(server_name, "InfraredTaskSupervisor")
 
   @doc """
   Return the conventional Registry name for a given server name.

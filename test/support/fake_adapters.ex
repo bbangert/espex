@@ -437,6 +437,83 @@ defmodule Espex.Test.KeyedInfraredProxy do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.BlockingInfraredProxy do
+  @moduledoc """
+  Infrared adapter for queue tests. `transmit_raw/3` tells the process in
+  `opts[:test]` it started, as `{:started, opts[:tag], task_pid}`, then
+  blocks until that task is sent `{:release, result}` and returns
+  `result`. `raise: true` in opts raises instead.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @impl true
+  def list_entities, do: []
+
+  @impl true
+  def transmit_raw(_key, _timings, opts) do
+    if opts[:raise], do: raise("induced transmit failure")
+    send(opts[:test], {:started, opts[:tag], self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
+defmodule Espex.Test.OtherBlockingInfraredProxy do
+  @moduledoc "A second adapter module with `BlockingInfraredProxy`'s behaviour, for a second lane."
+  @behaviour Espex.InfraredProxy
+
+  alias Espex.Test.BlockingInfraredProxy
+
+  @impl true
+  defdelegate list_entities, to: BlockingInfraredProxy
+  @impl true
+  defdelegate transmit_raw(key, timings, opts), to: BlockingInfraredProxy
+  @impl true
+  defdelegate subscribe(pid), to: BlockingInfraredProxy
+  @impl true
+  defdelegate unsubscribe(pid), to: BlockingInfraredProxy
+end
+
+defmodule Espex.Test.SlowInfraredProxy do
+  @moduledoc """
+  Infrared adapter with one transmitter, key 42, for TCP tests.
+  `transmit_raw/3` sends `{:ir_started, task_pid}` to the pid stored by
+  `put_test_pid/1` and blocks until the task is sent `{:release, result}`.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @spec put_test_pid(pid()) :: :ok
+  def put_test_pid(pid), do: :persistent_term.put({__MODULE__, :test}, pid)
+
+  @impl true
+  def list_entities do
+    [%Espex.InfraredProxy.Entity{key: 42, object_id: "slow_ir", name: "Slow IR", capabilities: [:transmit]}]
+  end
+
+  @impl true
+  def transmit_raw(_key, _timings, _opts) do
+    send(:persistent_term.get({__MODULE__, :test}), {:ir_started, self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
 defmodule Espex.Test.FakeEntityProvider do
   @moduledoc false
   @behaviour Espex.EntityProvider

@@ -45,6 +45,7 @@ defmodule Espex.ConnectionState do
           server_name: atom() | nil,
           client_registry: atom() | nil,
           task_supervisor: atom() | nil,
+          infrared_queue: atom() | nil,
           client_info: String.t() | nil,
           api_version: {non_neg_integer(), non_neg_integer()} | nil,
           connected_at: integer() | nil,
@@ -81,6 +82,7 @@ defmodule Espex.ConnectionState do
     server_name: nil,
     client_registry: nil,
     task_supervisor: nil,
+    infrared_queue: nil,
     client_info: nil,
     api_version: nil,
     connected_at: nil,
@@ -407,6 +409,14 @@ defmodule Espex.ConnectionState do
   def put_client_hello(%__MODULE__{} = state, client_info, {_major, _minor} = api_version) do
     %{state | client_info: client_info, api_version: api_version}
   end
+
+  @doc """
+  Return `true` once the client's hello announced API `major.minor` or
+  later. `false` before hello.
+  """
+  @spec api_version_at_least?(t(), {non_neg_integer(), non_neg_integer()}) :: boolean()
+  def api_version_at_least?(%__MODULE__{api_version: nil}, _version), do: false
+  def api_version_at_least?(%__MODULE__{api_version: version}, minimum), do: version >= minimum
 
   @doc """
   Stamp the most recent inbound activity time (epoch seconds).

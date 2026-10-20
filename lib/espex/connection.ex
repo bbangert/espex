@@ -13,6 +13,7 @@ defmodule Espex.Connection do
     Dispatch,
     Frame,
     InfraredProxy,
+    InfraredQueue,
     MessageTypes,
     Noise,
     Proto,
@@ -71,6 +72,7 @@ defmodule Espex.Connection do
         server_name: server_name,
         client_registry: client_registry,
         task_supervisor: Keyword.get(handler_options, :task_supervisor),
+        infrared_queue: Keyword.get(handler_options, :infrared_queue),
         adapters: adapters,
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
@@ -691,14 +693,30 @@ defmodule Espex.Connection do
     {:cont, state}
   end
 
-  # The completion goes only to this connection, once the adapter has
-  # returned: transmit_raw/3 blocks for the frame's air time, and the
-  # client paces its next frame on this reply (API 1.18).
-  defp interpret_action(socket, state, {:infrared_transmit, key, device_id, timings, opts}) do
-    result = state.adapters.infrared_proxy.transmit_raw(key, timings, opts)
-    log_adapter_error(result, state.peer, "IR transmit")
+  # The queue runs the transmit and answers this connection with
+  # {:espex_ir_transmit_complete, ...} (see Espex.InfraredQueue). The
+  # adapter is the one captured at accept, so the transmit finishes on
+  # the adapter it started on. A queue that is down or restarting means
+  # the transmit never happens, so the client hears `false` at once.
+  defp interpret_action(socket, state, {:infrared_transmit, key, device_id, timings, opts, reply?}) do
+    request = %{
+      key: key,
+      device_id: device_id,
+      timings: timings,
+      opts: opts,
+      adapter: state.adapters.infrared_proxy,
+      reply_to: if(reply?, do: self())
+    }
 
-    send_or_halt(socket, state, Dispatch.infrared_transmit_complete(key, device_id, result == :ok))
+    InfraredQueue.transmit(state.infrared_queue, request)
+    {:cont, state}
+  catch
+    :exit, {reason, {GenServer, :call, _}} ->
+      Logger.warning("Espex #{state.peer} IR transmit for key #{key} not queued: #{inspect(reason)}")
+
+      if reply?,
+        do: send_or_halt(socket, state, Dispatch.infrared_transmit_complete(key, device_id, false)),
+        else: {:cont, state}
   end
 
   defp interpret_action(socket, state, {:send_device_capabilities, response}) do

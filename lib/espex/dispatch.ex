@@ -10,11 +10,6 @@ defmodule Espex.Dispatch do
   @rts_bit 0x01
   @dtr_bit 0x02
 
-  # transmit_raw/3 blocks the connection for the frame's air time, so a
-  # request that would hold it longer than this is refused. Upstream
-  # reports a transmit 30 s overdue as failed.
-  @infrared_max_air_time_us 30_000_000
-
   # Every protobuf struct in this list routes through
   # Espex.EntityProvider.handle_command/1 when a provider is configured.
   @entity_command_types [
@@ -62,7 +57,7 @@ defmodule Espex.Dispatch do
           | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
           | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
-             InfraredProxy.transmit_opts()}
+             InfraredProxy.transmit_opts(), reply? :: boolean()}
           | :ble_scanner_subscribe
           | :ble_scanner_unsubscribe
           | {:ble_scanner_set_mode, :passive | :active}
@@ -373,34 +368,25 @@ defmodule Espex.Dispatch do
 
   # -- Infrared Proxy --
 
-  # Every request is answered with InfraredRFTransmitCompleteResponse
-  # (API 1.18): refusals here at once with success=false, transmits once
-  # the adapter's transmit_raw/3 returns (see Espex.Connection).
+  # API 1.18 clients get an InfraredRFTransmitCompleteResponse for every
+  # request: a refusal here at once with success=false, a transmit from
+  # Espex.InfraredQueue once it is settled. Older clients get no reply
+  # at all, as upstream (want_reply).
   def handle_request(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
+    reply? = ConnectionState.api_version_at_least?(state, {1, 18})
+
     cond do
       not ConnectionState.adapter?(state, :infrared_proxy) ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit ignored — no adapter configured"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit ignored — no adapter configured")
 
       req.timings == [] ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit for key #{req.key} refused — no timings"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit for key #{req.key} refused — no timings")
 
-      infrared_air_time_us(req) > @infrared_max_air_time_us ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit for key #{req.key} refused — longer than 30 s on air"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+      not Enum.any?(state.infrared_entities, &(&1.key == req.key)) ->
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit for unknown key #{req.key} refused")
 
       true ->
-        handle_infrared_transmit(state, req)
+        handle_infrared_transmit(state, req, reply?)
     end
   end
 
@@ -724,6 +710,10 @@ defmodule Espex.Dispatch do
     end
   end
 
+  def handle_event(state, {:espex_ir_transmit_complete, key, device_id, success?}) do
+    {state, [{:send, infrared_transmit_complete(key, device_id, success?)}]}
+  end
+
   def handle_event(state, {:espex_ble_advertisement, address, rssi, address_type, data}) do
     if state.bluetooth_scanner_subscribed do
       advertisement = %Proto.BluetoothLERawAdvertisement{
@@ -980,8 +970,9 @@ defmodule Espex.Dispatch do
 
   @doc """
   Build the `InfraredRFTransmitCompleteResponse` (API 1.18) for a
-  transmit request. Dispatch emits it for refusals; the handler sends it
-  once `:infrared_transmit` has run, with `success` from the adapter.
+  transmit request. Dispatch emits it for refusals and for the queue's
+  `{:espex_ir_transmit_complete, ...}` event; the handler sends it when
+  the queue cannot be reached.
   """
   @spec infrared_transmit_complete(non_neg_integer(), non_neg_integer(), boolean()) ::
           Proto.InfraredRFTransmitCompleteResponse.t()
@@ -1211,11 +1202,12 @@ defmodule Espex.Dispatch do
     end
   end
 
-  defp infrared_air_time_us(req) do
-    Enum.reduce(req.timings, 0, &(abs(&1) + &2)) * max(req.repeat_count, 1)
+  defp refuse_infrared_transmit(state, req, reply?, message) do
+    reply = if reply?, do: [{:send, infrared_transmit_complete(req.key, req.device_id, false)}], else: []
+    {state, [{:log, :warning, message} | reply]}
   end
 
-  defp handle_infrared_transmit(state, req) do
+  defp handle_infrared_transmit(state, req, reply?) do
     opts = [
       carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
       repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
@@ -1228,7 +1220,7 @@ defmodule Espex.Dispatch do
         {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
       end
 
-    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts}]}
+    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts, reply?}]}
   end
 
   defp disconnect_reason_to_wire(:unspecified), do: :DISCONNECT_REASON_UNSPECIFIED

@@ -40,9 +40,9 @@ defmodule Espex.Api118Test do
 
   defp adapter_opts(context), do: context |> Map.get(:adapters, %{}) |> Map.to_list()
 
-  defp hello(port) do
+  defp hello(port, minor \\ 18) do
     socket = connect(port)
-    send_struct(socket, %Proto.HelloRequest{client_info: "api118-test", api_version_major: 1, api_version_minor: 18})
+    send_struct(socket, %Proto.HelloRequest{client_info: "api118-test", api_version_major: 1, api_version_minor: minor})
     {:ok, %Proto.HelloResponse{} = hello, rest} = recv_struct(socket)
     {socket, hello, rest}
   end
@@ -70,7 +70,7 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
-    test "an adapter error is reported as success: false", %{port: port} do
+    test "an unknown key is refused with success: false", %{port: port} do
       {socket, _hello, rest} = hello(port)
       transmit(socket, 7)
 
@@ -88,17 +88,28 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
-    test "back-to-back frames are each answered, in order", %{port: port} do
-      {socket, _hello, rest} = hello(port)
+    test "a client below 1.18 gets no reply, sent or refused", %{port: port} do
+      {socket, _hello, rest} = hello(port, 17)
       transmit(socket, 42)
       transmit(socket, 7)
-      transmit(socket, 42)
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
 
-      {:ok, first, rest} = recv_struct(socket, rest)
-      {:ok, second, rest} = recv_struct(socket, rest)
-      {:ok, third, _} = recv_struct(socket, rest)
+    test "paced frames are each answered", %{port: port} do
+      {socket, _hello, rest} = hello(port)
 
-      assert Enum.map([first, second, third], &{&1.key, &1.success}) == [{42, true}, {7, false}, {42, true}]
+      rest =
+        Enum.reduce(1..3, rest, fn _, rest ->
+          transmit(socket, 42)
+
+          assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, rest} =
+                   recv_struct(socket, rest)
+
+          rest
+        end)
+
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
 
@@ -109,6 +120,51 @@ defmodule Espex.Api118Test do
       transmit(a, 42)
       assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(a, rest_a)
       assert_nothing_sent(b, rest_b)
+
+      :gen_tcp.close(a)
+      :gen_tcp.close(b)
+    end
+  end
+
+  describe "InfraredRFTransmitCompleteResponse with a slow transmitter" do
+    @describetag adapters: %{infrared_proxy: Espex.Test.SlowInfraredProxy}
+
+    setup do
+      Espex.Test.SlowInfraredProxy.put_test_pid(self())
+    end
+
+    test "the connection answers a ping while its frame is on the air", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      transmit(socket, 42)
+      assert_receive {:ir_started, task}
+
+      send_struct(socket, %Proto.PingRequest{})
+      assert {:ok, %Proto.PingResponse{}, rest} = recv_struct(socket, rest)
+
+      send(task, {:release, :ok})
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "a request from another client supersedes: the first hears false at once", %{port: port} do
+      {a, _hello, rest_a} = hello(port)
+      {b, _hello, rest_b} = hello(port)
+
+      transmit(a, 42)
+      assert_receive {:ir_started, first}
+
+      transmit(b, 42)
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: false}, rest_a} = recv_struct(a, rest_a)
+
+      # The transmitter runs one frame at a time: the second starts once
+      # the first returns, and only its requester hears the result.
+      refute_received {:ir_started, _}
+      send(first, {:release, :ok})
+      assert_receive {:ir_started, second}
+      send(second, {:release, :ok})
+
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(b, rest_b)
+      assert_nothing_sent(a, rest_a)
 
       :gen_tcp.close(a)
       :gen_tcp.close(b)
