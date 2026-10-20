@@ -52,6 +52,8 @@ defmodule Espex.Dispatch do
           | {:zwave_send_frame, binary()}
           | :infrared_subscribe
           | :infrared_unsubscribe
+          | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
+          | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
              InfraredProxy.transmit_opts()}
           | :ble_scanner_subscribe
@@ -128,10 +130,17 @@ defmodule Espex.Dispatch do
     {state, [{:send, response}]}
   end
 
+  # Sendspin values change at runtime, so the handler reads them from the
+  # adapter and fills `sendspin` before sending.
   def handle_request(state, %Proto.DeviceCapabilitiesRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
     response = DeviceConfig.to_device_capabilities_response(state.device_config, serial_protos)
-    {state, [{:send, response}]}
+
+    if ConnectionState.adapter?(state, :sendspin) do
+      {state, [{:send_device_capabilities, response}]}
+    else
+      {state, [{:send, response}]}
+    end
   end
 
   def handle_request(state, %Proto.ListEntitiesRequest{}) do
@@ -363,6 +372,26 @@ defmodule Espex.Dispatch do
 
       true ->
         handle_infrared_transmit(state, req)
+    end
+  end
+
+  # -- Sendspin --
+
+  # Unanswered without an adapter, as upstream without USE_SENDSPIN;
+  # clients send it only when the capability says so. The token goes
+  # only over Noise: a plaintext session never proved a key (a key
+  # provisioned at runtime applies to later connections only).
+  def handle_request(state, %Proto.SendspinPairingTokenRequest{}) do
+    cond do
+      not ConnectionState.adapter?(state, :sendspin) ->
+        {state, [{:log, :debug, "Sendspin pairing token request ignored — no adapter configured"}]}
+
+      not match?({:active, _, _}, state.encryption) ->
+        {state,
+         [{:send, %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED}}]}
+
+      true ->
+        {state, [:sendspin_pairing_token]}
     end
   end
 

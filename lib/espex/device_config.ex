@@ -321,6 +321,10 @@ defmodule Espex.DeviceConfig do
   config struct and the same serial-proxy list, so they cannot drift.
   `voice_assistant` is reported with no features and
   `bluetooth_proxy.mac_address` is empty — espex advertises neither.
+
+  `sendspin` is left `nil` here. Its values change at runtime, so the
+  connection fills it from the `Espex.Sendspin` adapter on each request
+  when one is configured.
   """
   @spec to_device_capabilities_response(t(), [struct()]) :: Proto.DeviceCapabilitiesResponse.t()
   def to_device_capabilities_response(%__MODULE__{} = config, serial_proxies \\ []) do

@@ -34,6 +34,7 @@ defmodule Espex.Supervisor do
         entity_provider: MyApp.MyEntities,
         psk_store: MyApp.MyPskStore,        # persists a runtime-provisioned PSK
         connection_listener: MyApp.Tracker, # notified when the connected-client set changes
+        sendspin: MyApp.MySendspin,         # reports a Sendspin client (Espex.Sendspin)
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -93,7 +94,8 @@ defmodule Espex.Supervisor do
     :bluetooth_proxy,
     :entity_provider,
     :psk_store,
-    :connection_listener
+    :connection_listener,
+    :sendspin
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()

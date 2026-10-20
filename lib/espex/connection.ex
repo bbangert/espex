@@ -16,6 +16,7 @@ defmodule Espex.Connection do
     MessageTypes,
     Noise,
     Proto,
+    Sendspin,
     Server,
     SerialProxy
   }
@@ -680,6 +681,42 @@ defmodule Espex.Connection do
     send_or_halt(socket, state, Dispatch.infrared_transmit_complete(key, device_id, result == :ok))
   end
 
+  defp interpret_action(socket, state, {:send_device_capabilities, response}) do
+    adapter = state.adapters.sendspin
+
+    sendspin = %Proto.SendspinCapabilities{
+      feature_flags: sendspin_feature_flags(adapter),
+      client_id: adapter.client_id() || ""
+    }
+
+    send_or_halt(socket, state, %{response | sendspin: sendspin})
+  end
+
+  # The response carries a secret: neither it nor the adapter's return
+  # value may reach a log, so a bad return or crash is logged by shape only.
+  defp interpret_action(socket, state, :sendspin_pairing_token) do
+    response =
+      case read_pairing_token(state) do
+        {:ok, token} when is_binary(token) ->
+          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_OK, token: token}
+
+        :not_ready ->
+          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_NOT_READY}
+
+        :disabled ->
+          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_DISABLED}
+
+        :failed ->
+          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+
+        _other ->
+          Logger.warning("Espex #{state.peer} Sendspin pairing_token returned an unexpected value — answering FAILED")
+          %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_FAILED}
+      end
+
+    send_or_halt(socket, state, response)
+  end
+
   defp interpret_action(_socket, state, :ble_scanner_subscribe) do
     state.adapters.bluetooth_scanner.subscribe(self())
     |> log_adapter_error(state.peer, "BLE scanner subscribe")
@@ -1241,6 +1278,23 @@ defmodule Espex.Connection do
   # actually provides here: AuthenticationRequest is answered
   # unconditionally, so a keyless connection is anonymous by construction.
   defp command_context(state), do: %{encrypted?: match?({:active, _, _}, state.encryption)}
+
+  defp sendspin_feature_flags(adapter) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :feature_flags, 0) do
+      adapter.feature_flags()
+    else
+      Sendspin.pairing_token_feature()
+    end
+  end
+
+  defp read_pairing_token(state) do
+    state.adapters.sendspin.pairing_token()
+  catch
+    kind, reason ->
+      label = if kind == :error and is_exception(reason), do: inspect(reason.__struct__), else: to_string(kind)
+      Logger.warning("Espex #{state.peer} Sendspin pairing_token crashed (#{label}) — answering FAILED")
+      :failed
+  end
 
   defp log_adapter_error(:ok, _peer, _what), do: :ok
   defp log_adapter_error({:ok, _status}, _peer, _what), do: :ok

@@ -1,5 +1,7 @@
 defmodule Espex.Api118Test do
-  # API 1.18: IR/RF transmit completion. Exercised over real TCP.
+  # API 1.18: IR/RF transmit completion and Sendspin. Exercised over real
+  # TCP. FakeSendspin reads its answers from :persistent_term, which is
+  # why this file stays async: false.
   use ExUnit.Case, async: false
 
   import Espex.Test.TcpClient
@@ -103,6 +105,57 @@ defmodule Espex.Api118Test do
 
       :gen_tcp.close(a)
       :gen_tcp.close(b)
+    end
+  end
+
+  describe "Sendspin" do
+    setup do
+      on_exit(&Espex.Test.FakeSendspin.reset/0)
+    end
+
+    test "without an adapter capabilities carry no sendspin and the token request goes unanswered", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: nil}, rest} = recv_struct(socket, rest)
+
+      send_struct(socket, %Proto.SendspinPairingTokenRequest{})
+      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
+    test "capabilities report the default feature flag and read client_id per request", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: before}, rest} = recv_struct(socket, rest)
+      assert before == %Proto.SendspinCapabilities{feature_flags: 1, client_id: ""}
+
+      Espex.Test.FakeSendspin.put(client_id: "Q2xpZW50UHVibGljS2V5")
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: started}, _} = recv_struct(socket, rest)
+      assert started.client_id == "Q2xpZW50UHVibGljS2V5"
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{sendspin: Espex.Test.FlaggedSendspin}
+    test "capabilities use the adapter's feature_flags/0 when it has one", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: sendspin}, _} = recv_struct(socket, rest)
+      assert sendspin == %Proto.SendspinCapabilities{feature_flags: 0b11, client_id: "flagged-client"}
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
+    test "a plaintext connection gets ENCRYPTION_REQUIRED and no token", %{port: port} do
+      Espex.Test.FakeSendspin.put(pairing_token: {:ok, "secret-token"})
+      {socket, _hello, rest} = hello(port)
+      send_struct(socket, %Proto.SendspinPairingTokenRequest{})
+
+      assert {:ok, %Proto.SendspinPairingTokenResponse{} = resp, _} = recv_struct(socket, rest)
+      assert {resp.status, resp.token} == {:SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED, ""}
+      :gen_tcp.close(socket)
     end
   end
 

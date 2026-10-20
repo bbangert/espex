@@ -12,6 +12,7 @@ defmodule Espex.ConnectionState do
           | :entity_provider
           | :psk_store
           | :connection_listener
+          | :sendspin
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -102,7 +103,8 @@ defmodule Espex.ConnectionState do
       bluetooth_proxy: nil,
       entity_provider: nil,
       psk_store: nil,
-      connection_listener: nil
+      connection_listener: nil,
+      sendspin: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,

@@ -2,7 +2,7 @@ defmodule Espex.DispatchTest do
   use ExUnit.Case, async: true
 
   alias Espex.{ConnectionState, DeviceConfig, Dispatch, InfraredProxy, Proto, SerialProxy}
-  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy}
+  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy, FakeSendspin}
 
   defp state(overrides \\ []) do
     defaults = [
@@ -431,6 +431,46 @@ defmodule Espex.DispatchTest do
       assert caps.serial_proxies == device_info.serial_proxies
       assert caps.voice_assistant.feature_flags == 0
       assert caps.bluetooth_proxy.mac_address == ""
+    end
+
+    test "without a Sendspin adapter: sends the response with sendspin unset" do
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{sendspin: nil}}]} =
+        Dispatch.handle_request(state(), %Proto.DeviceCapabilitiesRequest{})
+    end
+
+    test "with a Sendspin adapter: hands the response to the handler to fill sendspin" do
+      s = state(adapters: %{sendspin: FakeSendspin})
+
+      {_s, [{:send_device_capabilities, %Proto.DeviceCapabilitiesResponse{sendspin: nil}}]} =
+        Dispatch.handle_request(s, %Proto.DeviceCapabilitiesRequest{})
+    end
+  end
+
+  describe "SendspinPairingTokenRequest" do
+    test "without an adapter: only a debug log, no reply" do
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.SendspinPairingTokenRequest{})
+    end
+
+    test "over plaintext: ENCRYPTION_REQUIRED without asking the adapter" do
+      s = state(adapters: %{sendspin: FakeSendspin})
+
+      {_s, [{:send, %Proto.SendspinPairingTokenResponse{} = resp}]} =
+        Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
+
+      assert resp.status == :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED
+      assert resp.token == ""
+    end
+
+    test "before the Noise handshake completes: ENCRYPTION_REQUIRED" do
+      s = state(adapters: %{sendspin: FakeSendspin}, encryption: :awaiting_hello)
+
+      {_s, [{:send, %Proto.SendspinPairingTokenResponse{status: :SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED}}]} =
+        Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
+    end
+
+    test "over Noise: emits :sendspin_pairing_token" do
+      s = state(adapters: %{sendspin: FakeSendspin}, encryption: {:active, :tx, :rx})
+      {_s, [:sendspin_pairing_token]} = Dispatch.handle_request(s, %Proto.SendspinPairingTokenRequest{})
     end
   end
 

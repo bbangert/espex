@@ -852,3 +852,47 @@ defmodule Espex.Test.MinimalBluetoothProxy do
   @impl true
   def connections_free, do: {3, 3}
 end
+
+defmodule Espex.Test.FakeSendspin do
+  @moduledoc """
+  Sendspin adapter whose answers come from `:persistent_term`, so a test
+  can change them between requests. Set with `put/1`, clear with
+  `reset/0`. A `pairing_token: :raise` makes the callback raise with the
+  token-shaped string "secret-token" in the message. Tests using it MUST
+  run `async: false`.
+  """
+  @behaviour Espex.Sendspin
+
+  @key {__MODULE__, :config}
+  @defaults %{client_id: nil, pairing_token: :not_ready}
+
+  def put(config), do: :persistent_term.put(@key, Map.merge(config(), Map.new(config)))
+  def reset, do: :persistent_term.erase(@key)
+
+  defp config, do: :persistent_term.get(@key, @defaults)
+
+  @impl true
+  def client_id, do: config().client_id
+
+  @impl true
+  def pairing_token do
+    case config().pairing_token do
+      :raise -> raise "pairing failed for secret-token"
+      other -> other
+    end
+  end
+end
+
+defmodule Espex.Test.FlaggedSendspin do
+  @moduledoc false
+  @behaviour Espex.Sendspin
+
+  @impl true
+  def client_id, do: "flagged-client"
+
+  @impl true
+  def pairing_token, do: :disabled
+
+  @impl true
+  def feature_flags, do: 0b11
+end
