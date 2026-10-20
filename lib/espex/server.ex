@@ -197,7 +197,7 @@ defmodule Espex.Server do
   """
   @spec replace_ha_subscriptions(GenServer.server(), Table.owner(), [Subscription.t()]) :: :ok
   def replace_ha_subscriptions(server, owner, entries) when is_list(entries) do
-    GenServer.call(server, {:ha_subscriptions, :replace, owner, entries})
+    GenServer.call(server, {:replace_ha_subscriptions, owner, entries})
   end
 
   @doc """
@@ -205,7 +205,7 @@ defmodule Espex.Server do
   """
   @spec put_ha_subscription(GenServer.server(), Table.owner(), Subscription.t()) :: :ok
   def put_ha_subscription(server, owner, %Subscription{} = entry) do
-    GenServer.call(server, {:ha_subscriptions, :put, owner, entry})
+    GenServer.call(server, {:put_ha_subscription, owner, entry})
   end
 
   @doc """
@@ -214,7 +214,7 @@ defmodule Espex.Server do
   """
   @spec delete_ha_subscription(GenServer.server(), Table.owner(), Subscription.t()) :: :ok
   def delete_ha_subscription(server, owner, %Subscription{} = entry) do
-    GenServer.call(server, {:ha_subscriptions, :delete, owner, entry})
+    GenServer.call(server, {:delete_ha_subscription, owner, entry})
   end
 
   # The host's entries are read here, not in a continue: the table must
@@ -340,9 +340,16 @@ defmodule Espex.Server do
     end
   end
 
-  def handle_call({:ha_subscriptions, op, owner, arg}, _from, state) do
-    change = apply(Table, op, [state.ha_subscriptions, owner, arg])
-    {:reply, :ok, apply_ha_change(state, change)}
+  def handle_call({:replace_ha_subscriptions, owner, entries}, _from, state) do
+    {:reply, :ok, apply_ha_change(state, Table.replace(state.ha_subscriptions, owner, entries))}
+  end
+
+  def handle_call({:put_ha_subscription, owner, entry}, _from, state) do
+    {:reply, :ok, apply_ha_change(state, Table.put(state.ha_subscriptions, owner, entry))}
+  end
+
+  def handle_call({:delete_ha_subscription, owner, entry}, _from, state) do
+    {:reply, :ok, apply_ha_change(state, Table.delete(state.ha_subscriptions, owner, entry))}
   end
 
   @impl GenServer
@@ -359,21 +366,21 @@ defmodule Espex.Server do
   # inputs when they reconnect.
   defp reconcile_ha_subscriptions(state, old_adapters) do
     state
-    |> then(fn state ->
-      if state.adapters.home_assistant_states == old_adapters.home_assistant_states do
-        state
-      else
-        entries = host_subscriptions(state.adapters.home_assistant_states)
-        apply_ha_change(state, Table.replace(state.ha_subscriptions, :host, entries))
-      end
-    end)
-    |> then(fn state ->
-      if state.adapters.wizard == old_adapters.wizard do
-        state
-      else
-        apply_ha_change(state, Table.drop_owners(state.ha_subscriptions, &match?({:wizard, _}, &1)))
-      end
-    end)
+    |> reseed_host_subscriptions(old_adapters.home_assistant_states)
+    |> drop_wizard_links(old_adapters.wizard)
+  end
+
+  defp reseed_host_subscriptions(%{adapters: %{home_assistant_states: same}} = state, same), do: state
+
+  defp reseed_host_subscriptions(state, _old_adapter) do
+    entries = host_subscriptions(state.adapters.home_assistant_states)
+    apply_ha_change(state, Table.replace(state.ha_subscriptions, :host, entries))
+  end
+
+  defp drop_wizard_links(%{adapters: %{wizard: same}} = state, same), do: state
+
+  defp drop_wizard_links(state, _old_wizard) do
+    apply_ha_change(state, Table.drop_owners(state.ha_subscriptions, &match?({:wizard, _}, &1)))
   end
 
   # Connections hold a copy of the table; tell them what changed. Server
@@ -388,8 +395,8 @@ defmodule Espex.Server do
     ServerState.put_ha_subscriptions(state, table)
   end
 
-  # Host code: a raise, or anything but a list of entities, is logged and
-  # counts as no entries.
+  # Host code: a raise, throw or exit, or anything but a list of
+  # subscriptions, is logged and counts as no entries.
   defp host_subscriptions(nil), do: []
 
   defp host_subscriptions(adapter) do
@@ -398,14 +405,17 @@ defmodule Espex.Server do
     else
       []
     end
-  rescue
-    exception ->
+  catch
+    kind, reason ->
       Logger.warning(
-        "Espex #{inspect(adapter)}.subscriptions/0 raised #{inspect(exception.__struct__)} — no Home Assistant subscriptions"
+        "Espex #{inspect(adapter)}.subscriptions/0 #{crash_label(kind, reason)} — no Home Assistant subscriptions"
       )
 
       []
   end
+
+  defp crash_label(:error, exception) when is_exception(exception), do: "raised #{inspect(exception.__struct__)}"
+  defp crash_label(kind, reason), do: "#{kind}: #{inspect(reason)}"
 
   defp host_entry(adapter, entry) do
     case Subscription.build(entry) do

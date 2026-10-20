@@ -493,6 +493,9 @@ defmodule Espex.Test.SlowInfraredProxy do
   @spec put_test_pid(pid()) :: :ok
   def put_test_pid(pid), do: :persistent_term.put({__MODULE__, :test}, pid)
 
+  @spec reset() :: boolean()
+  def reset, do: :persistent_term.erase({__MODULE__, :test})
+
   @impl true
   def list_entities do
     [%Espex.InfraredProxy.Entity{key: 42, object_id: "slow_ir", name: "Slow IR", capabilities: [:transmit]}]
@@ -1165,4 +1168,15 @@ defmodule Espex.Test.PidTargetStore do
     if pid, do: send(pid, {:store_target, ip})
     result
   end
+end
+
+defmodule Espex.Test.ThrowingHomeAssistantStates do
+  @moduledoc "Home Assistant states adapter whose `subscriptions/0` throws."
+  @behaviour Espex.HomeAssistantStates
+
+  @impl true
+  def subscriptions, do: throw(:not_ready)
+
+  @impl true
+  def handle_state(_entity_id, _attribute, _state), do: :ok
 end

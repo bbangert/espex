@@ -182,6 +182,31 @@ defmodule Espex.HomeAssistantStatesTest do
     assert_received {:ha_state, "weather.home", nil, "sunny"}
     refute_received {:ha_state, "sun.sun", _, _}
     :gen_tcp.close(socket)
+
+    # A client that subscribes after the swap walks the new entries only.
+    {later, rest} = hello(port)
+    assert {[{"weather.home", "", false}], rest} = subscribe_states(later, rest, 1)
+    assert_nothing_sent(later, rest)
+    :gen_tcp.close(later)
+  end
+
+  test "setting the same adapter again does not re-read its entries", %{port: port, server: server} do
+    FakeHomeAssistantStates.put_subscriptions([Subscription.new!(entity_id: "moon.moon")])
+    :ok = Espex.update_adapters(server, home_assistant_states: FakeHomeAssistantStates)
+
+    {socket, rest} = hello(port)
+    {walk, rest} = subscribe_states(socket, rest, 2)
+    assert walk == [{"sun.sun", "", false}, {"sun.sun", "elevation", false}]
+    assert_nothing_sent(socket, rest)
+    :gen_tcp.close(socket)
+  end
+
+  test "a throw from subscriptions/0 counts as no entries", context do
+    assert :ok = Espex.update_adapters(context.server, home_assistant_states: Espex.Test.ThrowingHomeAssistantStates)
+    {socket, rest} = hello(context.port)
+    assert {[], rest} = subscribe_states(socket, rest, 0)
+    assert_nothing_sent(socket, rest)
+    :gen_tcp.close(socket)
   end
 
   @tag adapter: nil

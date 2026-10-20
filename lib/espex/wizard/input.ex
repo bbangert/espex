@@ -44,9 +44,14 @@ defmodule Espex.Wizard.Input do
       the entity twice.
     * Changing the value from A to B and back to A sends A's entries
       again, so the device gets A's current state. Home Assistant then
-      tracks A twice on that connection, as with firmware.
-    * Links live in memory. Clients send every input again when they
-      connect, before subscribing to states, so nothing is stored.
+      tracks A twice on that connection, as with firmware. Every new
+      value adds a tracked entity on each subscribed connection until it
+      reconnects, as the protocol has no unsubscribe.
+    * Links live in memory and belong to the device, not to the client
+      that set them: they stay after it disconnects, until a client sets
+      the input again or `Espex.update_adapters/2` sets a new `:wizard`
+      module. Clients send every input again when they connect, before
+      subscribing to states, so nothing is stored.
   """
 
   alias Espex.HomeAssistantStates.Subscription

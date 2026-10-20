@@ -106,7 +106,10 @@ defmodule Espex.Supervisor do
       `:outgoing_target_store` adapter (`Espex.OutgoingTargetStore`).
       Home Assistant does this for the node's own config entry.
       Link-local IPv6 addresses are not remembered: they cannot be
-      dialed without a scope id. With `host`, nothing is learned.
+      dialed without a scope id. With `host`, nothing is learned. On a
+      keyless node with `accepts_key_provisioning`, the client that
+      provisions the key can then make itself the target; set `host`
+      if that matters on your network.
     * The first dial is `delay` after start. While a target client or
       the dialed connection is connected, nothing is dialed; when it
       goes, the node waits `delay` for it to return, then dials. A
@@ -284,7 +287,7 @@ defmodule Espex.Supervisor do
 
   @outgoing_keys [:host, :port, :delay, :target]
   # Test-only overrides of the dialer's timings (see Espex.Dialer).
-  @outgoing_private_keys [:connect_timeout, :precondition_retry, :backoff_min, :random]
+  @outgoing_private_keys [:connect_timeout, :precondition_retry, :backoff_min, :random, :dial]
 
   defp outgoing_connection!(nil, _device_config), do: nil
   defp outgoing_connection!(false, _device_config), do: nil

@@ -260,6 +260,20 @@ defmodule Espex.Connection do
     end
   end
 
+  # Crash reports print the process state: keep the Noise session keys
+  # out of them (DeviceConfig's inspect already hides the PSK).
+  @impl GenServer
+  def format_status(status) do
+    Map.update(status, :state, nil, fn
+      {socket, %ConnectionState{} = state} -> {socket, %{state | encryption: redact(state.encryption)}}
+      other -> other
+    end)
+  end
+
+  defp redact({phase, _secret}), do: {phase, :redacted}
+  defp redact({:active, _tx, _rx}), do: {:active, :redacted, :redacted}
+  defp redact(encryption), do: encryption
+
   # Restart the idle clock: cancel any pending tick, clear an outstanding
   # ping, and arm a fresh idle timer. A tick from the cancelled timer that
   # was already delivered is ignored by handle_info/2 (ref mismatch).
@@ -431,11 +445,15 @@ defmodule Espex.Connection do
   # Handshake helpers
   # ---------------------------------------------------------------------------
 
+  # A failed send is returned, not raised: on a dialed connection this
+  # runs in handle_connection/2, where a peer can reset before it.
   defp send_server_hello(socket, state) do
     config = state.device_config
     body = <<@noise_proto_selector, config.name::binary, 0, DeviceConfig.hello_mac(config)::binary, 0>>
-    :ok = ThousandIsland.Socket.send(socket, Noise.Frame.encode_outer(body))
-    Noise.init(:responder, config.psk, @noise_prologue)
+
+    with :ok <- ThousandIsland.Socket.send(socket, Noise.Frame.encode_outer(body)) do
+      Noise.init(:responder, config.psk, @noise_prologue)
+    end
   end
 
   defp complete_handshake(socket, state, noise, client_msg) do

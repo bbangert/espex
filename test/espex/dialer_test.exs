@@ -5,6 +5,9 @@ defmodule Espex.DialerTest do
   # PidTargetStore uses :persistent_term, so async: false.
   use ExUnit.Case, async: false
 
+  import Espex.Test.TcpClient, only: [wait_until: 1]
+
+  alias Espex.Dialer.Adopt
   alias Espex.Proto
   alias Espex.Test.{NoiseClient, PidTargetStore}
 
@@ -87,9 +90,9 @@ defmodule Espex.DialerTest do
     start(context, host: "127.0.0.1", port: closed_port)
 
     # Backoffs of 10, 20 and 40 ms.
-    assert_receive {:jitter, 5}
-    assert_receive {:jitter, 9}
-    assert_receive {:jitter, 17}
+    assert_receive {:jitter, 5}, 1_000
+    assert_receive {:jitter, 9}, 1_000
+    assert_receive {:jitter, 17}, 1_000
   end
 
   test "a missing key waits without escalating; a provisioned key starts the dial",
@@ -110,11 +113,11 @@ defmodule Espex.DialerTest do
     # The seed refuses (the listener is on 127.0.0.1 only), so the
     # backoff climbs until the target client says hello.
     %{port: port, dialer: dialer} = start(context, target: "127.0.0.2", port: ha_port)
-    assert_receive {:jitter, 9}
+    assert_receive {:jitter, 9}, 1_000
 
     client = target_client(port)
-    assert_receive {:store_target, {127, 0, 0, 1}}
-    assert %{phase: :idle, backoff: 10, target: {127, 0, 0, 1}} = :sys.get_state(dialer)
+    assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
+    wait_until(fn -> match?(%{phase: :idle, backoff: 10, target: {127, 0, 0, 1}}, :sys.get_state(dialer)) end)
 
     # No dial while it is connected; once it leaves, dial what it taught.
     assert {:error, :timeout} = :gen_tcp.accept(listener, 100)
@@ -128,11 +131,11 @@ defmodule Espex.DialerTest do
 
     PidTargetStore.put(self(), {:error, :disk_full})
     port |> target_client() |> close()
-    assert_receive {:store_target, {127, 0, 0, 1}}
+    assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
 
     PidTargetStore.put(self())
     port |> target_client() |> close()
-    assert_receive {:store_target, {127, 0, 0, 1}}
+    assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
 
     port |> target_client() |> close()
     refute_receive {:store_target, _}, 100
@@ -152,17 +155,122 @@ defmodule Espex.DialerTest do
     %{dialer: dialer} = start(context, host: "127.0.0.1", port: ha_port)
 
     listener |> accept_dial() |> :gen_tcp.close()
-    assert_receive {:jitter, 5}
+    assert_receive {:jitter, 5}, 1_000
 
     socket = accept_dial(listener)
     session = socket |> NoiseClient.handshake(@psk) |> hello(false)
-    assert %{phase: :idle, backoff: 20} = :sys.get_state(dialer)
+    wait_until(fn -> match?(%{phase: :idle, backoff: 20}, :sys.get_state(dialer)) end)
 
     close(session)
     socket = accept_dial(listener)
     assert %{backoff: 10} = :sys.get_state(dialer)
     refute_received {:jitter, _}
     :gen_tcp.close(socket)
+  end
+
+  describe "a dial that does not finish" do
+    # A dial function that reports to the test, then does what the test
+    # sends it: {:run, fun} runs fun.(address, port, opts) as the dial.
+    defp driven_dial do
+      test = self()
+
+      fn address, port, opts ->
+        send(test, {:dialing, self(), opts})
+
+        receive do
+          {:run, fun} -> fun.(address, port, opts)
+        end
+      end
+    end
+
+    # A connection under the dial supervisor that never gets a socket, as
+    # when a dial dies mid-handoff.
+    defp start_orphan(opts) do
+      child = {Espex.Connection, {Keyword.fetch!(opts, :handler_options), []}}
+      {:ok, pid} = DynamicSupervisor.start_child(Keyword.fetch!(opts, :connection_supervisor), child)
+      pid
+    end
+
+    test "a target client's hello stops it, and the connection it started",
+         %{ha_port: ha_port} = context do
+      %{port: port} = start(context, target: "127.0.0.1", port: ha_port, dial: driven_dial())
+
+      assert_receive {:dialing, task, opts}, 1_000
+      orphan = start_orphan(opts)
+      task_ref = Process.monitor(task)
+      orphan_ref = Process.monitor(orphan)
+
+      client = target_client(port)
+      assert_receive {:DOWN, ^task_ref, :process, ^task, :killed}, 1_000
+      assert_receive {:DOWN, ^orphan_ref, :process, ^orphan, _}, 1_000
+      close(client)
+    end
+
+    test "a dial that dies mid-handoff does not hold the slot", %{listener: listener, ha_port: ha_port} = context do
+      start(context, host: "127.0.0.1", port: ha_port, dial: driven_dial())
+
+      assert_receive {:dialing, task, opts}, 1_000
+      orphan = start_orphan(opts)
+      orphan_ref = Process.monitor(orphan)
+      send(task, {:run, fn _, _, _ -> exit(:handoff_failed) end})
+
+      assert_receive {:DOWN, ^orphan_ref, :process, ^orphan, _}, 1_000
+      assert_receive {:jitter, 5}, 1_000
+      assert_receive {:dialing, task, _opts}, 1_000
+      send(task, {:run, &Adopt.dial/3})
+      listener |> accept_dial() |> :gen_tcp.close()
+    end
+
+    test "a full dial supervisor waits without escalating", %{listener: listener, ha_port: ha_port} = context do
+      start(context, host: "127.0.0.1", port: ha_port, dial: driven_dial())
+
+      assert_receive {:dialing, task, _opts}, 1_000
+      send(task, {:run, fn _, _, _ -> {:error, :max_children} end})
+      assert_receive {:dialing, task, _opts}, 1_000
+      refute_received {:jitter, _}
+
+      send(task, {:run, &Adopt.dial/3})
+      listener |> accept_dial() |> :gen_tcp.close()
+    end
+
+    test "a dialed connection that dies before its dial's result keeps the delay",
+         %{listener: listener, ha_port: ha_port} = context do
+      %{dialer: dialer} = start(context, host: "127.0.0.1", port: ha_port, delay: 60_000, dial: driven_dial())
+      # The first dial waits delay; start it now.
+      send(dialer, {:tick, elem(:sys.get_state(dialer).timer, 0)})
+
+      assert_receive {:dialing, task, _opts}, 1_000
+      test = self()
+
+      # Dial, then hold the result until the connection has said hello
+      # and died.
+      send(
+        task,
+        {:run,
+         fn address, port, opts ->
+           result = Adopt.dial(address, port, opts)
+           send(test, {:dialed, result})
+
+           receive do
+             :report -> result
+           end
+         end}
+      )
+
+      assert_receive {:dialed, {:ok, conn}}, 1_000
+      socket = accept_dial(listener)
+      session = socket |> NoiseClient.handshake(@psk) |> hello(false)
+      conn_ref = Process.monitor(conn)
+      close(session)
+      assert_receive {:DOWN, ^conn_ref, :process, ^conn, _}, 1_000
+      wait_until(fn -> :sys.get_state(dialer).live == %{} end)
+
+      send(task, :report)
+      wait_until(fn -> :sys.get_state(dialer).dial == nil end)
+      assert %{phase: :waiting, backoff: 10, live: live} = :sys.get_state(dialer)
+      assert live == %{}
+      refute_received {:jitter, _}
+    end
   end
 
   describe "startup validation" do

@@ -16,7 +16,8 @@ defmodule Espex.InfraredQueue do
   #     on.
   #
   # A request without `reply_to` (a client below 1.18) takes no slot and
-  # is never answered, but still transmits in its lane. A requester that
+  # is never answered, but still transmits in its lane; a newer one for
+  # the same key drops it while it is queued. A requester that
   # dies loses its slots without a reply; its queued frames still go out.
   #
   # Each request carries the adapter the connection captured at accept,
@@ -111,7 +112,8 @@ defmodule Espex.InfraredQueue do
   def handle_info({:deadline, id}, state) do
     case state.reqs do
       %{^id => req} ->
-        Logger.warning("Espex IR transmit for key #{req.key} overdue — reported failed")
+        outcome = if req.reply_to, do: "reported failed", else: "stopped"
+        Logger.warning("Espex IR transmit for key #{req.key} overdue — #{outcome}")
         {:noreply, expire(state, req)}
 
       _settled ->
@@ -136,7 +138,20 @@ defmodule Espex.InfraredQueue do
 
   # The older owner of the key hears `false` now. Queued, it never
   # transmitted, so it is dropped; running, it finishes unanswered.
-  defp supersede(state, %{reply_to: nil}), do: state
+  #
+  # A request nobody waits on (a client below 1.18) takes no slot, but a
+  # newer one for the key still drops a queued one, so such a client
+  # cannot queue more than one frame per entity.
+  defp supersede(state, %{reply_to: nil} = new) do
+    queued_unowned? = fn {_id, req} ->
+      req.key == new.key and req.adapter == new.adapter and req.reply_to == nil and req.status == :queued
+    end
+
+    case Enum.find(state.reqs, queued_unowned?) do
+      {_id, old} -> drop_queued(state, old)
+      nil -> state
+    end
+  end
 
   defp supersede(state, %{key: key}) do
     case state.slots do
@@ -169,12 +184,7 @@ defmodule Espex.InfraredQueue do
   end
 
   defp release_owner(state, %{reply_to: pid} = req) do
-    slots = if state.slots[req.key] == req.id, do: Map.delete(state.slots, req.key), else: state.slots
-
-    reqs =
-      if Map.has_key?(state.reqs, req.id), do: Map.put(state.reqs, req.id, %{req | reply_to: nil}), else: state.reqs
-
-    %{state | slots: slots, reqs: reqs, monitors: demonitor(state.monitors, pid)}
+    %{disown(state, req) | monitors: demonitor(state.monitors, pid)}
   end
 
   # The requester is gone: its slots are freed with no reply, and its
@@ -187,11 +197,18 @@ defmodule Espex.InfraredQueue do
       {_ref_count, monitors} ->
         state.reqs
         |> Enum.filter(fn {_id, req} -> req.reply_to == pid end)
-        |> Enum.reduce(%{state | monitors: monitors}, fn {id, req}, acc ->
-          slots = if acc.slots[req.key] == id, do: Map.delete(acc.slots, req.key), else: acc.slots
-          %{acc | slots: slots, reqs: Map.put(acc.reqs, id, %{req | reply_to: nil})}
-        end)
+        |> Enum.reduce(%{state | monitors: monitors}, fn {_id, req}, acc -> disown(acc, req) end)
     end
+  end
+
+  # Free the request's slot and leave it without anyone to answer.
+  defp disown(state, req) do
+    slots = if state.slots[req.key] == req.id, do: Map.delete(state.slots, req.key), else: state.slots
+
+    reqs =
+      if Map.has_key?(state.reqs, req.id), do: Map.put(state.reqs, req.id, %{req | reply_to: nil}), else: state.reqs
+
+    %{state | slots: slots, reqs: reqs}
   end
 
   # One monitor per requester, counted per request it owns.

@@ -84,6 +84,7 @@ defmodule Espex.InfraredProxy do
   | No return 30 s past the frame's air time (air time counted up to 8 min) | Answers `success: false`, kills the call, and starts the next request |
   | The adapter raises or exits | Answers `success: false` |
   | The requesting client disconnects | Its frames still go out, unanswered |
+  | A client below 1.18 sends again for a key whose earlier frame from such a client has not started | The earlier one is dropped, so an unanswered client queues at most one frame per key |
 
   Calls for different adapter modules run in parallel. A request runs on
   the adapter its connection started with, even after

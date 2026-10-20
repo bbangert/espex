@@ -93,6 +93,8 @@ defmodule Espex.DeviceConfig do
           accepts_key_provisioning: boolean()
         }
 
+  # The key stays out of inspect output, crash reports included.
+  @derive {Inspect, except: [:psk]}
   defstruct name: "espex",
             friendly_name: "Espex",
             mac_address: "00:00:00:00:00:00",

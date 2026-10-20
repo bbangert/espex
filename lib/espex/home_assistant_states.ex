@@ -52,6 +52,10 @@ defmodule Espex.HomeAssistantStates do
   as a string otherwise; firmware components treat `"None"`,
   `"unavailable"` and `"unknown"` as no value.
 
+  As with firmware, espex does not check which client sent a state or
+  whether it subscribed: on a node without a Noise key, any client on
+  the network can send one.
+
   ## Example
 
       defmodule MyApp.HAStates do

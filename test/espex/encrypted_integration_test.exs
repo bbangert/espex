@@ -250,6 +250,22 @@ defmodule Espex.EncryptedIntegrationTest do
   end
 
   describe "noise handshake + encrypted Hello round-trip" do
+    test "the process status shows neither the PSK nor the session keys", %{port: port, server_name: server_name} do
+      sock = connect(port)
+      _tx_rx = do_handshake(sock)
+      Espex.Test.TcpClient.wait_until(fn -> Espex.connected_clients(server_name) != [] end)
+      [%Espex.ClientInfo{id: pid}] = Espex.connected_clients(server_name)
+
+      {:status, ^pid, _module, items} = :sys.get_status(pid)
+      printed = inspect(items, limit: :infinity, printable_limit: :infinity)
+
+      assert printed =~ "{:active, :redacted, :redacted}"
+      refute printed =~ inspect(@psk, limit: :infinity)
+      refute inspect(Espex.DeviceConfig.new(psk: @psk), limit: :infinity) =~ "psk"
+
+      :gen_tcp.close(sock)
+    end
+
     test "client handshake completes and HelloResponse decrypts correctly", %{port: port} do
       sock = connect(port)
 

@@ -131,6 +131,7 @@ defmodule Espex.Api118Test do
 
     setup do
       Espex.Test.SlowInfraredProxy.put_test_pid(self())
+      on_exit(&Espex.Test.SlowInfraredProxy.reset/0)
     end
 
     test "the connection answers a ping while its frame is on the air", %{port: port} do
@@ -432,6 +433,20 @@ defmodule Espex.Api118Test do
       # Back to A: its entries are sent again, so the device gets A's state.
       set_input(socket, outdoor, "sensor.a")
       _ = recv_links(socket, rest, "sensor.a")
+      :gen_tcp.close(socket)
+    end
+
+    test "a new wizard module drops the links set against the old one",
+         %{port: port, outdoor: outdoor, server_name: server_name} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe_states(socket, rest)
+      set_input(socket, outdoor, "sensor.outdoor")
+      rest = recv_links(socket, rest, "sensor.outdoor")
+
+      :ok = Espex.update_adapters(server_name, wizard: Espex.Test.TrackingWizard)
+      # Removal sends nothing; a later walk has no links left.
+      rest = subscribe_states(socket, rest)
+      assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end
 

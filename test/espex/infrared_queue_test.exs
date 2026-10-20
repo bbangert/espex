@@ -1,6 +1,8 @@
 defmodule Espex.InfraredQueueTest do
   use ExUnit.Case, async: true
 
+  import Espex.Test.TcpClient, only: [wait_until: 1]
+
   alias Espex.InfraredQueue
   alias Espex.Test.{BlockingInfraredProxy, OtherBlockingInfraredProxy}
 
@@ -8,7 +10,7 @@ defmodule Espex.InfraredQueueTest do
     task_sup = :"ir_tasks_#{context.test}"
     queue = :"ir_queue_#{context.test}"
 
-    start_supervised!({Task.Supervisor, name: task_sup})
+    start_supervised!({Task.Supervisor, name: task_sup, max_children: Map.get(context, :max_children, :infinity)})
 
     start_supervised!(
       {InfraredQueue, name: queue, task_supervisor: task_sup, grace_ms: Map.get(context, :grace_ms, 30_000)}
@@ -97,8 +99,8 @@ defmodule Espex.InfraredQueueTest do
       end)
 
     assert_receive {:DOWN, ^ref, :process, ^requester, :normal}
-    # Calling the queue orders this after its handling of the DOWN.
-    assert :sys.get_state(queue).slots == %{1 => 0}
+    # The queue sees the requester's DOWN on its own schedule.
+    wait_until(fn -> :sys.get_state(queue).slots == %{1 => 0} end)
 
     release(first)
     assert_receive {:started, :orphan, orphan}
@@ -166,5 +168,36 @@ defmodule Espex.InfraredQueueTest do
     refute_received {:espex_ir_transmit_complete, 1, 2, _}
     release(after_task)
     assert_receive {:espex_ir_transmit_complete, 1, 3, true}
+  end
+
+  @tag max_children: 1
+  test "a transmit the task supervisor cannot start is reported false", %{queue: queue} do
+    transmit(queue, 1, :a)
+    assert_receive {:started, :a, a}
+
+    transmit(queue, 2, :b, device_id: 2, adapter: OtherBlockingInfraredProxy)
+    assert_receive {:espex_ir_transmit_complete, 2, 2, false}
+
+    release(a)
+    assert_receive {:espex_ir_transmit_complete, 1, 0, true}
+  end
+
+  test "an unanswered request drops a queued unanswered one for the same key", %{queue: queue} do
+    transmit(queue, 1, :running, reply_to: nil)
+    assert_receive {:started, :running, running}
+
+    transmit(queue, 2, :first, reply_to: nil)
+    transmit(queue, 2, :second, reply_to: nil)
+    transmit(queue, 3, :other, reply_to: nil)
+
+    release(running)
+    assert_receive {:started, :second, second}
+    release(second)
+    assert_receive {:started, :other, other}
+    release(other)
+    refute_received {:started, :first, _}
+
+    # Nothing is left queued.
+    wait_until(fn -> :sys.get_state(queue).reqs == %{} end)
   end
 end
