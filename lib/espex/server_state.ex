@@ -23,7 +23,8 @@ defmodule Espex.ServerState do
       entity_provider: nil,
       psk_store: nil,
       connection_listener: nil,
-      sendspin: nil
+      sendspin: nil,
+      wizard: nil
     },
     ble_owners: %{},
     serial_owners: %{},
@@ -52,7 +53,8 @@ defmodule Espex.ServerState do
   Unlike `put_adapters/2` this checks the input: every key must be a
   known feature and every value `nil` or a loadable module. The first
   offending entry is `{:error, {:unknown_adapter, key}}` or
-  `{:error, {:invalid_adapter, key, value}}` and nothing is applied.
+  `{:error, {:invalid_adapter, key, value}}` and nothing is applied. A
+  `:wizard` adapter on an OTP without `:zstd` (before 28) is invalid.
   Structs are not accepted as `changes` (the guard rejects them).
   """
   @spec merge_adapters(t(), keyword() | map()) ::
@@ -60,7 +62,7 @@ defmodule Espex.ServerState do
   def merge_adapters(%__MODULE__{} = state, changes) when is_list(changes) or is_non_struct_map(changes) do
     Enum.reduce_while(changes, {:ok, state}, fn
       {key, value}, {:ok, acc} when is_map_key(acc.adapters, key) ->
-        if valid_adapter?(value) do
+        if valid_adapter?(value) and (key != :wizard or value == nil or Espex.Wizard.available?()) do
           {:cont, {:ok, %{acc | adapters: Map.put(acc.adapters, key, value)}}}
         else
           {:halt, {:error, {:invalid_adapter, key, value}}}

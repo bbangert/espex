@@ -155,10 +155,11 @@ defmodule Espex do
   The keys are the adapter options `Espex.Supervisor` accepts:
   `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
   `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
-  `:psk_store`, `:connection_listener`, `:sendspin`. An unknown key is
+  `:psk_store`, `:connection_listener`, `:sendspin`, `:wizard`. An unknown key is
   `{:error, {:unknown_adapter, key}}` and a value that is neither `nil`
-  nor a loadable module is `{:error, {:invalid_adapter, key, value}}`;
-  either leaves the adapters untouched.
+  nor a loadable module is `{:error, {:invalid_adapter, key, value}}`,
+  as is a `:wizard` adapter on OTP older than 28; either leaves the
+  adapters untouched.
 
       :ok = Espex.update_adapters(MyApp.EspexServer, bluetooth_scanner: nil, bluetooth_proxy: nil)
       :ok = Espex.disconnect_clients(MyApp.EspexServer)

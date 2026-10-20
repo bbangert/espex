@@ -32,6 +32,7 @@ and a complete example:
 - `Espex.BluetoothScanner`
 - `Espex.BluetoothProxy`
 - `Espex.EntityProvider`
+- `Espex.Wizard`
 - `Espex.Mdns`
 
 ## Features
@@ -61,6 +62,10 @@ and a complete example:
   live native-API connections (peer, client_info, API version, encrypted?,
   timestamps), with an `Espex.ConnectionListener` callback for change
   notifications
+- Device wizard (`Espex.Wizard`) — onboarding pages Home Assistant
+  shows when the device is added, showing your entities and asking the
+  user to pick Home Assistant entities, which espex hands to your
+  adapter (OTP 28+)
 - Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
   `Espex.Mdns.MdnsLite` adapter over the
   [`mdns_lite`](https://hex.pm/packages/mdns_lite) library for the Nerves
@@ -74,6 +79,7 @@ and a complete example:
   - `Espex.EntityProvider`
   - `Espex.PskStore` (persist a runtime-provisioned Noise PSK)
   - `Espex.ConnectionListener` (observe the connected-client set)
+  - `Espex.Wizard` (device wizard pages and inputs)
 
 ## Installation
 

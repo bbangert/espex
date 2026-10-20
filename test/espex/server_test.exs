@@ -222,6 +222,11 @@ defmodule Espex.ServerTest do
       assert adapters.serial_proxy == nil
     end
 
+    test "accepts the 0.12.0 sendspin and wizard adapters", %{server: server} do
+      assert Server.update_adapters(server, sendspin: Espex.Test.FakeSendspin, wizard: Espex.Test.TrackingWizard) == :ok
+      assert %{sendspin: Espex.Test.FakeSendspin, wizard: Espex.Test.TrackingWizard} = Server.adapters(server)
+    end
+
     test "nil disables a feature", %{server: server} do
       :ok = Server.update_adapters(server, entity_provider: Espex.Test.FakeEntityProvider)
       :ok = Server.update_adapters(server, entity_provider: nil)

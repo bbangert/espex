@@ -35,6 +35,7 @@ defmodule Espex.Supervisor do
         psk_store: MyApp.MyPskStore,        # persists a runtime-provisioned PSK
         connection_listener: MyApp.Tracker, # notified when the connected-client set changes
         sendspin: MyApp.MySendspin,         # reports a Sendspin client (Espex.Sendspin)
+        wizard: MyApp.MyWizard,             # device wizard (Espex.Wizard, OTP 28+)
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -95,7 +96,8 @@ defmodule Espex.Supervisor do
     :entity_provider,
     :psk_store,
     :connection_listener,
-    :sendspin
+    :sendspin,
+    :wizard
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -146,6 +148,7 @@ defmodule Espex.Supervisor do
     num_acceptors = opts[:num_acceptors] || 10
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
+    check_wizard_available!(adapters)
 
     children =
       [
@@ -191,6 +194,16 @@ defmodule Espex.Supervisor do
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
+
+  defp check_wizard_available!(%{wizard: wizard}) when wizard != nil do
+    if not Espex.Wizard.available?() do
+      raise ArgumentError,
+            "the :wizard adapter #{inspect(wizard)} needs OTP 28 or newer, which has the :zstd module " <>
+              "the device wizard is compressed with; this node runs OTP #{System.otp_release()}"
+    end
+  end
+
+  defp check_wizard_available!(_adapters), do: :ok
 
   # Builds the advertiser child spec when the caller opted in via :mdns.
   defp mdns_children(opts, device_config, supervisor_name) do

@@ -18,7 +18,8 @@ defmodule Espex.Connection do
     Proto,
     Sendspin,
     Server,
-    SerialProxy
+    SerialProxy,
+    Wizard
   }
 
   @noise_prologue "NoiseAPIInit" <> <<0, 0>>
@@ -69,6 +70,7 @@ defmodule Espex.Connection do
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
         entities: load_entities(adapters),
+        wizard: load_wizard(adapters),
         encryption: encryption,
         connected_at: now,
         last_activity_at: now,
@@ -730,6 +732,13 @@ defmodule Espex.Connection do
     send_or_halt(socket, state, response)
   end
 
+  defp interpret_action(_socket, state, {:wizard_input_set, key, entity_ids}) do
+    state.adapters.wizard.input_set(key, entity_ids)
+    |> log_adapter_error(state.peer, "wizard input_set for key #{key}")
+
+    {:cont, state}
+  end
+
   defp interpret_action(_socket, state, :ble_scanner_subscribe) do
     state.adapters.bluetooth_scanner.subscribe(self())
     |> log_adapter_error(state.peer, "BLE scanner subscribe")
@@ -1141,6 +1150,19 @@ defmodule Espex.Connection do
 
   defp load_serial_proxies(%{serial_proxy: nil}), do: []
   defp load_serial_proxies(%{serial_proxy: module}), do: module.list_instances()
+
+  defp load_wizard(%{wizard: nil}), do: nil
+
+  defp load_wizard(%{wizard: module}) do
+    case module.wizard() do
+      %Wizard.Document{} = document ->
+        document
+
+      other ->
+        raise ArgumentError,
+              "#{inspect(module)}.wizard/0 must return an %Espex.Wizard.Document{}, got: #{inspect(other)}"
+    end
+  end
 
   defp load_infrared_entities(%{infrared_proxy: nil}), do: []
   defp load_infrared_entities(%{infrared_proxy: module}), do: module.list_entities()

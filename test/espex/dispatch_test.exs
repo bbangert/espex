@@ -446,6 +446,58 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "device wizard" do
+    @wizard Espex.Test.TrackingWizard.wizard()
+    @light Espex.Wizard.fnv1_hash("light")
+    @calendars Espex.Wizard.fnv1_hash("calendars")
+
+    test "capabilities report a configured wizard only when one is captured" do
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{wizard: nil}}]} =
+        Dispatch.handle_request(state(), %Proto.DeviceCapabilitiesRequest{})
+
+      {_s, [{:send, %Proto.DeviceCapabilitiesResponse{wizard: %Proto.WizardCapabilities{configured: true}}}]} =
+        Dispatch.handle_request(state(wizard: @wizard), %Proto.DeviceCapabilitiesRequest{})
+    end
+
+    test "DeviceWizardRequest sends the blob, or is ignored without a wizard" do
+      {_s, [{:send, %Proto.DeviceWizardResponse{data: data}}]} =
+        Dispatch.handle_request(state(wizard: @wizard), %Proto.DeviceWizardRequest{})
+
+      assert data == Espex.Wizard.Document.to_blob(@wizard)
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.DeviceWizardRequest{})
+    end
+
+    test "WizardInputSetRequest for a single input emits :wizard_input_set" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "light.kitchen"}
+      {_s, [{:wizard_input_set, @light, ["light.kitchen"]}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+    end
+
+    test "WizardInputSetRequest for a multiple input emits the trimmed ids" do
+      req = %Proto.WizardInputSetRequest{key: @calendars, entity_id: "calendar.a, calendar.b"}
+
+      {_s, [{:wizard_input_set, @calendars, ["calendar.a", "calendar.b"]}]} =
+        Dispatch.handle_request(state(wizard: @wizard), req)
+    end
+
+    test "WizardInputSetRequest with an invalid value warns without the value" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "not-an-entity"}
+      {_s, [{:log, :warning, message}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+      assert message =~ "#{@light}"
+      refute message =~ "not-an-entity"
+    end
+
+    test "WizardInputSetRequest for an unknown key warns" do
+      req = %Proto.WizardInputSetRequest{key: 1, entity_id: "light.kitchen"}
+      {_s, [{:log, :warning, message}]} = Dispatch.handle_request(state(wizard: @wizard), req)
+      assert message =~ "no input has key 1"
+    end
+
+    test "WizardInputSetRequest without a wizard is ignored" do
+      req = %Proto.WizardInputSetRequest{key: @light, entity_id: "light.kitchen"}
+      {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), req)
+    end
+  end
+
   describe "SendspinPairingTokenRequest" do
     test "without an adapter: only a debug log, no reply" do
       {_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.SendspinPairingTokenRequest{})

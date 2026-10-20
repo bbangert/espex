@@ -30,6 +30,10 @@ All entities share a few fields. Unless called out otherwise:
 - `device_id` — optional `uint32` linking this entity to a sub-device
   declared in `DeviceConfig.Device`
 
+A device wizard (`Espex.Wizard`) refers to entities by the same `key`
+and `device_id`: an `Espex.Wizard.Entity` on a wizard page shows the
+entity with that key when Home Assistant adds the device.
+
 ## AlarmControlPanel
 
 A security-panel entity with named arm modes and an optional code.

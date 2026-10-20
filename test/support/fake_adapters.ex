@@ -939,3 +939,39 @@ defmodule Espex.Test.IdentitySerialProxy do
   @impl true
   def close(_handle), do: :ok
 end
+
+defmodule Espex.Test.TrackingWizard do
+  @moduledoc """
+  Wizard adapter with one page: entity 1001, a single input "light" and a
+  multiple input "calendars" with max_length 300. `input_set/2` sends
+  `{:wizard_input_set, key, entity_ids}` to the pid stored under
+  `{__MODULE__, :listener}` in `:persistent_term`. Tests using it MUST
+  run `async: false`.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Entity, EntityFilter, Input, Page}
+
+  @impl true
+  def wizard do
+    Document.new!(
+      pages: [
+        %Page{
+          title: "Setup",
+          description: "[%key:component::espex::wizard::setup%]",
+          entities: [%Entity{key: 1001, description: "Test the backlight"}],
+          inputs: [
+            %Input{id: "light", entity_filters: [%EntityFilter{domain: ["light"]}]},
+            %Input{id: "calendars", multiple: true, max_length: 300}
+          ]
+        }
+      ]
+    )
+  end
+
+  @impl true
+  def input_set(key, entity_ids) do
+    if pid = :persistent_term.get({__MODULE__, :listener}, nil), do: send(pid, {:wizard_input_set, key, entity_ids})
+    :ok
+  end
+end

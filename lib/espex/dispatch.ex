@@ -3,7 +3,7 @@ defmodule Espex.Dispatch do
 
   import Bitwise
 
-  alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy}
+  alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy, Wizard}
 
   # Bit positions for Proto.SerialProxy{Set,Get}ModemPins{Request,Response}.line_states,
   # per ESPHome's SerialProxyLineStateFlag enum in serial_proxy.h.
@@ -54,6 +54,7 @@ defmodule Espex.Dispatch do
           | :infrared_subscribe
           | :infrared_unsubscribe
           | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
+          | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
           | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
              InfraredProxy.transmit_opts()}
@@ -135,7 +136,11 @@ defmodule Espex.Dispatch do
   # adapter and fills `sendspin` before sending.
   def handle_request(state, %Proto.DeviceCapabilitiesRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
-    response = DeviceConfig.to_device_capabilities_response(state.device_config, serial_protos)
+
+    response =
+      state.device_config
+      |> DeviceConfig.to_device_capabilities_response(serial_protos)
+      |> Map.put(:wizard, if(state.wizard, do: %Proto.WizardCapabilities{configured: true}))
 
     if ConnectionState.adapter?(state, :sendspin) do
       {state, [{:send_device_capabilities, response}]}
@@ -384,6 +389,35 @@ defmodule Espex.Dispatch do
 
       true ->
         handle_infrared_transmit(state, req)
+    end
+  end
+
+  # -- Device wizard --
+
+  # The document is captured at accept, so all three wizard messages are
+  # pure. Without one they are ignored, as upstream without
+  # USE_API_WIZARD; clients send them only when capabilities say so.
+  def handle_request(%{wizard: nil} = state, %Proto.DeviceWizardRequest{}) do
+    {state, [{:log, :debug, "device wizard request ignored — no wizard configured"}]}
+  end
+
+  def handle_request(state, %Proto.DeviceWizardRequest{}) do
+    {state, [{:send, %Proto.DeviceWizardResponse{data: Wizard.Document.to_blob(state.wizard)}}]}
+  end
+
+  def handle_request(%{wizard: nil} = state, %Proto.WizardInputSetRequest{}) do
+    {state, [{:log, :debug, "wizard input set ignored — no wizard configured"}]}
+  end
+
+  # As api_wizard.cpp: no reply, and an ignored request is only logged.
+  # The value stays out of the log.
+  def handle_request(state, %Proto.WizardInputSetRequest{key: key, entity_id: value}) do
+    with %Wizard.Input{} = input <- Wizard.Document.find_input(state.wizard, key),
+         {:ok, entity_ids} <- Wizard.Input.parse_entity_ids(input, value) do
+      {state, [{:wizard_input_set, key, entity_ids}]}
+    else
+      nil -> {state, [{:log, :warning, "wizard input set ignored — no input has key #{key}"}]}
+      :error -> {state, [{:log, :warning, "wizard input set for key #{key} ignored — not a valid entity id"}]}
     end
   end
 

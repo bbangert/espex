@@ -1,7 +1,7 @@
 defmodule Espex.ConnectionState do
   @moduledoc false
 
-  alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy}
+  alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy, Wizard}
 
   @type feature ::
           :serial_proxy
@@ -13,6 +13,7 @@ defmodule Espex.ConnectionState do
           | :psk_store
           | :connection_listener
           | :sendspin
+          | :wizard
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -51,6 +52,7 @@ defmodule Espex.ConnectionState do
           serial_proxies: [SerialProxy.Info.t()],
           infrared_entities: [InfraredProxy.Entity.t()],
           entities: [struct()],
+          wizard: Wizard.Document.t() | nil,
           opened_ports: %{non_neg_integer() => term()},
           serial_subscriptions: MapSet.t(non_neg_integer()),
           serial_modes: %{non_neg_integer() => SerialProxy.mode()},
@@ -87,6 +89,7 @@ defmodule Espex.ConnectionState do
     serial_proxies: [],
     infrared_entities: [],
     entities: [],
+    wizard: nil,
     opened_ports: %{},
     serial_subscriptions: MapSet.new(),
     serial_modes: %{},
@@ -106,7 +109,8 @@ defmodule Espex.ConnectionState do
       entity_provider: nil,
       psk_store: nil,
       connection_listener: nil,
-      sendspin: nil
+      sendspin: nil,
+      wizard: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,

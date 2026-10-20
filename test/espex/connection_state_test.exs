@@ -47,7 +47,8 @@ defmodule Espex.ConnectionStateTest do
                entity_provider: nil,
                psk_store: nil,
                connection_listener: nil,
-               sendspin: nil
+               sendspin: nil,
+               wizard: nil
              }
     end
 

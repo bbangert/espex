@@ -1,8 +1,8 @@
 defmodule Espex.Api118Test do
-  # API 1.18: IR/RF transmit completion, Sendspin and serial proxy
-  # identity. Exercised over real
-  # TCP. FakeSendspin reads its answers from :persistent_term, which is
-  # why this file stays async: false.
+  # API 1.18: IR/RF transmit completion, Sendspin, serial proxy identity
+  # and the device wizard. Exercised over real TCP. FakeSendspin and
+  # TrackingWizard use :persistent_term, which is why this file stays
+  # async: false.
   use ExUnit.Case, async: false
 
   import Espex.Test.TcpClient
@@ -224,6 +224,64 @@ defmodule Espex.Api118Test do
 
     test "without a serial adapter the subscribe goes unanswered", %{port: port} do
       {socket, rest} = subscribe_identity(port)
+      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      :gen_tcp.close(socket)
+    end
+  end
+
+  describe "device wizard" do
+    setup do
+      key = {Espex.Test.TrackingWizard, :listener}
+      :persistent_term.put(key, self())
+      on_exit(fn -> :persistent_term.erase(key) end)
+    end
+
+    @tag adapters: %{wizard: Espex.Test.TrackingWizard}
+    test "capabilities report it, and the client can fetch and decode it", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{wizard: %Proto.WizardCapabilities{configured: true}}, rest} =
+               recv_struct(socket, rest)
+
+      send_struct(socket, %Proto.DeviceWizardRequest{})
+      assert {:ok, %Proto.DeviceWizardResponse{data: data}, _} = recv_struct(socket, rest)
+
+      assert %{"version" => 1, "pages" => [page]} =
+               data |> :zstd.decompress() |> IO.iodata_to_binary() |> JSON.decode!()
+
+      assert page["title"] == "Setup"
+      assert page["entities"] == [%{"key" => 1001, "description" => "Test the backlight"}]
+      assert [%{"key" => light}, %{"key" => calendars, "multiple" => true, "max_length" => 300}] = page["inputs"]
+      assert {light, calendars} == {Espex.Wizard.fnv1_hash("light"), Espex.Wizard.fnv1_hash("calendars")}
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{wizard: Espex.Test.TrackingWizard}
+    test "a valid input set reaches the adapter; an invalid one does not", %{port: port} do
+      {socket, _hello, _rest} = hello(port)
+      calendars = Espex.Wizard.fnv1_hash("calendars")
+
+      send_struct(socket, %Proto.WizardInputSetRequest{key: calendars, entity_id: "calendar.a,calendar.b"})
+      assert_receive {:wizard_input_set, ^calendars, ["calendar.a", "calendar.b"]}, 1_000
+
+      send_struct(socket, %Proto.WizardInputSetRequest{key: calendars, entity_id: "calendar.a,"})
+      send_struct(socket, %Proto.WizardInputSetRequest{key: 1, entity_id: "light.kitchen"})
+      # A ping after the ignored requests proves the connection has handled them.
+      send_struct(socket, %Proto.PingRequest{})
+      assert {:ok, %Proto.PingResponse{}, _} = recv_struct(socket)
+      refute_received {:wizard_input_set, _, _}
+      :gen_tcp.close(socket)
+    end
+
+    test "without an adapter capabilities report no wizard and the request goes unanswered", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{wizard: nil}, rest} = recv_struct(socket, rest)
+
+      send_struct(socket, %Proto.DeviceWizardRequest{})
       assert {:error, :timeout} = recv_struct(socket, rest, 200)
       :gen_tcp.close(socket)
     end
