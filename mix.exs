@@ -33,7 +33,7 @@ defmodule Espex.MixProject do
 
   defp deps do
     [
-      {:thousand_island, "~> 1.4"},
+      {:thousand_island, "~> 1.5"},
       {:protobuf, "~> 0.12"},
       {:protobuf_generate, "~> 0.2", runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

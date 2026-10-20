@@ -1145,3 +1145,24 @@ defmodule Espex.Test.LinkedWizard do
   @impl true
   defdelegate input_set(key, entity_ids), to: Espex.Test.TrackingWizard
 end
+
+defmodule Espex.Test.PidTargetStore do
+  @moduledoc """
+  `Espex.OutgoingTargetStore` that sends `{:store_target, ip}` to the pid
+  set with `put/2` and answers the result set there (`:ok` by default).
+  Tests using it MUST run `async: false`.
+  """
+  @behaviour Espex.OutgoingTargetStore
+
+  @key {__MODULE__, :config}
+
+  def put(pid, result \\ :ok), do: :persistent_term.put(@key, {pid, result})
+  def reset, do: :persistent_term.erase(@key)
+
+  @impl true
+  def store_target(ip) do
+    {pid, result} = :persistent_term.get(@key, {nil, :ok})
+    if pid, do: send(pid, {:store_target, ip})
+    result
+  end
+end

@@ -156,7 +156,7 @@ defmodule Espex do
   `:serial_proxy`, `:zwave_proxy`, `:infrared_proxy`,
   `:bluetooth_scanner`, `:bluetooth_proxy`, `:entity_provider`,
   `:psk_store`, `:connection_listener`, `:sendspin`, `:wizard`,
-  `:home_assistant_states`. An unknown key is
+  `:home_assistant_states`, `:outgoing_target_store`. An unknown key is
   `{:error, {:unknown_adapter, key}}` and a value that is neither `nil`
   nor a loadable module is `{:error, {:invalid_adapter, key, value}}`,
   as is a `:wizard` adapter on OTP older than 28; either leaves the

@@ -82,6 +82,7 @@ defmodule Espex.Dispatch do
           | {:entity_command, struct()}
           | {:set_psk, binary()}
           | :client_connected
+          | {:dialer_hello, :dialed | :target}
           | {:arm_disconnect_timeout, pos_integer()}
 
   @type result :: {ConnectionState.t(), [action()]}
@@ -106,12 +107,14 @@ defmodule Espex.Dispatch do
       name: state.device_config.name
     }
 
+    {state, outgoing_actions} = outgoing_hello(state, req)
+
     {state,
      [
        {:log, :info, "hello from #{state.peer} (client_info=#{inspect(req.client_info)})"},
        {:send, response},
        :client_connected
-     ]}
+     ] ++ outgoing_actions}
   end
 
   def handle_request(state, %Proto.AuthenticationRequest{}) do
@@ -131,7 +134,12 @@ defmodule Espex.Dispatch do
 
   def handle_request(state, %Proto.DeviceInfoRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
-    response = DeviceConfig.to_device_info_response(state.device_config, serial_protos)
+
+    response = %{
+      DeviceConfig.to_device_info_response(state.device_config, serial_protos)
+      | api_outgoing_connection_supported: state.outgoing_connection?
+    }
+
     {state, [{:send, response}]}
   end
 
@@ -1260,6 +1268,26 @@ defmodule Espex.Dispatch do
          {:log, :warning, "serial proxy #{type} for unknown instance #{req.instance}"},
          {:send, response}
        ]}
+    end
+  end
+
+  # Dial-back, as upstream's HelloRequest handler: a hello on a dialed
+  # connection tells the dialer the dial worked, and a client that sets
+  # outgoing_connection_target over Noise becomes the dial-back target,
+  # once per connection. Without a key the flag is refused; without
+  # dial-back configured it is ignored.
+  defp outgoing_hello(state, req) do
+    dialed = if state.dialed?, do: [{:dialer_hello, :dialed}], else: []
+
+    cond do
+      not req.outgoing_connection_target or state.outgoing_target? or not state.outgoing_connection? ->
+        {state, dialed}
+
+      match?({:active, _, _}, state.encryption) ->
+        {ConnectionState.put_outgoing_target(state), dialed ++ [{:dialer_hello, :target}]}
+
+      true ->
+        {state, dialed ++ [{:log, :warning, "dial-back target refused; no key active"}]}
     end
   end
 

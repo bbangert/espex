@@ -55,8 +55,10 @@ defmodule Espex.Connection do
     {:ok, _} = Registry.register(registry_name, :subscribers, nil)
 
     server_state = Server.get_state(server_name)
-    peer = peer_label(socket)
+    peer_address = peer_address(socket)
+    peer = peer_label(peer_address)
     adapters = server_state.adapters
+    dialed? = Keyword.get(handler_options, :dialed, false)
 
     device_config = device_config_for(server_state.device_config, adapters)
 
@@ -73,6 +75,10 @@ defmodule Espex.Connection do
         client_registry: client_registry,
         task_supervisor: Keyword.get(handler_options, :task_supervisor),
         infrared_queue: Keyword.get(handler_options, :infrared_queue),
+        dialer: Keyword.get(handler_options, :dialer),
+        dialed?: dialed?,
+        outgoing_connection?: Keyword.get(handler_options, :outgoing_connection?, false),
+        peer_address: peer_address,
         adapters: adapters,
         serial_proxies: load_serial_proxies(adapters),
         infrared_entities: load_infrared_entities(adapters),
@@ -92,8 +98,36 @@ defmodule Espex.Connection do
     # snapshot has no client_info yet; the :client_connected action
     # refreshes it after hello, and each inbound frame refreshes activity.
     {:ok, _} = Registry.register(client_registry, self(), ClientInfo.new(self(), state))
-    Logger.info("Espex client connected from #{peer} (encryption=#{inspect(encryption)})")
-    {:continue, reset_keepalive(state)}
+
+    if dialed? do
+      start_dialed(socket, state)
+    else
+      Logger.info("Espex client connected from #{peer} (encryption=#{inspect(encryption)})")
+      {:continue, reset_keepalive(state)}
+    end
+  end
+
+  # A connection espex dialed speaks first, as upstream mark_outgoing():
+  # Home Assistant's listener reads the server hello to tell which device
+  # dialed it before it sends anything. Dial-back is Noise only; without
+  # a key the dial counts as failed.
+  defp start_dialed(_socket, %{encryption: :disabled} = state) do
+    Logger.warning("Espex dialed #{state.peer} without a Noise key — closing")
+    {:close, state}
+  end
+
+  defp start_dialed(socket, state) do
+    Logger.info("Espex dialed #{state.peer}")
+
+    case send_server_hello(socket, state) do
+      {:ok, noise} ->
+        state = ConnectionState.put_encryption(state, {:awaiting_client_hello_outgoing, noise})
+        {:continue, reset_keepalive(state)}
+
+      {:error, reason} ->
+        Logger.warning("Espex dialed #{state.peer} Noise init failed: #{inspect(reason)}")
+        {:close, state}
+    end
   end
 
   @impl ThousandIsland.Handler
@@ -274,6 +308,23 @@ defmodule Espex.Connection do
       {:ok, _hello_body, rest} ->
         state = ConnectionState.put_buffer(state, rest)
         on_server_hello(send_server_hello(socket, state), socket, state)
+
+      other ->
+        halt_on_frame_error(other, state, :noise_preamble)
+    end
+  end
+
+  # Dialed connection: the server hello already went out, so the client's
+  # hello frame only moves the handshake on.
+  defp process_buffer(socket, %{encryption: {:awaiting_client_hello_outgoing, noise}} = state) do
+    case Noise.Frame.decode_outer(state.buffer) do
+      {:ok, _hello_body, rest} ->
+        state =
+          state
+          |> ConnectionState.put_buffer(rest)
+          |> ConnectionState.put_encryption({:awaiting_init, noise})
+
+        process_buffer(socket, state)
 
       other ->
         halt_on_frame_error(other, state, :noise_preamble)
@@ -776,6 +827,13 @@ defmodule Espex.Connection do
       {:cont, state}
   end
 
+  # Hellos the dialer counts: a dialed connection's (the dial worked) and
+  # a dial-back target's. A cast, so the connection never waits on it.
+  defp interpret_action(_socket, state, {:dialer_hello, role}) do
+    if state.dialer, do: GenServer.cast(state.dialer, {:hello, role, self(), state.peer_address})
+    {:cont, state}
+  end
+
   defp interpret_action(_socket, state, :ble_scanner_subscribe) do
     state.adapters.bluetooth_scanner.subscribe(self())
     |> log_adapter_error(state.peer, "BLE scanner subscribe")
@@ -1263,15 +1321,18 @@ defmodule Espex.Connection do
     :ok
   end
 
-  # Only an IP peer is formatted as addr:port. A non-IP peer (a Unix
-  # domain socket's `{:local, path}`) or, on thousand_island < 1.6, a
-  # failed lookup, is "unknown".
-  defp peer_label(socket) do
+  # The raw IP peer, for the dial-back target. nil for a non-IP peer (a
+  # Unix domain socket's `{:local, path}`) or, on thousand_island < 1.6,
+  # a failed lookup.
+  defp peer_address(socket) do
     case ThousandIsland.Socket.peername(socket) do
-      {:ok, {addr, port}} when is_tuple(addr) -> "#{:inet.ntoa(addr)}:#{port}"
-      _ -> "unknown"
+      {:ok, {addr, _port} = peer} when is_tuple(addr) -> peer
+      _ -> nil
     end
   end
+
+  defp peer_label({addr, port}), do: "#{:inet.ntoa(addr)}:#{port}"
+  defp peer_label(nil), do: "unknown"
 
   # Pattern-matched helpers used by interpret_action/3 above.
 

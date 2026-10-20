@@ -16,6 +16,7 @@ defmodule Espex.ConnectionState do
           | :sendspin
           | :wizard
           | :home_assistant_states
+          | :outgoing_target_store
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -23,6 +24,8 @@ defmodule Espex.ConnectionState do
 
     * `:disabled` — no PSK; plaintext transport only
     * `:awaiting_hello` — PSK set; waiting for the client's NOISE_HELLO frame
+    * `{:awaiting_client_hello_outgoing, handshake}` — a dialed connection
+      sent ServerHello first; waiting for the client's NOISE_HELLO frame
     * `{:awaiting_init, handshake}` — sent ServerHello; waiting for client's
       handshake init message
     * `{:active, tx, rx}` — handshake complete; encrypted transport
@@ -30,6 +33,7 @@ defmodule Espex.ConnectionState do
   @type encryption ::
           :disabled
           | :awaiting_hello
+          | {:awaiting_client_hello_outgoing, Noise.handshake()}
           | {:awaiting_init, Noise.handshake()}
           | {:active, Noise.cipher(), Noise.cipher()}
 
@@ -48,6 +52,11 @@ defmodule Espex.ConnectionState do
           client_registry: atom() | nil,
           task_supervisor: atom() | nil,
           infrared_queue: atom() | nil,
+          dialer: atom() | nil,
+          dialed?: boolean(),
+          outgoing_connection?: boolean(),
+          outgoing_target?: boolean(),
+          peer_address: {:inet.ip_address(), :inet.port_number()} | nil,
           client_info: String.t() | nil,
           api_version: {non_neg_integer(), non_neg_integer()} | nil,
           connected_at: integer() | nil,
@@ -87,6 +96,16 @@ defmodule Espex.ConnectionState do
     client_registry: nil,
     task_supervisor: nil,
     infrared_queue: nil,
+    # Dial-back (API 1.18): the Espex.Dialer to tell about hellos, nil
+    # without :outgoing_connection; whether espex dialed this connection;
+    # whether dial-back is configured (DeviceInfo advertises it); whether
+    # this client declared itself the dial-back target; and the raw peer
+    # address the dialer learns the target from.
+    dialer: nil,
+    dialed?: false,
+    outgoing_connection?: false,
+    outgoing_target?: false,
+    peer_address: nil,
     client_info: nil,
     api_version: nil,
     connected_at: nil,
@@ -123,7 +142,8 @@ defmodule Espex.ConnectionState do
       connection_listener: nil,
       sendspin: nil,
       wizard: nil,
-      home_assistant_states: nil
+      home_assistant_states: nil,
+      outgoing_target_store: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
@@ -397,6 +417,12 @@ defmodule Espex.ConnectionState do
     subscriptions = state.ha_subscriptions |> MapSet.difference(MapSet.new(removed)) |> MapSet.union(MapSet.new(new))
     {%{state | ha_subscriptions: subscriptions}, new}
   end
+
+  @doc """
+  Mark the client as the dial-back target. Set once per connection.
+  """
+  @spec put_outgoing_target(t()) :: t()
+  def put_outgoing_target(%__MODULE__{} = state), do: %{state | outgoing_target?: true}
 
   @doc """
   Mark that the client sent `SubscribeHomeAssistantStatesRequest`. There

@@ -936,6 +936,46 @@ defmodule Espex.DispatchTest do
     end
   end
 
+  describe "dial-back hello" do
+    defp flagged, do: %Proto.HelloRequest{client_info: "ha", outgoing_connection_target: true}
+    defp active(state), do: %{state | encryption: {:active, :tx, :rx}}
+
+    test "a flagged hello over Noise makes the client the target, once" do
+      s = active(state(outgoing_connection?: true))
+      {s, actions} = Dispatch.handle_request(s, flagged())
+      assert List.last(actions) == {:dialer_hello, :target}
+      assert s.outgoing_target?
+
+      {_s, actions} = Dispatch.handle_request(s, flagged())
+      refute Enum.any?(actions, &match?({:dialer_hello, _}, &1))
+    end
+
+    test "without a key the flag is refused; without dial-back it is ignored" do
+      {s, actions} = Dispatch.handle_request(state(outgoing_connection?: true), flagged())
+      assert {:log, :warning, "dial-back target refused; no key active"} = List.last(actions)
+      refute s.outgoing_target?
+
+      {_s, actions} = Dispatch.handle_request(active(state()), flagged())
+      assert List.last(actions) == :client_connected
+    end
+
+    test "a hello on a dialed connection tells the dialer" do
+      s = active(state(dialed?: true, outgoing_connection?: true))
+      {_s, actions} = Dispatch.handle_request(s, %Proto.HelloRequest{})
+      assert List.last(actions) == {:dialer_hello, :dialed}
+
+      {_s, actions} = Dispatch.handle_request(s, flagged())
+      assert Enum.take(actions, -2) == [{:dialer_hello, :dialed}, {:dialer_hello, :target}]
+    end
+
+    test "DeviceInfo advertises dial-back when it is configured" do
+      {_s, [{:send, info}]} = Dispatch.handle_request(state(outgoing_connection?: true), %Proto.DeviceInfoRequest{})
+      assert info.api_outgoing_connection_supported
+      {_s, [{:send, info}]} = Dispatch.handle_request(state(), %Proto.DeviceInfoRequest{})
+      refute info.api_outgoing_connection_supported
+    end
+  end
+
   describe "Home Assistant state subscriptions" do
     alias Espex.HomeAssistantStates.Subscription
 

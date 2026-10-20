@@ -49,7 +49,8 @@ defmodule Espex.ConnectionStateTest do
                connection_listener: nil,
                sendspin: nil,
                wizard: nil,
-               home_assistant_states: nil
+               home_assistant_states: nil,
+               outgoing_target_store: nil
              }
     end
 
