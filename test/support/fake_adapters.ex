@@ -896,3 +896,46 @@ defmodule Espex.Test.FlaggedSendspin do
   @impl true
   def feature_flags, do: 0b11
 end
+
+defmodule Espex.Test.IdentitySerialProxy do
+  @moduledoc """
+  Serial adapter with two ports and `identity/1`: instance 0 is a USB
+  device (returned with a wrong `instance`, which espex must correct),
+  instance 1 carries no identity.
+  """
+  @behaviour Espex.SerialProxy
+
+  alias Espex.SerialProxy.{Identity, Info}
+
+  @impl true
+  def list_instances do
+    [
+      Info.new(instance: 0, name: "zigbee", port_type: :usb_serial),
+      Info.new(instance: 1, name: "aux", port_type: :ttl)
+    ]
+  end
+
+  @impl true
+  def identity(0) do
+    Identity.new(
+      instance: 99,
+      source: :usb,
+      connected?: true,
+      manufacturer: "Nabu Casa",
+      product: "ZBT-2",
+      serial_number: "3c2f19a0",
+      usb: %{vendor_id: 0x303A, product_id: 0x4001, interface_number: 1}
+    )
+  end
+
+  def identity(1), do: nil
+
+  @impl true
+  def open(_instance, _opts, _subscriber), do: {:ok, :fake_handle}
+
+  @impl true
+  def write(_handle, _data), do: :ok
+
+  @impl true
+  def close(_handle), do: :ok
+end

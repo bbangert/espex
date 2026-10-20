@@ -627,6 +627,19 @@ defmodule Espex.Connection do
     send_or_halt(socket, state, Dispatch.serial_request_response(instance, :set_mode, result))
   end
 
+  defp interpret_action(socket, state, :serial_identity_snapshot) do
+    adapter = state.adapters.serial_proxy
+
+    Enum.reduce_while(state.serial_proxies, {:cont, state}, fn %SerialProxy.Info{instance: instance}, {:cont, state} ->
+      identity = serial_identity(adapter, instance)
+
+      case send_or_halt(socket, state, SerialProxy.Identity.to_proto(identity)) do
+        {:cont, state} -> {:cont, {:cont, state}}
+        halt -> {:halt, halt}
+      end
+    end)
+  end
+
   # The acknowledgement goes out before the initial HOME_ID_CHANGE so the
   # client's subscribe-and-await resolves first.
   defp interpret_action(socket, state, :zwave_subscribe) do
@@ -1278,6 +1291,19 @@ defmodule Espex.Connection do
   # actually provides here: AuthenticationRequest is answered
   # unconditionally, so a keyless connection is anonymous by construction.
   defp command_context(state), do: %{encrypted?: match?({:active, _, _}, state.encryption)}
+
+  # The instance is forced to the one asked about, so an adapter that
+  # returns a stale struct cannot report it under another port.
+  defp serial_identity(adapter, instance) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :identity, 1) do
+      case adapter.identity(instance) do
+        %SerialProxy.Identity{} = identity -> %{identity | instance: instance}
+        nil -> %SerialProxy.Identity{instance: instance}
+      end
+    else
+      %SerialProxy.Identity{instance: instance}
+    end
+  end
 
   defp sendspin_feature_flags(adapter) do
     if Code.ensure_loaded?(adapter) and function_exported?(adapter, :feature_flags, 0) do

@@ -47,6 +47,7 @@ defmodule Espex.Dispatch do
           | {:serial_subscribe, instance :: non_neg_integer()}
           | {:serial_unsubscribe, instance :: non_neg_integer()}
           | {:serial_set_mode, instance :: non_neg_integer(), SerialProxy.mode()}
+          | :serial_identity_snapshot
           | :zwave_subscribe
           | :zwave_unsubscribe
           | {:zwave_send_frame, binary()}
@@ -349,6 +350,17 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # Answered with one SerialProxyIdentity per advertised port (the
+  # handler reads the adapter), then each pushed change. Unanswered
+  # without a serial adapter, as upstream without USE_SERIAL_PROXY.
+  def handle_request(state, %Proto.SubscribeSerialProxyIdentityRequest{}) do
+    if ConnectionState.adapter?(state, :serial_proxy) do
+      {ConnectionState.put_serial_identity_subscribed(state), [:serial_identity_snapshot]}
+    else
+      {state, [{:log, :debug, "serial proxy identity subscribe ignored — no adapter configured"}]}
+    end
+  end
+
   # -- Infrared Proxy --
 
   # Every request is answered with InfraredRFTransmitCompleteResponse
@@ -648,6 +660,14 @@ defmodule Espex.Dispatch do
     }
 
     {state, [{:send, message}]}
+  end
+
+  def handle_event(state, {:espex_serial_proxy_identity, %SerialProxy.Identity{instance: instance} = identity}) do
+    if state.serial_identity_subscribed and ConnectionState.find_serial_proxy(state, instance) do
+      {state, [{:send, SerialProxy.Identity.to_proto(identity)}]}
+    else
+      {state, []}
+    end
   end
 
   def handle_event(state, {:espex_ir_receive, key, timings}) do

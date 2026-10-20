@@ -275,6 +275,28 @@ defmodule Espex do
     end)
   end
 
+  @doc since: "0.12.0"
+  @doc """
+  Broadcast a serial proxy port's new identity (API 1.18).
+
+  Call this from an `Espex.SerialProxy` adapter when the device behind a
+  port changes, for example when a USB device is attached or removed.
+  Each connection forwards it as a `SerialProxyIdentity` only if its
+  client sent `SubscribeSerialProxyIdentityRequest` and the connection
+  advertises `identity.instance`; others drop it. See "Identity" in
+  `Espex.SerialProxy`.
+
+  `server_name` defaults to `Espex.Server`.
+  """
+  @spec push_serial_proxy_identity(atom(), Espex.SerialProxy.Identity.t()) :: :ok
+  def push_serial_proxy_identity(server_name \\ Server, %Espex.SerialProxy.Identity{} = identity) do
+    registry = EspexSupervisor.registry_name(server_name)
+
+    Registry.dispatch(registry, :subscribers, fn entries ->
+      Enum.each(entries, fn {pid, _} -> send(pid, {:espex_serial_proxy_identity, identity}) end)
+    end)
+  end
+
   @doc since: "0.5.0"
   @doc """
   List the currently-connected native-API clients as

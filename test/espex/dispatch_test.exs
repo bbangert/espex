@@ -2,7 +2,7 @@ defmodule Espex.DispatchTest do
   use ExUnit.Case, async: true
 
   alias Espex.{ConnectionState, DeviceConfig, Dispatch, InfraredProxy, Proto, SerialProxy}
-  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy, FakeSendspin}
+  alias Espex.Test.{FakeEntityProvider, FakeInfraredProxy, FakeSendspin, FakeSerialProxy}
 
   defp state(overrides \\ []) do
     defaults = [
@@ -755,6 +755,45 @@ defmodule Espex.DispatchTest do
 
     test "without adapter: logs warning" do
       {_s, [{:log, :warning, _}]} = Dispatch.handle_request(state(), %Proto.ZWaveProxyFrame{data: "abc"})
+    end
+  end
+
+  describe "SubscribeSerialProxyIdentityRequest" do
+    test "without a serial adapter: only a debug log, no reply" do
+      {new_s, [{:log, :debug, _}]} = Dispatch.handle_request(state(), %Proto.SubscribeSerialProxyIdentityRequest{})
+      refute new_s.serial_identity_subscribed
+    end
+
+    test "with a serial adapter: subscribes and emits the snapshot action" do
+      s = state(adapters: %{serial_proxy: FakeSerialProxy})
+      {new_s, [:serial_identity_snapshot]} = Dispatch.handle_request(s, %Proto.SubscribeSerialProxyIdentityRequest{})
+      assert new_s.serial_identity_subscribed
+    end
+  end
+
+  describe ":espex_serial_proxy_identity event" do
+    @identity %SerialProxy.Identity{instance: 0, source: :usb, product: "ZBT-2"}
+
+    test "forwarded when subscribed and the instance is advertised" do
+      s =
+        state(serial_proxies: [SerialProxy.Info.new(instance: 0, name: "zigbee")])
+        |> ConnectionState.put_serial_identity_subscribed()
+
+      {_s, [{:send, %Proto.SerialProxyIdentity{instance: 0, product: "ZBT-2"}}]} =
+        Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
+    end
+
+    test "dropped when not subscribed" do
+      s = state(serial_proxies: [SerialProxy.Info.new(instance: 0, name: "zigbee")])
+      assert {_s, []} = Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
+    end
+
+    test "dropped for an instance this connection does not advertise" do
+      s =
+        state(serial_proxies: [SerialProxy.Info.new(instance: 1, name: "aux")])
+        |> ConnectionState.put_serial_identity_subscribed()
+
+      assert {_s, []} = Dispatch.handle_event(s, {:espex_serial_proxy_identity, @identity})
     end
   end
 

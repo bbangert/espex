@@ -57,6 +57,7 @@ defmodule Espex.ConnectionState do
           serial_open_failures: %{non_neg_integer() => integer()},
           zwave_subscribed: boolean(),
           infrared_subscribed: boolean(),
+          serial_identity_subscribed: boolean(),
           bluetooth_scanner_subscribed: boolean(),
           bluetooth_connections_free_subscribed: boolean(),
           bluetooth_owned: MapSet.t(non_neg_integer()),
@@ -92,6 +93,7 @@ defmodule Espex.ConnectionState do
     serial_open_failures: %{},
     zwave_subscribed: false,
     infrared_subscribed: false,
+    serial_identity_subscribed: false,
     bluetooth_scanner_subscribed: false,
     bluetooth_connections_free_subscribed: false,
     bluetooth_owned: MapSet.new(),
@@ -310,6 +312,13 @@ defmodule Espex.ConnectionState do
   def put_infrared_subscribed(%__MODULE__{} = state, subscribed?) do
     %{state | infrared_subscribed: subscribed?}
   end
+
+  @doc """
+  Mark the serial proxy identity subscription (API 1.18). There is no
+  unsubscribe; it lasts for the connection.
+  """
+  @spec put_serial_identity_subscribed(t()) :: t()
+  def put_serial_identity_subscribed(%__MODULE__{} = state), do: %{state | serial_identity_subscribed: true}
 
   @doc """
   Mark whether the client is subscribed to BLE raw advertisements.

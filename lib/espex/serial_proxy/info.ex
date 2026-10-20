@@ -12,7 +12,8 @@ defmodule Espex.SerialProxy.Info do
 
   alias Espex.Proto
 
-  @type port_type :: :ttl | :rs232 | :rs485
+  @typedoc "`:usb_serial` since 0.12.0."
+  @type port_type :: :ttl | :rs232 | :rs485 | :usb_serial
   @typedoc "A modem control line the port can drive via `set_modem_pins/3`. Since 0.10.0."
   @type line :: :rts | :dtr
 
@@ -62,4 +63,5 @@ defmodule Espex.SerialProxy.Info do
   defp port_type_to_proto(:ttl), do: :SERIAL_PROXY_PORT_TYPE_TTL
   defp port_type_to_proto(:rs232), do: :SERIAL_PROXY_PORT_TYPE_RS232
   defp port_type_to_proto(:rs485), do: :SERIAL_PROXY_PORT_TYPE_RS485
+  defp port_type_to_proto(:usb_serial), do: :SERIAL_PROXY_PORT_TYPE_USB_SERIAL
 end

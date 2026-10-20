@@ -1,5 +1,6 @@
 defmodule Espex.Api118Test do
-  # API 1.18: IR/RF transmit completion and Sendspin. Exercised over real
+  # API 1.18: IR/RF transmit completion, Sendspin and serial proxy
+  # identity. Exercised over real
   # TCP. FakeSendspin reads its answers from :persistent_term, which is
   # why this file stays async: false.
   use ExUnit.Case, async: false
@@ -155,6 +156,75 @@ defmodule Espex.Api118Test do
 
       assert {:ok, %Proto.SendspinPairingTokenResponse{} = resp, _} = recv_struct(socket, rest)
       assert {resp.status, resp.token} == {:SENDSPIN_PAIRING_TOKEN_STATUS_ENCRYPTION_REQUIRED, ""}
+      :gen_tcp.close(socket)
+    end
+  end
+
+  describe "SerialProxyIdentity" do
+    defp subscribe_identity(port) do
+      {socket, _hello, rest} = hello(port)
+      send_struct(socket, %Proto.SubscribeSerialProxyIdentityRequest{})
+      {socket, rest}
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.IdentitySerialProxy}
+    test "the snapshot has one identity per port, from identity/1", %{port: port} do
+      {socket, rest} = subscribe_identity(port)
+
+      assert {:ok, %Proto.SerialProxyIdentity{} = usb, rest} = recv_struct(socket, rest)
+      assert {:ok, %Proto.SerialProxyIdentity{} = none, _} = recv_struct(socket, rest)
+
+      assert usb.instance == 0
+      assert usb.source == :SERIAL_PROXY_IDENTITY_SOURCE_USB
+      assert usb.flags == 1
+      assert {usb.manufacturer, usb.product} == {"Nabu Casa", "ZBT-2"}
+      assert usb.usb.vendor_id == 0x303A
+
+      assert none == %Proto.SerialProxyIdentity{instance: 1, source: :SERIAL_PROXY_IDENTITY_SOURCE_NONE}
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.FakeSerialProxyWithOne}
+    test "without identity/1 every port reports NONE", %{port: port} do
+      {socket, rest} = subscribe_identity(port)
+
+      assert {:ok, %Proto.SerialProxyIdentity{instance: 0, source: :SERIAL_PROXY_IDENTITY_SOURCE_NONE, usb: nil}, _} =
+               recv_struct(socket, rest)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.IdentitySerialProxy}
+    test "a push reaches only subscribed connections", %{port: port, server_name: server_name} do
+      {subscribed, rest} = subscribe_identity(port)
+      {:ok, _, rest} = recv_struct(subscribed, rest)
+      {:ok, _, rest} = recv_struct(subscribed, rest)
+      {other, _hello, other_rest} = hello(port)
+
+      identity = %Espex.SerialProxy.Identity{instance: 1, source: :usb, connected?: true, product: "Stick"}
+      :ok = Espex.push_serial_proxy_identity(server_name, identity)
+
+      assert {:ok, %Proto.SerialProxyIdentity{instance: 1, product: "Stick"}, _} = recv_struct(subscribed, rest)
+      assert {:error, :timeout} = recv_struct(other, other_rest, 200)
+
+      :gen_tcp.close(subscribed)
+      :gen_tcp.close(other)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.IdentitySerialProxy}
+    test "a push for an unadvertised instance is dropped", %{port: port, server_name: server_name} do
+      {socket, rest} = subscribe_identity(port)
+      {:ok, _, rest} = recv_struct(socket, rest)
+      {:ok, _, rest} = recv_struct(socket, rest)
+
+      :ok = Espex.push_serial_proxy_identity(server_name, %Espex.SerialProxy.Identity{instance: 5})
+      assert {:error, :timeout} = recv_struct(socket, rest, 200)
+      :gen_tcp.close(socket)
+    end
+
+    test "without a serial adapter the subscribe goes unanswered", %{port: port} do
+      {socket, rest} = subscribe_identity(port)
+      assert {:error, :timeout} = recv_struct(socket, rest, 200)
       :gen_tcp.close(socket)
     end
   end
