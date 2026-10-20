@@ -34,8 +34,10 @@ defmodule Espex.Connection do
   # CONFIGURE is exempt so an explicit reconfigure always retries.
   @lazy_open_backoff_ms 1_000
 
-  # SendspinPairingTokenResponse.token max_data_length in api.proto.
+  # max_data_length in api.proto of SendspinPairingTokenResponse.token and
+  # SendspinCapabilities.client_id.
   @sendspin_token_max_length 127
+  @sendspin_client_id_max_length 43
 
   @impl ThousandIsland.Handler
   def handle_connection(socket, handler_options) do
@@ -1332,7 +1334,7 @@ defmodule Espex.Connection do
     flags = sendspin_feature_flags(adapter)
     client_id = adapter.client_id()
 
-    if is_integer(flags) and flags >= 0 and (client_id == nil or (is_binary(client_id) and String.valid?(client_id))) do
+    if is_integer(flags) and flags >= 0 and (client_id == nil or valid_client_id?(client_id)) do
       %Proto.SendspinCapabilities{feature_flags: flags, client_id: client_id || ""}
     else
       Logger.warning("Espex #{state.peer} Sendspin feature_flags/client_id returned an unexpected value")
@@ -1343,6 +1345,9 @@ defmodule Espex.Connection do
       Logger.warning("Espex #{state.peer} Sendspin capabilities crashed (#{crash_label(kind, reason)})")
       %Proto.SendspinCapabilities{feature_flags: Sendspin.pairing_token_feature(), client_id: ""}
   end
+
+  defp valid_client_id?(id),
+    do: is_binary(id) and byte_size(id) <= @sendspin_client_id_max_length and String.valid?(id)
 
   defp sendspin_feature_flags(adapter) do
     if Code.ensure_loaded?(adapter) and function_exported?(adapter, :feature_flags, 0) do

@@ -31,9 +31,9 @@ defmodule Espex.Sendspin do
   process.
 
   Clients read capabilities on every connect. If `c:client_id/0` or
-  `c:feature_flags/0` raises or returns something that is not a string
-  (or `nil`) and a non-negative integer, espex logs it and reports an
-  empty client id, rather than dropping the connection.
+  `c:feature_flags/0` raises, or returns something other than `nil` or a
+  UTF-8 string of at most 43 bytes and a non-negative integer, espex logs
+  it and reports an empty client id rather than dropping the connection.
 
   ## Pairing token
 

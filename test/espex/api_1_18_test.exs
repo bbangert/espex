@@ -174,6 +174,29 @@ defmodule Espex.Api118Test do
     end
 
     @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
+    test "client_id is held to its 43-byte limit", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      at_limit = String.duplicate("a", 43)
+
+      Espex.Test.FakeSendspin.put(client_id: at_limit)
+      send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+
+      assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: %{client_id: ^at_limit}}, rest} =
+               recv_struct(socket, rest)
+
+      Espex.Test.FakeSendspin.put(client_id: at_limit <> "a")
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send_struct(socket, %Proto.DeviceCapabilitiesRequest{})
+          assert {:ok, %Proto.DeviceCapabilitiesResponse{sendspin: %{client_id: ""}}, _} = recv_struct(socket, rest)
+        end)
+
+      assert log =~ "unexpected value"
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{sendspin: Espex.Test.FakeSendspin}
     test "a crashing client_id/0 reports an empty client id and keeps the connection", %{port: port} do
       Espex.Test.FakeSendspin.put(client_id: :raise)
 
