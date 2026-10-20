@@ -85,9 +85,15 @@ defmodule Espex.MixProject do
       extras: [
         "README.md",
         "guides/architecture.md",
-        "guides/entity_types.md"
+        "guides/entity_types.md",
+        "guides/api/1.15.md": [title: "API 1.15"],
+        "guides/api/1.16.md": [title: "API 1.16"],
+        "guides/api/1.17.md": [title: "API 1.17"],
+        "guides/api/1.18.md": [title: "API 1.18"]
       ],
+      # The first matching group wins, so the narrower pattern goes first.
       groups_for_extras: [
+        "API versions": ~r"guides/api/.*",
         Guides: ~r"guides/.*"
       ]
     ]

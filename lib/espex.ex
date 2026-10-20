@@ -16,10 +16,15 @@ defmodule Espex do
     * [Entity types](entity_types.html) — per-type cookbook for the
       common ESPHome entities (Switch, BinarySensor, Sensor, Button,
       Light, Cover, Climate) with proto structs and example snippets
+    * API version guides — what each ESPHome API version added and how
+      espex implements it: [1.15](1.15.html), [1.16](1.16.html),
+      [1.17](1.17.html), [1.18](1.18.html)
     * `Espex.SerialProxy`, `Espex.ZWaveProxy`, `Espex.InfraredProxy`,
       `Espex.BluetoothScanner`, `Espex.BluetoothProxy`,
-      `Espex.EntityProvider`, `Espex.Mdns` — the seven behaviours,
-      each with callback reference and a complete example adapter
+      `Espex.EntityProvider`, `Espex.Sendspin`, `Espex.Wizard`,
+      `Espex.HomeAssistantStates`, `Espex.Mdns` — the hardware and
+      feature behaviours, each with callback reference and a complete
+      example adapter
 
   ## Quick start
 

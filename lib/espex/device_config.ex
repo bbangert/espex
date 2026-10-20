@@ -285,19 +285,8 @@ defmodule Espex.DeviceConfig do
   protocol handling of its own. Past 1.10 each step required:
 
     * 1.14 — `object_id` optional on entities (espex always sends it)
-    * 1.15 — `DeviceCapabilitiesRequest` answered
-    * 1.16 — `ZWaveProxyRequestResponse` after SUBSCRIBE / UNSUBSCRIBE,
-      `SerialProxyRequestResponse` after CONFIGURE and SET_MODEM_PINS,
-      `status` on `SerialProxyGetModemPinsResponse`
-    * 1.17 — serial proxy single-owner rule (the SUBSCRIBEd connection
-      owns the instance; others get `PORT_IN_USE`) and
-      `SerialProxySetModeRequest` (RAW / PROTOCOL) acknowledged with
-      `SET_MODE`
-    * 1.18 — every `InfraredRFTransmitRawTimingsRequest` answered with
-      `InfraredRFTransmitCompleteResponse` (clients pace IR/RF frames on
-      it); `SubscribeSerialProxyIdentityRequest` answered per port; the
-      optional Sendspin (`Espex.Sendspin`) and device wizard
-      (`Espex.Wizard`) messages
+    * 1.15 to 1.18 — see the API version guides: [1.15](1.15.html),
+      [1.16](1.16.html), [1.17](1.17.html) and [1.18](1.18.html)
   """
   @spec api_version_minor() :: non_neg_integer()
   def api_version_minor, do: @api_version_minor
