@@ -156,6 +156,12 @@ defmodule Espex.Proto.PbExtension do
     json_name: "trackPresence",
     default: false
   )
+
+  extend(Google.Protobuf.FieldOptions, :progmem, 50021,
+    optional: true,
+    type: :bool,
+    default: false
+  )
 end
 
 defmodule Espex.Proto.Void do
