@@ -239,4 +239,23 @@ defmodule Espex.InfraredQueueTest do
     refute_received {:started, :legacy, _}
     assert :sys.get_state(queue).reqs == %{}
   end
+
+  @tag max_children: 1
+  test "a finished task frees its slot before the next frame in its lane starts", %{queue: queue} do
+    transmit(queue, 1, :first, device_id: 1)
+    assert_receive {:started, :first, first}
+    transmit(queue, 2, :second, device_id: 2)
+
+    # Hold open the window a task leaves between reporting its result
+    # and exiting: the result arrives while the task still holds the one
+    # slot.
+    %{lanes: %{BlockingInfraredProxy => %{running: id}}} = :sys.get_state(queue)
+    send(Process.whereis(queue), {:transmit_done, id, :ok})
+    assert_receive {:espex_ir_transmit_complete, 1, 1, true}
+
+    assert_receive {:started, :second, second}
+    refute Process.alive?(first)
+    release(second)
+    assert_receive {:espex_ir_transmit_complete, 2, 2, true}
+  end
 end

@@ -130,6 +130,8 @@ defmodule Espex.DialerTest do
     %{port: port, dialer: dialer} = start(context, target: "127.0.0.2", port: ha_port)
     client = target_client(port)
     assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
+    # The store hears the target before the dialer saves it to the Server.
+    :sys.get_state(dialer)
 
     # A dialer fault takes its subtree and the listener down; the target
     # client goes with them.
@@ -154,6 +156,7 @@ defmodule Espex.DialerTest do
     :ok = Espex.update_adapters(server, outgoing_target_store: Espex.Test.OtherPidTargetStore)
     port |> target_client() |> close()
     assert_receive {:other_store_target, {127, 0, 0, 1}}, 1_000
+    :sys.get_state(dialer)
 
     # A restarted dialer knows the new store holds it.
     old = Process.whereis(dialer)

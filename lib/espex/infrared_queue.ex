@@ -99,8 +99,13 @@ defmodule Espex.InfraredQueue do
   @impl GenServer
   def handle_info({:transmit_done, id, result}, state) do
     case state.reqs do
-      %{^id => %{status: :running} = req} ->
-        Process.demonitor(elem(req.task, 0), [:flush])
+      %{^id => %{status: :running, task: {ref, pid}} = req} ->
+        Process.demonitor(ref, [:flush])
+        # The task sent this just before exiting. Retire it now: its exit
+        # and the next frame's start reach the task supervisor from
+        # different processes, so the start could otherwise find the
+        # finished task still holding a slot.
+        _ = Task.Supervisor.terminate_child(state.task_supervisor, pid)
         log_result(result, req)
         {:noreply, finish(state, req, result == :ok)}
 
