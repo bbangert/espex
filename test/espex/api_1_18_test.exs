@@ -113,6 +113,20 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
+    test "a crash of the transmit queue keeps the connection", %{port: port, server_name: server_name} do
+      {socket, _hello, rest} = hello(port)
+      queue = Espex.Supervisor.infrared_queue_name(server_name)
+      old = Process.whereis(queue)
+      ref = Process.monitor(old)
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^old, :killed}
+
+      wait_until(fn -> Process.whereis(queue) not in [nil, old] end)
+      transmit(socket, 42)
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
     test "only the requesting connection receives the completion", %{port: port} do
       {a, _hello, rest_a} = hello(port)
       {b, _hello, rest_b} = hello(port)

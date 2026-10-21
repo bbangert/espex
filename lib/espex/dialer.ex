@@ -14,8 +14,8 @@ defmodule Espex.Dialer do
   #
   #   * :waiting — a timer is armed; on its tick, dial. The first wait,
   #     from boot, is `delay`.
-  #   * :connecting — a dial task runs (TCP connect, up to 10 s, then the
-  #     handoff).
+  #   * :connecting — a dial task runs the TCP connect (up to 10 s) and
+  #     hands the socket here; this process starts the connection on it.
   #   * :idle — a dial-back client is connected. When it goes, wait
   #     `delay` for it to come back before dialing.
   #
@@ -30,9 +30,12 @@ defmodule Espex.Dialer do
   # :outgoing_target_store adapter. Only the address is kept; the dial
   # always goes to the configured port.
   #
-  # Connections report their hellos by cast, so a connection never waits
-  # on this process; their casts arrive before their :DOWN (same sender),
-  # so a :DOWN knows whether the hello was seen.
+  # This process owns the handoff: it starts the dialed connection, gives
+  # it the socket and monitors it in one callback, so there is never a
+  # connection it does not know of, and nothing from that connection can
+  # reach it first. Connections report their hellos by cast, so a
+  # connection never waits on this process; their casts arrive before
+  # their :DOWN (same sender), so a :DOWN knows whether the hello was seen.
 
   use GenServer
 
@@ -43,9 +46,6 @@ defmodule Espex.Dialer do
 
   @connect_timeout_ms 10_000
   @precondition_retry_ms 5_000
-  # The tree starts the dialer before its two supervisors; a tick that
-  # beats them retries soon instead of waiting a precondition retry.
-  @startup_retry_ms 100
 
   @doc false
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -59,14 +59,13 @@ defmodule Espex.Dialer do
 
     state = %{
       server: Keyword.fetch!(opts, :server),
-      connection_supervisor: Keyword.fetch!(opts, :connection_supervisor),
       task_supervisor: Keyword.fetch!(opts, :task_supervisor),
-      dial_fun: Keyword.get(opts, :dial, &Adopt.dial/3),
+      connect: Keyword.get(opts, :connect, &Adopt.connect/3),
+      connect_timeout: Keyword.get(opts, :connect_timeout, @connect_timeout_ms),
       adopt_opts: [
         connection_supervisor: Keyword.fetch!(opts, :connection_supervisor),
         handler_options: Keyword.fetch!(opts, :handler_options),
-        read_timeout: Keyword.fetch!(opts, :read_timeout),
-        connect_timeout: Keyword.get(opts, :connect_timeout, @connect_timeout_ms)
+        read_timeout: Keyword.fetch!(opts, :read_timeout)
       ],
       port: Keyword.fetch!(opts, :port),
       delay: Keyword.fetch!(opts, :delay),
@@ -82,9 +81,6 @@ defmodule Espex.Dialer do
       timer: nil,
       backoff: nil,
       dial: nil,
-      # A dialed connection whose death was handled before its dial's
-      # result arrived (the two come from different processes).
-      settled_dial: nil,
       live: %{}
     }
 
@@ -102,17 +98,13 @@ defmodule Espex.Dialer do
     Process.demonitor(monitor, [:flush])
     state = %{state | dial: nil}
 
-    case result do
-      {:ok, pid} when pid == state.settled_dial ->
-        {:noreply, %{state | settled_dial: nil}}
-
-      {:ok, pid} ->
-        {:noreply, %{track(state, pid, :dialed?) | phase: :idle}}
-
+    with {:ok, socket} <- result,
+         {:ok, pid} <- Adopt.start_connection(socket, state.adopt_opts) do
+      {:noreply, %{track(state, pid, :dialed?) | phase: :idle}}
+    else
       {:error, :max_children} ->
-        # The last dialed connection has not left its supervisor yet, or
-        # a dial that died mid-handoff left one behind.
-        {:noreply, state |> sweep_untracked() |> schedule(state.precondition_retry)}
+        # The last dialed connection has not left its supervisor yet.
+        {:noreply, schedule(state, state.precondition_retry)}
 
       {:error, reason} ->
         Logger.warning("Espex dial-back to #{target_label(state)} failed: #{inspect(reason)}")
@@ -120,23 +112,21 @@ defmodule Espex.Dialer do
     end
   end
 
-  def handle_info({:dial_result, _stale, _result}, state), do: {:noreply, state}
+  # A dial dropped while it was connecting: nobody wants its socket.
+  def handle_info({:dial_result, _stale, result}, state) do
+    with {:ok, socket} <- result, do: :gen_tcp.close(socket)
+    {:noreply, state}
+  end
 
-  # A dial that died mid-handoff may leave a connection waiting for a
-  # socket that never comes; it would hold the one slot for good.
   def handle_info({:DOWN, monitor, :process, pid, reason}, %{dial: {_ref, pid, monitor}} = state) do
     Logger.warning("Espex dial-back to #{target_label(state)} crashed: #{inspect(reason)}")
-    {:noreply, retry(sweep_untracked(%{state | dial: nil}))}
+    {:noreply, retry(%{state | dial: nil})}
   end
 
   def handle_info({:DOWN, _monitor, :process, pid, _reason}, state) do
     case Map.pop(state.live, pid) do
-      {nil, _live} ->
-        {:noreply, state}
-
-      {conn, live} ->
-        settled = if conn.dialed? and state.dial != nil, do: pid, else: state.settled_dial
-        {:noreply, connection_down(%{state | live: live, settled_dial: settled}, conn)}
+      {nil, _live} -> {:noreply, state}
+      {conn, live} -> {:noreply, connection_down(%{state | live: live}, conn)}
     end
   end
 
@@ -147,15 +137,14 @@ defmodule Espex.Dialer do
     {:noreply, state |> track(pid, :dialed?) |> mark_hello(pid)}
   end
 
-  # A target client: stop any dial in flight, reset the backoff, and
-  # learn where it came from. Tracked first: it may be the connection the
-  # dial in flight just started, which cancel_dial/1 must not stop.
+  # A target client: drop any dial in flight, reset the backoff, and
+  # learn where it came from.
   def handle_cast({:hello, :target, pid, peer}, state) do
     state =
       state
       |> track(pid, :target?)
       |> mark_hello(pid)
-      |> cancel_dial()
+      |> drop_dial()
       |> cancel_timer()
       |> learn(peer)
 
@@ -167,50 +156,54 @@ defmodule Espex.Dialer do
   defp try_dial(state) do
     cond do
       connected?(state) -> %{state | phase: :idle}
-      not tree_started?(state) -> schedule(state, @startup_retry_ms)
       state.target == nil -> schedule(state, state.precondition_retry)
       not psk?(state) -> schedule(state, state.precondition_retry)
       true -> start_dial(state)
     end
   end
 
+  # The task only connects, then gives the socket to this process.
   defp start_dial(state) do
     dialer = self()
     ref = make_ref()
-    {dial, address, port, opts} = {state.dial_fun, state.target, state.port, state.adopt_opts}
+    {connect, address, port, timeout} = {state.connect, state.target, state.port, state.connect_timeout}
 
     case Task.Supervisor.start_child(
            state.task_supervisor,
-           fn -> send(dialer, {:dial_result, ref, dial.(address, port, opts)}) end,
+           fn -> send(dialer, {:dial_result, ref, connect_for(dialer, connect, address, port, timeout)}) end,
            shutdown: :brutal_kill
          ) do
       {:ok, pid} ->
         %{state | phase: :connecting, dial: {ref, pid, Process.monitor(pid)}}
 
       {:error, reason} ->
+        # Also a dropped dial still connecting: it ends within the timeout.
         Logger.debug("Espex dial-back not started: #{inspect(reason)}")
         schedule(state, state.precondition_retry)
     end
   end
 
-  defp cancel_dial(%{dial: nil} = state), do: state
+  # Runs in the dial task.
+  defp connect_for(dialer, connect, address, port, timeout) do
+    with {:ok, socket} <- connect.(address, port, timeout) do
+      case :gen_tcp.controlling_process(socket, dialer) do
+        :ok ->
+          {:ok, socket}
 
-  defp cancel_dial(%{dial: {_ref, pid, monitor}} = state) do
-    Process.demonitor(monitor, [:flush])
-    _ = Task.Supervisor.terminate_child(state.task_supervisor, pid)
-    sweep_untracked(%{state | dial: nil})
+        {:error, _reason} = error ->
+          :gen_tcp.close(socket)
+          error
+      end
+    end
   end
 
-  # With no dial running, a connection under the supervisor that this
-  # process does not track was started by a dial that never handed it
-  # its socket: it waits for one forever.
-  defp sweep_untracked(%{dial: nil} = state) do
-    for {_, child, _, _} <- DynamicSupervisor.which_children(state.connection_supervisor),
-        is_pid(child) and not Map.has_key?(state.live, child) do
-      DynamicSupervisor.terminate_child(state.connection_supervisor, child)
-    end
+  # The connect is not interrupted: it ends within its timeout, and its
+  # result, no longer awaited, is closed on arrival.
+  defp drop_dial(%{dial: nil} = state), do: state
 
-    state
+  defp drop_dial(%{dial: {_ref, _pid, monitor}} = state) do
+    Process.demonitor(monitor, [:flush])
+    %{state | dial: nil}
   end
 
   defp connection_down(state, conn) do
@@ -298,10 +291,6 @@ defmodule Espex.Dialer do
   defp store_adapter(state), do: Server.adapters(state.server).outgoing_target_store
 
   defp psk?(state), do: DeviceConfig.encrypted?(Server.device_config(state.server))
-
-  defp tree_started?(state) do
-    GenServer.whereis(state.task_supervisor) != nil and GenServer.whereis(state.connection_supervisor) != nil
-  end
 
   defp retry(state) do
     wait = Backoff.jittered(state.backoff, state.random)

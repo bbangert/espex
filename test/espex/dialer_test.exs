@@ -6,8 +6,8 @@ defmodule Espex.DialerTest do
   use ExUnit.Case, async: false
 
   import Espex.Test.TcpClient, only: [wait_until: 1]
+  import ExUnit.CaptureLog
 
-  alias Espex.Dialer.Adopt
   alias Espex.Proto
   alias Espex.Test.{NoiseClient, PidTargetStore}
 
@@ -169,107 +169,79 @@ defmodule Espex.DialerTest do
   end
 
   describe "a dial that does not finish" do
-    # A dial function that reports to the test, then does what the test
-    # sends it: {:run, fun} runs fun.(address, port, opts) as the dial.
-    defp driven_dial do
+    # A connect function that reports to the test, then does what the
+    # test sends it: {:run, fun} runs fun.(address, port, timeout).
+    defp driven_connect do
       test = self()
 
-      fn address, port, opts ->
-        send(test, {:dialing, self(), opts})
+      fn address, port, timeout ->
+        send(test, {:connecting, self()})
 
         receive do
-          {:run, fun} -> fun.(address, port, opts)
+          {:run, fun} -> fun.(address, port, timeout)
         end
       end
     end
 
-    # A connection under the dial supervisor that never gets a socket, as
-    # when a dial dies mid-handoff.
-    defp start_orphan(opts) do
-      child = {Espex.Connection, {Keyword.fetch!(opts, :handler_options), []}}
-      {:ok, pid} = DynamicSupervisor.start_child(Keyword.fetch!(opts, :connection_supervisor), child)
-      pid
+    defp accept_closed(listener) do
+      {:ok, socket} = :gen_tcp.accept(listener, 2_000)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
 
-    test "a target client's hello stops it, and the connection it started",
-         %{ha_port: ha_port} = context do
-      %{port: port} = start(context, target: "127.0.0.1", port: ha_port, dial: driven_dial())
+    test "a target client's hello drops it, and its late socket is closed",
+         %{listener: listener, ha_port: ha_port} = context do
+      %{port: port, dialer: dialer, server: server} =
+        start(context, target: "127.0.0.1", port: ha_port, connect: driven_connect())
 
-      assert_receive {:dialing, task, opts}, 1_000
-      orphan = start_orphan(opts)
-      task_ref = Process.monitor(task)
-      orphan_ref = Process.monitor(orphan)
-
+      assert_receive {:connecting, task}, 1_000
       client = target_client(port)
-      assert_receive {:DOWN, ^task_ref, :process, ^task, :killed}, 1_000
-      assert_receive {:DOWN, ^orphan_ref, :process, ^orphan, _}, 1_000
+      wait_until(fn -> :sys.get_state(dialer).dial == nil end)
+
+      # The connect finishes after all; nothing runs on its socket.
+      task_ref = Process.monitor(task)
+      send(task, {:run, &Espex.Dialer.Adopt.connect/3})
+      assert_receive {:DOWN, ^task_ref, :process, ^task, :normal}, 1_000
+      accept_closed(listener)
+      assert [%Espex.ClientInfo{client_info: "dialer-test"}] = Espex.connected_clients(server)
       close(client)
     end
 
-    test "a dial that dies mid-handoff does not hold the slot", %{listener: listener, ha_port: ha_port} = context do
-      start(context, host: "127.0.0.1", port: ha_port, dial: driven_dial())
+    test "stopping the tree mid-dial is not reported as a crash", %{ha_port: ha_port} = context do
+      start(context, host: "127.0.0.1", port: ha_port, connect: driven_connect())
+      assert_receive {:connecting, _task}, 1_000
 
-      assert_receive {:dialing, task, opts}, 1_000
-      orphan = start_orphan(opts)
-      orphan_ref = Process.monitor(orphan)
-      send(task, {:run, fn _, _, _ -> exit(:handoff_failed) end})
+      log = capture_log(fn -> Supervisor.stop(:"espex_sup_#{context.test}") end)
+      refute log =~ "crashed"
+    end
 
-      assert_receive {:DOWN, ^orphan_ref, :process, ^orphan, _}, 1_000
+    test "a crashed dial escalates the backoff", %{ha_port: ha_port} = context do
+      start(context, host: "127.0.0.1", port: ha_port, connect: driven_connect())
+
+      assert_receive {:connecting, task}, 1_000
+      send(task, {:run, fn _, _, _ -> exit(:boom) end})
       assert_receive {:jitter, 5}, 1_000
-      assert_receive {:dialing, task, _opts}, 1_000
-      send(task, {:run, &Adopt.dial/3})
-      listener |> accept_dial() |> :gen_tcp.close()
     end
 
-    test "a full dial supervisor waits without escalating", %{listener: listener, ha_port: ha_port} = context do
-      start(context, host: "127.0.0.1", port: ha_port, dial: driven_dial())
-
-      assert_receive {:dialing, task, _opts}, 1_000
-      send(task, {:run, fn _, _, _ -> {:error, :max_children} end})
-      assert_receive {:dialing, task, _opts}, 1_000
-      refute_received {:jitter, _}
-
-      send(task, {:run, &Adopt.dial/3})
-      listener |> accept_dial() |> :gen_tcp.close()
-    end
-
-    test "a dialed connection that dies before its dial's result keeps the delay",
+    test "a full connection supervisor closes the socket and waits without escalating",
          %{listener: listener, ha_port: ha_port} = context do
-      %{dialer: dialer} = start(context, host: "127.0.0.1", port: ha_port, delay: 60_000, dial: driven_dial())
-      # The first dial waits delay; start it now.
+      %{server: server} = start(context, host: "127.0.0.1", port: ha_port, delay: 60_000, precondition_retry: 60_000)
+      dialer = Espex.Supervisor.dialer_name(server)
+
+      {:ok, filler} =
+        DynamicSupervisor.start_child(
+          Espex.Supervisor.dialer_connection_supervisor_name(server),
+          {Agent, fn -> nil end}
+        )
+
       send(dialer, {:tick, elem(:sys.get_state(dialer).timer, 0)})
-
-      assert_receive {:dialing, task, _opts}, 1_000
-      test = self()
-
-      # Dial, then hold the result until the connection has said hello
-      # and died.
-      send(
-        task,
-        {:run,
-         fn address, port, opts ->
-           result = Adopt.dial(address, port, opts)
-           send(test, {:dialed, result})
-
-           receive do
-             :report -> result
-           end
-         end}
-      )
-
-      assert_receive {:dialed, {:ok, conn}}, 1_000
-      socket = accept_dial(listener)
-      session = socket |> NoiseClient.handshake(@psk) |> hello(false)
-      conn_ref = Process.monitor(conn)
-      close(session)
-      assert_receive {:DOWN, ^conn_ref, :process, ^conn, _}, 1_000
-      wait_until(fn -> :sys.get_state(dialer).live == %{} end)
-
-      send(task, :report)
-      wait_until(fn -> :sys.get_state(dialer).dial == nil end)
-      assert %{phase: :waiting, backoff: 10, live: live} = :sys.get_state(dialer)
-      assert live == %{}
+      accept_closed(listener)
+      wait_until(fn -> match?(%{phase: :waiting, dial: nil}, :sys.get_state(dialer)) end)
       refute_received {:jitter, _}
+
+      # Once the slot is free, the next attempt connects.
+      :ok = DynamicSupervisor.terminate_child(Espex.Supervisor.dialer_connection_supervisor_name(server), filler)
+      send(dialer, {:tick, elem(:sys.get_state(dialer).timer, 0)})
+      listener |> accept_dial() |> :gen_tcp.close()
     end
   end
 

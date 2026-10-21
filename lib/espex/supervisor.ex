@@ -10,22 +10,24 @@ defmodule Espex.Supervisor do
        `c:Espex.ConnectionListener.connections_changed/0` notifications.
     4. A cross-connection state server (internal) — holds the device
        config and adapter modules.
-    5. An IR/RF transmit queue (internal) — runs
+    5. An IR/RF transmit queue and its `Task.Supervisor` (internal),
+       under their own `:one_for_all` supervisor — runs
        `c:Espex.InfraredProxy.transmit_raw/3` calls off the connections.
-    6. A `Task.Supervisor` (internal) for the transmit queue's tasks.
-    7. A dial-back dialer, its connection's `DynamicSupervisor` and its
-       `Task.Supervisor` (internal) — only when `:outgoing_connection`
-       is configured.
-    8. `ThousandIsland` — TCP acceptor pool that spawns a per-client
+    6. A dial-back dialer with its connection's `DynamicSupervisor` and
+       its `Task.Supervisor` (internal), under their own supervisor —
+       only when `:outgoing_connection` is configured.
+    7. `ThousandIsland` — TCP acceptor pool that spawns a per-client
        connection handler process (internal).
-    9. An mDNS advertiser GenServer (internal) — optional, started
+    8. An mDNS advertiser GenServer (internal) — optional, started
        only when `:mdns` is configured.
 
   If the server child crashes, everything after it restarts too, so live
-  connections drop rather than hold stale references. A crash of the
-  transmit queue or the dialer likewise drops the connections, so no
-  client waits on a transmit reply that can never come, and no
-  connection outlives the dialer that knew of it.
+  connections drop rather than hold stale references. A crash in the
+  dialer's subtree also restarts the listener, so no connection outlives
+  the dialer that knew of it. A crash of the transmit queue restarts
+  only the queue and its tasks: connections answer `false` while it is
+  gone, and replies it owed are lost, so those clients wait out their
+  own timeout (35 s past the frame's air time).
 
   Configuration is passed as keyword options:
 
@@ -246,13 +248,7 @@ defmodule Espex.Supervisor do
         # of accumulating tasks (each is only a best-effort re-query hint).
         {Task.Supervisor, name: task_supervisor_name, max_children: @max_listener_tasks},
         {Server, name: server_name, device_config: device_config, adapters: adapters, registry_name: registry_name},
-        # IR/RF transmits run here, off the connections. The queue comes
-        # first so its restart also restarts its tasks: a new queue never
-        # overlaps a frame an old one started. Its own Task.Supervisor,
-        # because the one above sheds work by design.
-        {InfraredQueue,
-         name: infrared_queue_name(server_name), task_supervisor: infrared_task_supervisor_name(server_name)},
-        {Task.Supervisor, name: infrared_task_supervisor_name(server_name), max_children: @max_infrared_tasks}
+        infrared_subtree(server_name)
       ] ++
         dialer_children(outgoing, server_name, handler_options, read_timeout) ++
         [
@@ -287,7 +283,7 @@ defmodule Espex.Supervisor do
 
   @outgoing_keys [:host, :port, :delay, :target]
   # Test-only overrides of the dialer's timings (see Espex.Dialer).
-  @outgoing_private_keys [:connect_timeout, :precondition_retry, :backoff_min, :random, :dial]
+  @outgoing_private_keys [:connect_timeout, :precondition_retry, :backoff_min, :random, :connect]
 
   defp outgoing_connection!(nil, _device_config), do: nil
   defp outgoing_connection!(false, _device_config), do: nil
@@ -331,26 +327,47 @@ defmodule Espex.Supervisor do
   @spec outgoing_invalid!(String.t()) :: no_return()
   defp outgoing_invalid!(message), do: raise(ArgumentError, "invalid :outgoing_connection: " <> message)
 
-  # The dialer goes first: its crash restarts the dialed connection's
-  # supervisor and the listener, so no connection outlives the dialer
-  # that knew of it.
+  # IR/RF transmits run here, off the connections, in a subtree of their
+  # own: connections reach the queue by name and answer `false` while it
+  # is gone, so an IR fault restarts only IR. :one_for_all, so a new queue
+  # never overlaps a frame an old one started; the tasks' supervisor
+  # comes first, so on a stop the queue goes before its tasks. Its own
+  # Task.Supervisor, because the listener-notification one sheds work.
+  defp infrared_subtree(server_name) do
+    subtree(Module.concat(server_name, "InfraredSupervisor"), [strategy: :one_for_all], [
+      {Task.Supervisor, name: infrared_task_supervisor_name(server_name), max_children: @max_infrared_tasks},
+      {InfraredQueue,
+       name: infrared_queue_name(server_name), task_supervisor: infrared_task_supervisor_name(server_name)}
+    ])
+  end
+
+  # The dialer comes after its two supervisors, so they exist when it
+  # first dials and it stops before them. Any fault takes the whole
+  # subtree down (max_restarts: 0), so the top level restarts it together
+  # with the listener: no connection outlives the dialer that knew of it.
   defp dialer_children(nil, _server_name, _handler_options, _read_timeout), do: []
 
   defp dialer_children(outgoing, server_name, handler_options, read_timeout) do
     [
-      {Espex.Dialer,
-       Keyword.merge(outgoing,
-         name: dialer_name(server_name),
-         server: server_name,
-         connection_supervisor: dialer_connection_supervisor_name(server_name),
-         task_supervisor: dialer_task_supervisor_name(server_name),
-         handler_options: [dialed: true] ++ handler_options,
-         read_timeout: read_timeout
-       )},
-      # One dialed connection and one dial at a time, as upstream.
-      {DynamicSupervisor, name: dialer_connection_supervisor_name(server_name), max_children: 1},
-      {Task.Supervisor, name: dialer_task_supervisor_name(server_name), max_children: 1}
+      subtree(Module.concat(server_name, "DialerSupervisor"), [strategy: :one_for_all, max_restarts: 0], [
+        # One dialed connection and one dial at a time, as upstream.
+        {DynamicSupervisor, name: dialer_connection_supervisor_name(server_name), max_children: 1},
+        {Task.Supervisor, name: dialer_task_supervisor_name(server_name), max_children: 1},
+        {Espex.Dialer,
+         Keyword.merge(outgoing,
+           name: dialer_name(server_name),
+           server: server_name,
+           connection_supervisor: dialer_connection_supervisor_name(server_name),
+           task_supervisor: dialer_task_supervisor_name(server_name),
+           handler_options: [dialed: true] ++ handler_options,
+           read_timeout: read_timeout
+         )}
+      ])
     ]
+  end
+
+  defp subtree(name, opts, children) do
+    %{id: name, type: :supervisor, start: {Supervisor, :start_link, [children, [name: name] ++ opts]}}
   end
 
   # Builds the advertiser child spec when the caller opted in via :mdns.

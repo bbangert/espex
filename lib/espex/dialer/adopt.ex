@@ -27,47 +27,49 @@ defmodule Espex.Dialer.Adopt do
   @type opts :: [
           connection_supervisor: GenServer.server(),
           handler_options: keyword(),
-          read_timeout: timeout(),
-          connect_timeout: timeout()
+          read_timeout: timeout()
         ]
 
   @doc """
-  Connect to `address:port` and run the socket through a new
-  `Espex.Connection` under the connection supervisor. Call it from a
-  process that may own the socket until it is handed over.
+  Open a TCP connection to `address:port`, passive and binary as
+  ThousandIsland's TCP transport opens its sockets.
   """
-  @spec dial(:inet.ip_address(), :inet.port_number(), opts()) :: {:ok, pid()} | {:error, term()}
-  def dial(address, port, opts) do
-    tcp_opts = [:binary, active: false, nodelay: true]
-
-    with {:ok, socket} <- :gen_tcp.connect(address, port, tcp_opts, Keyword.fetch!(opts, :connect_timeout)) do
-      case start_connection(socket, opts) do
-        {:ok, pid} ->
-          {:ok, pid}
-
-        {:error, _reason} = error ->
-          :gen_tcp.close(socket)
-          error
-      end
-    end
+  @spec connect(:inet.ip_address(), :inet.port_number(), timeout()) :: {:ok, :gen_tcp.socket()} | {:error, term()}
+  def connect(address, port, timeout) do
+    :gen_tcp.connect(address, port, [:binary, active: false, nodelay: true], timeout)
   end
 
-  defp start_connection(socket, opts) do
+  @doc """
+  Run `socket` through a new `Espex.Connection` under the connection
+  supervisor. Call it from the process that owns the socket. On an error
+  the socket is closed.
+  """
+  @spec start_connection(:gen_tcp.socket(), opts()) :: {:ok, pid()} | {:error, term()}
+  def start_connection(socket, opts) do
     supervisor = Keyword.fetch!(opts, :connection_supervisor)
 
     child =
       Supervisor.child_spec({Espex.Connection, {Keyword.fetch!(opts, :handler_options), []}}, shutdown: @shutdown_ms)
 
-    with {:ok, pid} <- DynamicSupervisor.start_child(supervisor, child) do
-      case :gen_tcp.controlling_process(socket, pid) do
-        :ok ->
-          send(pid, {:thousand_island_ready, socket, handler_config(opts), acceptor_span(), System.monotonic_time()})
-          {:ok, pid}
+    with {:ok, pid} <- DynamicSupervisor.start_child(supervisor, child),
+         :ok <- give_away(socket, supervisor, pid) do
+      send(pid, {:thousand_island_ready, socket, handler_config(opts), acceptor_span(), System.monotonic_time()})
+      {:ok, pid}
+    else
+      {:error, _reason} = error ->
+        :gen_tcp.close(socket)
+        error
+    end
+  end
 
-        {:error, _reason} = error ->
-          _ = DynamicSupervisor.terminate_child(supervisor, pid)
-          error
-      end
+  defp give_away(socket, supervisor, pid) do
+    case :gen_tcp.controlling_process(socket, pid) do
+      :ok ->
+        :ok
+
+      {:error, _reason} = error ->
+        _ = DynamicSupervisor.terminate_child(supervisor, pid)
+        error
     end
   end
 
