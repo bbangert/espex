@@ -205,19 +205,22 @@ defmodule Espex.Server do
   end
 
   @doc """
-  Remember the dial-back target the dialer learned and the one its store
-  last accepted, so a restarted dialer starts from them.
+  Remember the dial-back target the dialer learned and the
+  `{store module, address}` its store last accepted, so a restarted
+  dialer starts from them.
   """
-  @spec put_dial_back_target(GenServer.server(), :inet.ip_address() | nil, :inet.ip_address() | nil) :: :ok
-  def put_dial_back_target(server, target, stored_target) do
-    GenServer.call(server, {:put_dial_back_target, target, stored_target})
+  @spec put_dial_back_target(GenServer.server(), :inet.ip_address() | nil, {module(), :inet.ip_address()} | nil) ::
+          :ok
+  def put_dial_back_target(server, target, stored) do
+    GenServer.call(server, {:put_dial_back_target, target, stored})
   end
 
   @doc """
-  The `{target, stored_target}` last given to `put_dial_back_target/3`,
-  or `nil`.
+  The `{target, stored}` last given to `put_dial_back_target/3`, or
+  `nil`.
   """
-  @spec dial_back_target(GenServer.server()) :: {:inet.ip_address() | nil, :inet.ip_address() | nil} | nil
+  @spec dial_back_target(GenServer.server()) ::
+          {:inet.ip_address() | nil, {module(), :inet.ip_address()} | nil} | nil
   def dial_back_target(server), do: GenServer.call(server, :dial_back_target)
 
   @doc """
@@ -368,8 +371,8 @@ defmodule Espex.Server do
     {:reply, {:error, :stale_wizard}, state}
   end
 
-  def handle_call({:put_dial_back_target, target, stored_target}, _from, state) do
-    {:reply, :ok, %{state | dial_back_target: {target, stored_target}}}
+  def handle_call({:put_dial_back_target, target, stored}, _from, state) do
+    {:reply, :ok, %{state | dial_back_target: {target, stored}}}
   end
 
   def handle_call(:dial_back_target, _from, state), do: {:reply, state.dial_back_target, state}

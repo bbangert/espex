@@ -1180,3 +1180,18 @@ defmodule Espex.Test.ThrowingHomeAssistantStates do
   @impl true
   def handle_state(_entity_id, _attribute, _state), do: :ok
 end
+
+defmodule Espex.Test.OtherPidTargetStore do
+  @moduledoc """
+  A second `Espex.OutgoingTargetStore`: sends `{:other_store_target, ip}`
+  to the pid set with `Espex.Test.PidTargetStore.put/2` and answers `:ok`.
+  """
+  @behaviour Espex.OutgoingTargetStore
+
+  @impl true
+  def store_target(ip) do
+    {pid, _result} = :persistent_term.get({Espex.Test.PidTargetStore, :config}, {nil, :ok})
+    if pid, do: send(pid, {:other_store_target, ip})
+    :ok
+  end
+end

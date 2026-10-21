@@ -140,9 +140,31 @@ defmodule Espex.DialerTest do
     close(client)
 
     wait_until(fn -> Process.whereis(dialer) not in [nil, old] end)
-    assert %{target: {127, 0, 0, 1}, stored_target: {127, 0, 0, 1}} = :sys.get_state(dialer)
+    assert %{target: {127, 0, 0, 1}, stored: {PidTargetStore, {127, 0, 0, 1}}} = :sys.get_state(dialer)
     listener |> accept_dial() |> :gen_tcp.close()
     refute_received {:store_target, _}
+  end
+
+  test "a new store is given the target even when the address is unchanged",
+       %{ha_port: ha_port} = context do
+    %{port: port, server: server, dialer: dialer} = start(context, port: ha_port)
+    port |> target_client() |> close()
+    assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
+
+    :ok = Espex.update_adapters(server, outgoing_target_store: Espex.Test.OtherPidTargetStore)
+    port |> target_client() |> close()
+    assert_receive {:other_store_target, {127, 0, 0, 1}}, 1_000
+
+    # A restarted dialer knows the new store holds it.
+    old = Process.whereis(dialer)
+    Process.exit(old, :kill)
+    wait_until(fn -> Process.whereis(dialer) not in [nil, old] end)
+    assert %{stored: {Espex.Test.OtherPidTargetStore, {127, 0, 0, 1}}} = :sys.get_state(dialer)
+
+    # The listener restarted with it, on a new ephemeral port.
+    {:ok, port} = Espex.Supervisor.bound_port(:"espex_sup_#{context.test}")
+    port |> target_client() |> close()
+    refute_receive {:other_store_target, _}, 100
   end
 
   test "the target is stored once, and again after a failed write", %{ha_port: ha_port} = context do

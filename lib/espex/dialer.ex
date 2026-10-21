@@ -74,7 +74,9 @@ defmodule Espex.Dialer do
       random: Keyword.get(opts, :random, &(:rand.uniform(&1) - 1)),
       learn?: host == nil,
       target: host,
-      stored_target: nil,
+      # {store module, address} of the last successful write: a write is
+      # skipped only when the same store already holds the address.
+      stored: nil,
       warned_no_store?: false,
       phase: :waiting,
       timer: nil,
@@ -97,8 +99,8 @@ defmodule Espex.Dialer do
 
   defp restore_target(state, seed) do
     case Server.dial_back_target(state.server) do
-      {target, stored_target} -> %{state | target: target, stored_target: stored_target}
-      nil -> %{state | target: seed, stored_target: seed}
+      {target, stored} -> %{state | target: target, stored: stored}
+      nil -> %{state | target: seed, stored: seed_stored(state, seed)}
     end
   end
 
@@ -261,7 +263,7 @@ defmodule Espex.Dialer do
     case Target.from_peer(peer) do
       {:ok, target} ->
         learned = store(%{state | target: target}, target)
-        :ok = Server.put_dial_back_target(learned.server, learned.target, learned.stored_target)
+        :ok = Server.put_dial_back_target(learned.server, learned.target, learned.stored)
         learned
 
       {:error, reason} ->
@@ -270,10 +272,21 @@ defmodule Espex.Dialer do
     end
   end
 
-  defp store(%{stored_target: target} = state, target), do: state
+  # The seed came from the store configured at boot.
+  defp seed_stored(_state, nil), do: nil
+
+  defp seed_stored(state, seed) do
+    case store_adapter(state) do
+      nil -> nil
+      adapter -> {adapter, seed}
+    end
+  end
 
   defp store(state, target) do
     case store_adapter(state) do
+      adapter when state.stored == {adapter, target} ->
+        state
+
       nil ->
         if not state.warned_no_store? do
           Logger.warning(
@@ -286,7 +299,7 @@ defmodule Espex.Dialer do
       adapter ->
         case adapter.store_target(target) do
           :ok ->
-            %{state | stored_target: target}
+            %{state | stored: {adapter, target}}
 
           other ->
             Logger.warning("Espex dial-back target not stored, retried on the next hello: #{inspect(other)}")

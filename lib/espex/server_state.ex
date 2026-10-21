@@ -12,7 +12,7 @@ defmodule Espex.ServerState do
           owner_monitors: %{pid() => reference()},
           ha_subscriptions: Table.t(),
           registry_name: atom() | nil,
-          dial_back_target: {:inet.ip_address() | nil, :inet.ip_address() | nil} | nil
+          dial_back_target: {:inet.ip_address() | nil, {module(), :inet.ip_address()} | nil} | nil
         }
 
   @enforce_keys [:device_config]
