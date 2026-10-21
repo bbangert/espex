@@ -250,12 +250,27 @@ defmodule Espex.DialerTest do
       close(client)
     end
 
-    test "stopping the tree mid-dial is not reported as a crash", %{ha_port: ha_port} = context do
-      start(context, host: "127.0.0.1", port: ha_port, connect: driven_connect())
-      assert_receive {:connecting, _task}, 1_000
+    test "stopping the tree mid-dial stops the dialer before its dial task",
+         %{ha_port: ha_port} = context do
+      %{dialer: dialer} = start(context, host: "127.0.0.1", port: ha_port, connect: driven_connect())
+      assert_receive {:connecting, task}, 1_000
 
+      # Every message the dialer is handed: had its task stopped first,
+      # the task's DOWN would be among them (and logged as a crash).
+      dialer_pid = Process.whereis(dialer)
+      1 = :erlang.trace(dialer_pid, true, [:receive])
       log = capture_log(fn -> Supervisor.stop(:"espex_sup_#{context.test}") end)
+
+      refute_received {:trace, ^dialer_pid, :receive, {:DOWN, _, :process, ^task, _}}
       refute log =~ "crashed"
+    end
+
+    test "a dialer crash restarts the listener, so no connection outlives it", %{ha_port: ha_port} = context do
+      %{port: port, dialer: dialer} = start(context, host: "127.0.0.1", port: ha_port, delay: 60_000)
+      {socket, _tx, _rx} = target_client(port)
+
+      Process.exit(Process.whereis(dialer), :kill)
+      assert {:error, :closed} = :gen_tcp.recv(socket, 0, 1_000)
     end
 
     test "a crashed dial escalates the backoff", %{ha_port: ha_port} = context do
