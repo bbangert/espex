@@ -200,4 +200,24 @@ defmodule Espex.InfraredQueueTest do
     # Nothing is left queued.
     wait_until(fn -> :sys.get_state(queue).reqs == %{} end)
   end
+
+  test "a requester with several pending transmits holds one monitor, released when they settle",
+       %{queue: queue} do
+    monitors = fn -> queue |> Process.whereis() |> Process.info(:monitors) |> elem(1) end
+
+    transmit(queue, 1, :a)
+    assert_receive {:started, :a, a}
+    transmit(queue, 2, :b, device_id: 2)
+    transmit(queue, 3, :c, device_id: 3)
+    assert Enum.count(monitors.(), &(&1 == {:process, self()})) == 1
+
+    release(a)
+    assert_receive {:started, :b, b}
+    release(b)
+    assert_receive {:started, :c, c}
+    release(c)
+    assert_receive {:espex_ir_transmit_complete, 3, 3, true}
+
+    refute {:process, self()} in monitors.()
+  end
 end

@@ -213,7 +213,10 @@ defmodule Espex.InfraredQueue do
 
   # One monitor per requester, counted per request it owns.
   defp monitor(monitors, pid) do
-    Map.update(monitors, pid, {Process.monitor(pid), 1}, fn {ref, count} -> {ref, count + 1} end)
+    case monitors do
+      %{^pid => {ref, count}} -> Map.put(monitors, pid, {ref, count + 1})
+      _ -> Map.put(monitors, pid, {Process.monitor(pid), 1})
+    end
   end
 
   defp demonitor(monitors, pid) do
