@@ -34,10 +34,14 @@ defmodule Espex.Wizard.Document do
     * each filter sets at least one field; filter strings are 1-63 bytes,
       `supported_features` entries 1-127
     * `max_length` is 255-4095 and only on a `multiple: true` input
+    * `links` only on an input without `multiple`, and each without an
+      `entity_id` (see "Linked inputs" in `Espex.Wizard.Input`)
     * input ids are unique and their hashes do not collide
     * the compressed document fits one API message (65511 bytes)
 
-  It also fills each input's `key` from its `id`. A `%Document{}` built
+  It also fills each input's `key` from its `id`, and turns each link
+  into an `Espex.HomeAssistantStates.Subscription`. Links stay on the
+  device: the JSON sent to the client does not carry them. A `%Document{}` built
   as a struct without `new/1` is run through it when a connection is
   accepted.
 
@@ -51,6 +55,7 @@ defmodule Espex.Wizard.Document do
 
   import Bitwise, only: [<<<: 2]
 
+  alias Espex.HomeAssistantStates.Subscription
   alias Espex.Wizard
   alias Espex.Wizard.{Entity, EntityFilter, Input, Page}
 
@@ -157,10 +162,26 @@ defmodule Espex.Wizard.Document do
     check_max_length(input, where)
     check_list(input.entity_filters, "#{where} entity_filters")
     Enum.each(input.entity_filters, &check_filter(&1, where))
-    %{input | key: Wizard.fnv1_hash(id)}
+    %{input | key: Wizard.fnv1_hash(id), links: check_links(input, where)}
   end
 
   defp check_input(other, where), do: invalid("#{where}: #{inspect(other)} is not an %Espex.Wizard.Input{}")
+
+  defp check_links(%Input{links: []}, _where), do: []
+
+  defp check_links(%Input{multiple: true}, where),
+    do: invalid("#{where} links: a linked input follows exactly one entity, so it cannot be multiple")
+
+  defp check_links(%Input{links: links}, where) do
+    check_list(links, "#{where} links")
+
+    Enum.map(links, fn link ->
+      case Subscription.build(link, link: true) do
+        {:ok, subscription} -> subscription
+        {:error, message} -> invalid("#{where} link: #{message}")
+      end
+    end)
+  end
 
   defp check_max_length(%Input{max_length: nil}, _where), do: :ok
 

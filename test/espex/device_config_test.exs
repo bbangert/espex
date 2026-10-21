@@ -1,6 +1,8 @@
 defmodule Espex.DeviceConfigTest do
   use ExUnit.Case, async: true
 
+  doctest Espex.DeviceConfig, only: [hello_mac: 1]
+
   alias Espex.DeviceConfig
 
   describe "merge/2" do
@@ -188,6 +190,19 @@ defmodule Espex.DeviceConfigTest do
       config = DeviceConfig.new(webserver_port: 80)
       assert config.webserver_port == 80
       assert DeviceConfig.to_device_info_response(config).webserver_port == 80
+    end
+  end
+
+  describe "hello_mac/1" do
+    test "strips colons and dashes and downcases" do
+      for mac <- ["AA:BB:CC:DD:EE:0F", "aa-bb-cc-dd-ee-0f", "AABBCCDDEE0F", "aabbccddee0f"] do
+        assert DeviceConfig.hello_mac(%DeviceConfig{mac_address: mac}) == "aabbccddee0f"
+      end
+    end
+
+    test "leaves the DeviceInfo MAC in its configured form" do
+      config = DeviceConfig.new(name: "n", mac_address: "AA:BB:CC:DD:EE:FF")
+      assert DeviceConfig.to_device_info_response(config).mac_address == "AA:BB:CC:DD:EE:FF"
     end
   end
 end

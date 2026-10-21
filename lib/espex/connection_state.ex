@@ -2,6 +2,7 @@ defmodule Espex.ConnectionState do
   @moduledoc false
 
   alias Espex.{DeviceConfig, InfraredProxy, Noise, SerialProxy, Wizard}
+  alias Espex.HomeAssistantStates.Subscription
 
   @type feature ::
           :serial_proxy
@@ -14,6 +15,8 @@ defmodule Espex.ConnectionState do
           | :connection_listener
           | :sendspin
           | :wizard
+          | :home_assistant_states
+          | :outgoing_target_store
   @type adapters :: %{feature() => module() | nil}
 
   @typedoc """
@@ -21,6 +24,8 @@ defmodule Espex.ConnectionState do
 
     * `:disabled` — no PSK; plaintext transport only
     * `:awaiting_hello` — PSK set; waiting for the client's NOISE_HELLO frame
+    * `{:awaiting_client_hello_outgoing, handshake}` — a dialed connection
+      sent ServerHello first; waiting for the client's NOISE_HELLO frame
     * `{:awaiting_init, handshake}` — sent ServerHello; waiting for client's
       handshake init message
     * `{:active, tx, rx}` — handshake complete; encrypted transport
@@ -28,6 +33,7 @@ defmodule Espex.ConnectionState do
   @type encryption ::
           :disabled
           | :awaiting_hello
+          | {:awaiting_client_hello_outgoing, Noise.handshake()}
           | {:awaiting_init, Noise.handshake()}
           | {:active, Noise.cipher(), Noise.cipher()}
 
@@ -45,6 +51,12 @@ defmodule Espex.ConnectionState do
           server_name: atom() | nil,
           client_registry: atom() | nil,
           task_supervisor: atom() | nil,
+          infrared_queue: atom() | nil,
+          dialer: atom() | nil,
+          dialed?: boolean(),
+          outgoing_connection?: boolean(),
+          outgoing_target?: boolean(),
+          peer_address: {:inet.ip_address(), :inet.port_number()} | nil,
           client_info: String.t() | nil,
           api_version: {non_neg_integer(), non_neg_integer()} | nil,
           connected_at: integer() | nil,
@@ -63,6 +75,8 @@ defmodule Espex.ConnectionState do
           bluetooth_scanner_subscribed: boolean(),
           bluetooth_connections_free_subscribed: boolean(),
           bluetooth_owned: MapSet.t(non_neg_integer()),
+          ha_subscriptions: MapSet.t(Subscription.t()),
+          ha_states_subscribed: boolean(),
           adapters: adapters(),
           clock_fun: (-> non_neg_integer()),
           encryption: encryption(),
@@ -81,6 +95,17 @@ defmodule Espex.ConnectionState do
     server_name: nil,
     client_registry: nil,
     task_supervisor: nil,
+    infrared_queue: nil,
+    # Dial-back (API 1.18): the Espex.Dialer to tell about hellos, nil
+    # without :outgoing_connection; whether espex dialed this connection;
+    # whether dial-back is configured (DeviceInfo advertises it); whether
+    # this client declared itself the dial-back target; and the raw peer
+    # address the dialer learns the target from.
+    dialer: nil,
+    dialed?: false,
+    outgoing_connection?: false,
+    outgoing_target?: false,
+    peer_address: nil,
     client_info: nil,
     api_version: nil,
     connected_at: nil,
@@ -100,6 +125,12 @@ defmodule Espex.ConnectionState do
     bluetooth_scanner_subscribed: false,
     bluetooth_connections_free_subscribed: false,
     bluetooth_owned: MapSet.new(),
+    # This connection's copy of the server-wide Home Assistant state
+    # subscription table: seeded at accept, kept in step by Espex.Server's
+    # {:espex_ha_subscriptions, added, removed} broadcasts.
+    ha_subscriptions: MapSet.new(),
+    # The client sent SubscribeHomeAssistantStatesRequest.
+    ha_states_subscribed: false,
     adapters: %{
       serial_proxy: nil,
       zwave_proxy: nil,
@@ -110,7 +141,9 @@ defmodule Espex.ConnectionState do
       psk_store: nil,
       connection_listener: nil,
       sendspin: nil,
-      wizard: nil
+      wizard: nil,
+      home_assistant_states: nil,
+      outgoing_target_store: nil
     },
     clock_fun: &__MODULE__.os_time_second/0,
     encryption: :disabled,
@@ -374,6 +407,31 @@ defmodule Espex.ConnectionState do
   end
 
   @doc """
+  Apply a change to this connection's copy of the Home Assistant state
+  subscription table. Returns the state and the entries of `added` that
+  are new to the copy.
+  """
+  @spec update_ha_subscriptions(t(), [Subscription.t()], [Subscription.t()]) :: {t(), [Subscription.t()]}
+  def update_ha_subscriptions(%__MODULE__{} = state, added, removed) do
+    new = Enum.reject(added, &MapSet.member?(state.ha_subscriptions, &1))
+    subscriptions = state.ha_subscriptions |> MapSet.difference(MapSet.new(removed)) |> MapSet.union(MapSet.new(new))
+    {%{state | ha_subscriptions: subscriptions}, new}
+  end
+
+  @doc """
+  Mark the client as the dial-back target. Set once per connection.
+  """
+  @spec put_outgoing_target(t()) :: t()
+  def put_outgoing_target(%__MODULE__{} = state), do: %{state | outgoing_target?: true}
+
+  @doc """
+  Mark that the client sent `SubscribeHomeAssistantStatesRequest`. There
+  is no unsubscribe; it lasts for the connection.
+  """
+  @spec put_ha_states_subscribed(t()) :: t()
+  def put_ha_states_subscribed(%__MODULE__{} = state), do: %{state | ha_states_subscribed: true}
+
+  @doc """
   Return the adapter module configured for `feature`, or `nil`.
   """
   @spec adapter(t(), feature()) :: module() | nil
@@ -407,6 +465,14 @@ defmodule Espex.ConnectionState do
   def put_client_hello(%__MODULE__{} = state, client_info, {_major, _minor} = api_version) do
     %{state | client_info: client_info, api_version: api_version}
   end
+
+  @doc """
+  Return `true` once the client's hello announced API `major.minor` or
+  later. `false` before hello.
+  """
+  @spec api_version_at_least?(t(), {non_neg_integer(), non_neg_integer()}) :: boolean()
+  def api_version_at_least?(%__MODULE__{api_version: nil}, _version), do: false
+  def api_version_at_least?(%__MODULE__{api_version: version}, minimum), do: version >= minimum
 
   @doc """
   Stamp the most recent inbound activity time (epoch seconds).

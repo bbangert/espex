@@ -15,6 +15,7 @@ defmodule Espex.MixProject do
       deps: deps(),
       aliases: aliases(),
       dialyzer: dialyzer(),
+      argus: argus(),
       description: description(),
       package: package(),
       source_url: @source_url,
@@ -33,7 +34,7 @@ defmodule Espex.MixProject do
 
   defp deps do
     [
-      {:thousand_island, "~> 1.4"},
+      {:thousand_island, "~> 1.5"},
       {:protobuf, "~> 0.12"},
       {:protobuf_generate, "~> 0.2", runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -53,6 +54,22 @@ defmodule Espex.MixProject do
     [
       protobuf: [
         "protobuf.generate --output-path=./lib/espex/proto --include-path=./priv/protos --package-prefix=espex.proto priv/protos/api_options.proto priv/protos/api.proto"
+      ]
+    ]
+  end
+
+  defp argus do
+    [
+      ignore: [
+        # rest_for_one_orphaned_children, inferred: the task supervisor is
+        # a runtime name, so argus guesses the top-level listener
+        # Task.Supervisor. Each of these starts its tasks under its own
+        # Task.Supervisor, which shares a :one_for_all subtree with it
+        # (Espex.InfraredQueue.Supervisor, Espex.Dialer.Supervisor).
+        findings: [
+          {:coupling, {Espex.InfraredQueue, :start, 2}},
+          {:coupling, {Espex.Dialer, :start_dial, 1}}
+        ]
       ]
     ]
   end
@@ -85,9 +102,15 @@ defmodule Espex.MixProject do
       extras: [
         "README.md",
         "guides/architecture.md",
-        "guides/entity_types.md"
+        "guides/entity_types.md",
+        "guides/api/1.15.md": [title: "API 1.15"],
+        "guides/api/1.16.md": [title: "API 1.16"],
+        "guides/api/1.17.md": [title: "API 1.17"],
+        "guides/api/1.18.md": [title: "API 1.18"]
       ],
+      # The first matching group wins, so the narrower pattern goes first.
       groups_for_extras: [
+        "API versions": ~r"guides/api/.*",
         Guides: ~r"guides/.*"
       ]
     ]

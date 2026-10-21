@@ -250,6 +250,22 @@ defmodule Espex.EncryptedIntegrationTest do
   end
 
   describe "noise handshake + encrypted Hello round-trip" do
+    test "the process status shows neither the PSK nor the session keys", %{port: port, server_name: server_name} do
+      sock = connect(port)
+      _tx_rx = do_handshake(sock)
+      Espex.Test.TcpClient.wait_until(fn -> Espex.connected_clients(server_name) != [] end)
+      [%Espex.ClientInfo{id: pid}] = Espex.connected_clients(server_name)
+
+      {:status, ^pid, _module, items} = :sys.get_status(pid)
+      printed = inspect(items, limit: :infinity, printable_limit: :infinity)
+
+      assert printed =~ "{:active, :redacted, :redacted}"
+      refute printed =~ inspect(@psk, limit: :infinity)
+      refute inspect(Espex.DeviceConfig.new(psk: @psk), limit: :infinity) =~ "psk"
+
+      :gen_tcp.close(sock)
+    end
+
     test "client handshake completes and HelloResponse decrypts correctly", %{port: port} do
       sock = connect(port)
 
@@ -269,7 +285,8 @@ defmodule Espex.EncryptedIntegrationTest do
       [name, rest_after_name] = :binary.split(rest, <<0>>)
       assert name == "espex-encrypted"
       [mac, _tail] = :binary.split(rest_after_name, <<0>>)
-      assert mac == "AA:BB:CC:DD:EE:FF"
+      # Firmware form: bare lowercase hex, whatever the configured form.
+      assert mac == "aabbccddeeff"
 
       # 5) Receive server's handshake response frame: 0x00 + noise e,ee msg
       {:ok, <<0x00, noise_msg2::binary>>} = recv_outer_frame(sock)

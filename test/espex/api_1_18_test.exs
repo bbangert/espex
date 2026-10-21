@@ -40,9 +40,9 @@ defmodule Espex.Api118Test do
 
   defp adapter_opts(context), do: context |> Map.get(:adapters, %{}) |> Map.to_list()
 
-  defp hello(port) do
+  defp hello(port, minor \\ 18) do
     socket = connect(port)
-    send_struct(socket, %Proto.HelloRequest{client_info: "api118-test", api_version_major: 1, api_version_minor: 18})
+    send_struct(socket, %Proto.HelloRequest{client_info: "api118-test", api_version_major: 1, api_version_minor: minor})
     {:ok, %Proto.HelloResponse{} = hello, rest} = recv_struct(socket)
     {socket, hello, rest}
   end
@@ -70,7 +70,7 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
-    test "an adapter error is reported as success: false", %{port: port} do
+    test "an unknown key is refused with success: false", %{port: port} do
       {socket, _hello, rest} = hello(port)
       transmit(socket, 7)
 
@@ -88,17 +88,42 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
-    test "back-to-back frames are each answered, in order", %{port: port} do
-      {socket, _hello, rest} = hello(port)
+    test "a client below 1.18 gets no reply, sent or refused", %{port: port} do
+      {socket, _hello, rest} = hello(port, 17)
       transmit(socket, 42)
       transmit(socket, 7)
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "paced frames are each answered", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      rest =
+        Enum.reduce(1..3, rest, fn _, rest ->
+          transmit(socket, 42)
+
+          assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, rest} =
+                   recv_struct(socket, rest)
+
+          rest
+        end)
+
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "a crash of the transmit queue keeps the connection", %{port: port, server_name: server_name} do
+      {socket, _hello, rest} = hello(port)
+      queue = Espex.Supervisor.infrared_queue_name(server_name)
+      old = Process.whereis(queue)
+      ref = Process.monitor(old)
+      Process.exit(old, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^old, :killed}
+
+      wait_until(fn -> Process.whereis(queue) not in [nil, old] end)
       transmit(socket, 42)
-
-      {:ok, first, rest} = recv_struct(socket, rest)
-      {:ok, second, rest} = recv_struct(socket, rest)
-      {:ok, third, _} = recv_struct(socket, rest)
-
-      assert Enum.map([first, second, third], &{&1.key, &1.success}) == [{42, true}, {7, false}, {42, true}]
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(socket, rest)
       :gen_tcp.close(socket)
     end
 
@@ -109,6 +134,52 @@ defmodule Espex.Api118Test do
       transmit(a, 42)
       assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(a, rest_a)
       assert_nothing_sent(b, rest_b)
+
+      :gen_tcp.close(a)
+      :gen_tcp.close(b)
+    end
+  end
+
+  describe "InfraredRFTransmitCompleteResponse with a slow transmitter" do
+    @describetag adapters: %{infrared_proxy: Espex.Test.SlowInfraredProxy}
+
+    setup do
+      Espex.Test.SlowInfraredProxy.put_test_pid(self())
+      on_exit(&Espex.Test.SlowInfraredProxy.reset/0)
+    end
+
+    test "the connection answers a ping while its frame is on the air", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      transmit(socket, 42)
+      assert_receive {:ir_started, task}
+
+      send_struct(socket, %Proto.PingRequest{})
+      assert {:ok, %Proto.PingResponse{}, rest} = recv_struct(socket, rest)
+
+      send(task, {:release, :ok})
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "a request from another client supersedes: the first hears false at once", %{port: port} do
+      {a, _hello, rest_a} = hello(port)
+      {b, _hello, rest_b} = hello(port)
+
+      transmit(a, 42)
+      assert_receive {:ir_started, first}
+
+      transmit(b, 42)
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: false}, rest_a} = recv_struct(a, rest_a)
+
+      # The transmitter runs one frame at a time: the second starts once
+      # the first returns, and only its requester hears the result.
+      refute_received {:ir_started, _}
+      send(first, {:release, :ok})
+      assert_receive {:ir_started, second}
+      send(second, {:release, :ok})
+
+      assert {:ok, %Proto.InfraredRFTransmitCompleteResponse{key: 42, success: true}, _} = recv_struct(b, rest_b)
+      assert_nothing_sent(a, rest_a)
 
       :gen_tcp.close(a)
       :gen_tcp.close(b)
@@ -278,6 +349,175 @@ defmodule Espex.Api118Test do
 
     test "without a serial adapter the subscribe goes unanswered", %{port: port} do
       {socket, rest} = subscribe_identity(port)
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+  end
+
+  describe "linked wizard inputs" do
+    @describetag adapters: %{wizard: Espex.Test.LinkedWizard, home_assistant_states: Espex.Test.FakeHomeAssistantStates}
+
+    setup do
+      Espex.Test.FakeHomeAssistantStates.put_test_pid(self())
+      :persistent_term.put({Espex.Test.TrackingWizard, :listener}, self())
+
+      on_exit(fn ->
+        Espex.Test.FakeHomeAssistantStates.reset()
+        :persistent_term.erase({Espex.Test.TrackingWizard, :listener})
+      end)
+
+      %{outdoor: Espex.Wizard.fnv1_hash("outdoor")}
+    end
+
+    defp subscribe_states(socket, rest) do
+      send_struct(socket, %Proto.SubscribeHomeAssistantStatesRequest{})
+      sync(socket, rest)
+    end
+
+    defp set_input(socket, key, value),
+      do: send_struct(socket, %Proto.WizardInputSetRequest{key: key, entity_id: value})
+
+    # The two entries of the "outdoor" input for `entity_id`, as sent.
+    defp recv_links(socket, rest, entity_id) do
+      {:ok, %Proto.SubscribeHomeAssistantStateResponse{} = first, rest} = recv_struct(socket, rest)
+      {:ok, %Proto.SubscribeHomeAssistantStateResponse{} = second, rest} = recv_struct(socket, rest)
+
+      assert [{first.entity_id, first.attribute}, {second.entity_id, second.attribute}] ==
+               [{entity_id, ""}, {entity_id, "unit_of_measurement"}]
+
+      rest
+    end
+
+    # A ping round trip orders every earlier frame's handling before it.
+    defp sync(socket, rest) do
+      send_struct(socket, %Proto.PingRequest{})
+      {:ok, %Proto.PingResponse{}, rest} = recv_struct(socket, rest)
+      rest
+    end
+
+    test "a set sends the linked entries to every subscribed client, the sender included",
+         %{port: port, outdoor: outdoor} do
+      {sender, _hello, rest_s} = hello(port)
+      rest_s = subscribe_states(sender, rest_s)
+      {other, _hello, rest_o} = hello(port)
+      rest_o = subscribe_states(other, rest_o)
+      {quiet, _hello, rest_q} = hello(port)
+
+      set_input(sender, outdoor, "sensor.outdoor")
+      assert_receive {:wizard_input_set, ^outdoor, ["sensor.outdoor"]}
+
+      _ = recv_links(sender, rest_s, "sensor.outdoor")
+      _ = recv_links(other, rest_o, "sensor.outdoor")
+      assert_nothing_sent(quiet, rest_q)
+
+      # Any client's states for the entity now reach the adapter.
+      send_struct(quiet, %Proto.HomeAssistantStateResponse{
+        entity_id: "sensor.outdoor",
+        attribute: "unit_of_measurement",
+        state: "°C"
+      })
+
+      assert_receive {:ha_state, "sensor.outdoor", "unit_of_measurement", "°C"}
+
+      Enum.each([sender, other, quiet], &:gen_tcp.close/1)
+    end
+
+    test "only a new valid value resends, and it replaces the old entries", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe_states(socket, rest)
+
+      set_input(socket, outdoor, "sensor.a")
+      rest = recv_links(socket, rest, "sensor.a")
+
+      # Invalid, the same value again, and an unlinked input: nothing.
+      set_input(socket, outdoor, "nodot")
+      set_input(socket, outdoor, "sensor.a")
+      set_input(socket, Espex.Wizard.fnv1_hash("light"), "light.kitchen")
+      rest = sync(socket, rest)
+
+      set_input(socket, outdoor, "sensor.b")
+      rest = recv_links(socket, rest, "sensor.b")
+
+      send_struct(socket, %Proto.HomeAssistantStateResponse{entity_id: "sensor.a", state: "1"})
+      send_struct(socket, %Proto.HomeAssistantStateResponse{entity_id: "sensor.b", state: "2"})
+      rest = sync(socket, rest)
+      refute_received {:ha_state, "sensor.a", _, _}
+      assert_received {:ha_state, "sensor.b", nil, "2"}
+
+      # Back to A: its entries are sent again, so the device gets A's state.
+      set_input(socket, outdoor, "sensor.a")
+      _ = recv_links(socket, rest, "sensor.a")
+      :gen_tcp.close(socket)
+    end
+
+    test "a new wizard module drops the links set against the old one",
+         %{port: port, outdoor: outdoor, server_name: server_name} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe_states(socket, rest)
+      set_input(socket, outdoor, "sensor.outdoor")
+      rest = recv_links(socket, rest, "sensor.outdoor")
+
+      :ok = Espex.update_adapters(server_name, wizard: Espex.Test.TrackingWizard)
+      # Removal sends nothing; a later walk has no links left.
+      rest = subscribe_states(socket, rest)
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "a client accepted before a wizard swap cannot set links for the old document",
+         %{port: port, outdoor: outdoor, server_name: server_name} do
+      {old_client, _hello, rest_old} = hello(port)
+      rest_old = sync(old_client, rest_old)
+
+      :ok = Espex.update_adapters(server_name, wizard: Espex.Test.TrackingWizard)
+      {watcher, _hello, rest_w} = hello(port)
+      rest_w = subscribe_states(watcher, rest_w)
+
+      set_input(old_client, outdoor, "sensor.outdoor")
+      _ = sync(old_client, rest_old)
+      assert_nothing_sent(watcher, rest_w)
+
+      # Nothing reached the table either.
+      {later, _hello, rest_l} = hello(port)
+      rest_l = subscribe_states(later, rest_l)
+      assert_nothing_sent(later, rest_l)
+
+      Enum.each([old_client, watcher, later], &:gen_tcp.close/1)
+    end
+
+    test "frames buffered behind an input set see its links", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+
+      # One write, so the connection reads all three frames at once.
+      frames =
+        Enum.map(
+          [
+            %Proto.WizardInputSetRequest{key: outdoor, entity_id: "sensor.outdoor"},
+            %Proto.HomeAssistantStateResponse{entity_id: "sensor.outdoor", state: "21.5"},
+            %Proto.SubscribeHomeAssistantStatesRequest{}
+          ],
+          fn struct ->
+            {:ok, frame} = Espex.MessageTypes.encode_message(struct)
+            frame
+          end
+        )
+
+      :ok = :gen_tcp.send(socket, frames)
+
+      rest = recv_links(socket, rest, "sensor.outdoor")
+      assert_receive {:ha_state, "sensor.outdoor", nil, "21.5"}, 1_000
+      # The walk already had the entries; the broadcast sends nothing more.
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
+    test "a client that sets an input before subscribing gets it in the walk", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+      set_input(socket, outdoor, "sensor.outdoor")
+      rest = sync(socket, rest)
+
+      send_struct(socket, %Proto.SubscribeHomeAssistantStatesRequest{})
+      rest = recv_links(socket, rest, "sensor.outdoor")
       assert_nothing_sent(socket, rest)
       :gen_tcp.close(socket)
     end

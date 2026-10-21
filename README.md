@@ -22,6 +22,10 @@ Start here once you're ready to go beyond the quickstart below:
 - [Entity types guide](guides/entity_types.md) — cookbook for the
   common ESPHome entities (Switch, BinarySensor, Sensor, Button,
   Light, Cover, Climate) with proto structs and examples.
+- API version guides — what each ESPHome API version added and how
+  espex implements it: [1.15](guides/api/1.15.md),
+  [1.16](guides/api/1.16.md), [1.17](guides/api/1.17.md),
+  [1.18](guides/api/1.18.md).
 
 Each adapter behaviour's module doc contains a callback reference
 and a complete example:
@@ -34,6 +38,8 @@ and a complete example:
 - `Espex.EntityProvider`
 - `Espex.Sendspin`
 - `Espex.Wizard`
+- `Espex.HomeAssistantStates`
+- `Espex.OutgoingTargetStore`
 - `Espex.Mdns`
 
 ## Features
@@ -42,7 +48,7 @@ and a complete example:
   `Noise_NNpsk0_25519_ChaChaPoly_SHA256` encrypted transports; advertises
   API 1.18 (device capabilities RPC, proxy request acknowledgements,
   serial proxy ownership, port mode and identity, IR/RF transmit
-  completion)
+  completion; see the API version guides)
 - Runtime Noise PSK provisioning and rotation — Home Assistant can
   bootstrap a keyless node's key over plaintext (opt-in) or rotate it
   over the encrypted channel, with host-app persistence via
@@ -70,7 +76,15 @@ and a complete example:
 - Device wizard (`Espex.Wizard`) — onboarding pages Home Assistant
   shows when the device is added, showing your entities and asking the
   user to pick Home Assistant entities, which espex hands to your
-  adapter (OTP 28+)
+  adapter (OTP 28+); an input can be linked to the picked entity's state
+- Home Assistant states (`Espex.HomeAssistantStates`) — subscribe to
+  Home Assistant entities and attributes, from the adapter or at runtime
+  with `Espex.subscribe_home_assistant_state/2`, and receive their states
+- IR/RF transmits run off the connection, with ESPHome's rules for
+  superseded and overdue frames
+- Dial-back (`:outgoing_connection`) — when no client is connected, the
+  node dials Home Assistant, for networks where Home Assistant cannot
+  reach it; a learned target is kept with `Espex.OutgoingTargetStore`
 - Opt-in mDNS advertising (`_esphomelib._tcp`) via `Espex.Mdns` — ships an
   `Espex.Mdns.MdnsLite` adapter over the
   [`mdns_lite`](https://hex.pm/packages/mdns_lite) library for the Nerves
@@ -86,6 +100,8 @@ and a complete example:
   - `Espex.ConnectionListener` (observe the connected-client set)
   - `Espex.Sendspin` (Sendspin client id and pairing token)
   - `Espex.Wizard` (device wizard pages and inputs)
+  - `Espex.HomeAssistantStates` (Home Assistant entity states)
+  - `Espex.OutgoingTargetStore` (persist the dial-back target)
 
 ## Installation
 

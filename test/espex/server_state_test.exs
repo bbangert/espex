@@ -25,7 +25,9 @@ defmodule Espex.ServerStateTest do
              psk_store: nil,
              connection_listener: nil,
              sendspin: nil,
-             wizard: nil
+             wizard: nil,
+             home_assistant_states: nil,
+             outgoing_target_store: nil
            }
   end
 

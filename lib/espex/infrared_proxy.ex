@@ -16,7 +16,7 @@ defmodule Espex.InfraredProxy do
   | Callback | Purpose |
   |----------|---------|
   | `c:list_entities/0` | Advertise the IR devices |
-  | `c:transmit_raw/3` | Transmit a raw-timing pattern and return once it is sent |
+  | `c:transmit_raw/3` | Transmit a raw-timing pattern and return once it is sent (runs in a task) |
   | `c:subscribe/1` | Register a connection handler for receive events |
   | `c:unsubscribe/1` | Deregister (idempotent) |
 
@@ -57,27 +57,38 @@ defmodule Espex.InfraredProxy do
 
   ### Transmit completion (API 1.18)
 
-  espex answers every transmit request with an
-  `InfraredRFTransmitCompleteResponse`, sent only to the connection that
-  asked. Clients that see API 1.18 pace their queue on this reply: they
-  send the next frame only once the previous one is reported complete,
-  and otherwise wait up to 35 s past the frame's air time.
+  espex answers each transmit request from a client on API 1.18 or later
+  with an `InfraredRFTransmitCompleteResponse`, sent only to the
+  connection that asked. Those clients pace their queue on this reply:
+  they send the next frame only once the previous one is reported
+  complete, and otherwise wait up to 35 s past the frame's air time.
+  Clients below 1.18 get no reply, as from ESPHome firmware.
 
   The reply is the return of `c:transmit_raw/3`. `:ok` reports
   `success: true`, `{:error, _}` reports `success: false`. espex refuses
-  a request with no timings, or one whose timings times repeats come to
-  more than 30 s on air, with `success: false` without calling the
-  adapter.
+  a request with no timings, or for a key that `c:list_entities/0` did
+  not advertise, with `success: false` without calling the adapter.
 
   So return from `c:transmit_raw/3` once the frame, all repeats included,
   has left the transmitter. An adapter that returns as soon as the frame
-  is queued lets the client send the next one too early. Unknown keys
-  should return `{:error, _}`, which tells the client at once.
+  is queued lets the client send the next one too early.
 
-  `c:transmit_raw/3` runs in the connection process and blocks it for the
-  frame's air time. Messages for that connection, keepalive pings
-  included, wait behind it. Even a long burst stays well under the
-  keepalive timeout.
+  `c:transmit_raw/3` runs in a task, not in the connection, so a long
+  frame does not hold up the connection's other messages. espex follows
+  the firmware's rules around it:
+
+  | Situation | What espex does |
+  |-----------|-----------------|
+  | Two requests for one adapter | Run one at a time, in arrival order, whichever clients sent them |
+  | A newer request for the same key, from any client | Answers the older one `success: false` at once. If the older one has not started it is dropped; if it is running it finishes, unanswered |
+  | No return 30 s past the frame's air time (air time counted up to 8 min) | Answers `success: false`, kills the call, and starts the next request |
+  | The adapter raises or exits | Answers `success: false` |
+  | The requesting client disconnects | Its frames still go out, unanswered |
+  | A newer request for a key whose earlier frame nobody waits on (a client below 1.18, or one that disconnected) has not started | The earlier one is dropped, so unanswered frames stay at one per key |
+
+  Calls for different adapter modules run in parallel. A request runs on
+  the adapter its connection started with, even after
+  `Espex.update_adapters/2`.
 
   ### Receive
 
@@ -159,9 +170,13 @@ defmodule Espex.InfraredProxy do
 
   Return once the frame, all repeats included, has left the transmitter:
   the return is reported to the client as the transmit's completion, and
-  the client paces its next frame on it. Return `{:error, _}` for an
-  unknown key or a failed transmit. See "Transmit completion (API 1.18)"
-  in the moduledoc.
+  the client paces its next frame on it. Return `{:error, _}` for a
+  failed transmit.
+
+  The call runs in a task. It may run at the same time as calls on
+  other adapter modules, but never two at a time for one adapter module.
+  It is killed if it has not returned 30 s past the frame's air time.
+  See "Transmit completion (API 1.18)" in the moduledoc.
   """
   @callback transmit_raw(key :: non_neg_integer(), timings :: [integer()], transmit_opts()) ::
               :ok | {:error, term()}

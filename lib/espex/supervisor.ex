@@ -10,13 +10,24 @@ defmodule Espex.Supervisor do
        `c:Espex.ConnectionListener.connections_changed/0` notifications.
     4. A cross-connection state server (internal) — holds the device
        config and adapter modules.
-    5. `ThousandIsland` — TCP acceptor pool that spawns a per-client
+    5. An IR/RF transmit queue and its `Task.Supervisor` (internal),
+       under their own `:one_for_all` supervisor — runs
+       `c:Espex.InfraredProxy.transmit_raw/3` calls off the connections.
+    6. A dial-back dialer with its connection's `DynamicSupervisor` and
+       its `Task.Supervisor` (internal), under their own supervisor —
+       only when `:outgoing_connection` is configured.
+    7. `ThousandIsland` — TCP acceptor pool that spawns a per-client
        connection handler process (internal).
-    6. An mDNS advertiser GenServer (internal) — optional, started
+    8. An mDNS advertiser GenServer (internal) — optional, started
        only when `:mdns` is configured.
 
-  If the server child crashes, the listener and advertiser restart
-  too, so live connections drop rather than hold stale references.
+  If the server child crashes, everything after it restarts too, so live
+  connections drop rather than hold stale references. A crash in the
+  dialer's subtree also restarts the listener, so no connection outlives
+  the dialer that knew of it. A crash of the transmit queue restarts
+  only the queue and its tasks: connections answer `false` while it is
+  gone, and replies it owed are lost, so those clients wait out their
+  own timeout (35 s past the frame's air time).
 
   Configuration is passed as keyword options:
 
@@ -36,6 +47,9 @@ defmodule Espex.Supervisor do
         connection_listener: MyApp.Tracker, # notified when the connected-client set changes
         sendspin: MyApp.MySendspin,         # reports a Sendspin client (Espex.Sendspin)
         wizard: MyApp.MyWizard,             # device wizard (Espex.Wizard, OTP 28+)
+        home_assistant_states: MyApp.HAStates, # Home Assistant states (Espex.HomeAssistantStates)
+        outgoing_connection: [port: 6054],  # dial-back (see below)
+        outgoing_target_store: MyApp.TargetStore, # keeps the learned dial-back target
         mdns: Espex.Mdns.MdnsLite,
         keepalive_idle_ms: 60_000,            # inbound silence before we ping
         keepalive_grace_ms: 60_000,           # further silence before we close
@@ -70,6 +84,53 @@ defmodule Espex.Supervisor do
   if you shorten `read_timeout` or lengthen the keepalive intervals, raise
   it to match.
 
+  ## Dial-back
+
+  `:outgoing_connection` (new in 0.12.0) makes the node dial Home
+  Assistant when no client is connected, for networks where Home
+  Assistant cannot reach the node (API 1.18, as ESPHome's
+  `outgoing_connection:`). Home Assistant listens on port 6054 and
+  matches the node by the MAC in its Noise hello.
+
+      outgoing_connection: [
+        host: "192.168.1.10",   # an IP address, no DNS; omit to learn it
+        port: 6054,             # default 6054, for host and learned target alike
+        delay: 60_000,          # ms; default 60 s
+        target: {192, 168, 1, 10} # a learned target saved earlier, to dial after boot
+      ]
+
+    * Dial-back is Noise only: the device config needs a `:psk`, or
+      `accepts_key_provisioning: true` for a key provisioned later.
+      Without a key the node waits and checks again every 5 s.
+    * Without `host`, the target is learned: a client whose hello sets
+      `outgoing_connection_target` over Noise becomes the target, and
+      its IP address is remembered and passed to the
+      `:outgoing_target_store` adapter (`Espex.OutgoingTargetStore`).
+      Home Assistant does this for the node's own config entry.
+      Link-local IPv6 addresses are not remembered: they cannot be
+      dialed without a scope id. A learned target outlives a restart of
+      the dialer; after a restart of the whole tree the node starts from
+      `target` again. With `host`, nothing is learned. On a
+      keyless node with `accepts_key_provisioning`, the client that
+      provisions the key can then make itself the target; set `host`
+      if that matters on your network.
+    * The first dial is `delay` after start. While a target client or
+      the dialed connection is connected, nothing is dialed; when it
+      goes, the node waits `delay` for it to return, then dials. A
+      failed dial — refused, 10 s without a connection, or a connection
+      closed before its hello — waits 5 s, doubling up to 300 s, ±20 %.
+    * The dialed connection speaks first: the node sends its Noise hello
+      as soon as the socket opens, and stays the Noise responder. It is
+      otherwise a normal connection: `Espex.connected_clients/1` lists
+      it and an `Espex.ConnectionListener` hears about it.
+    * The dialed connection does not count against ThousandIsland's
+      connection limits, and its `:connection` telemetry span has a
+      parent span that was never started.
+    * `DeviceInfoResponse.api_outgoing_connection_supported` is set on
+      every connection while dial-back is configured.
+
+  The options are checked at start; a bad one raises `ArgumentError`.
+
   ## Runtime reconfiguration
 
   `Espex.update_device_config/2` swaps the `%DeviceConfig{}` new
@@ -97,7 +158,9 @@ defmodule Espex.Supervisor do
     :psk_store,
     :connection_listener,
     :sendspin,
-    :wizard
+    :wizard,
+    :home_assistant_states,
+    :outgoing_target_store
   ]
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -149,6 +212,22 @@ defmodule Espex.Supervisor do
 
     adapters = opts |> Keyword.take(@adapter_keys) |> Map.new()
     check_wizard_available!(adapters)
+    outgoing = outgoing_connection!(opts[:outgoing_connection], device_config)
+    read_timeout = opts[:read_timeout] || 180_000
+
+    # Built once: the listener's connections and the dialed one run the
+    # same handler with the same options.
+    handler_options =
+      [
+        server_name: server_name,
+        registry_name: registry_name,
+        client_registry: client_registry_name,
+        task_supervisor: task_supervisor_name,
+        infrared_queue: infrared_queue_name(server_name),
+        keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
+        keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000,
+        disconnect_grace_ms: opts[:disconnect_grace_ms] || 2_000
+      ] ++ if(outgoing, do: [dialer: dialer_name(server_name), outgoing_connection?: true], else: [])
 
     children =
       [
@@ -167,30 +246,26 @@ defmodule Espex.Supervisor do
         # slow listener under connection churn sheds notifications instead
         # of accumulating tasks (each is only a best-effort re-query hint).
         {Task.Supervisor, name: task_supervisor_name, max_children: @max_listener_tasks},
-        {Server, name: server_name, device_config: device_config, adapters: adapters},
-        {
-          ThousandIsland,
-          # Hard backstop only: the Connection-level keepalive ping keeps the
-          # inbound side of healthy connections audible well inside this
-          # (ThousandIsland's default of 60s would reap busy-but-quiet
-          # clients — see "Keepalive" in the moduledoc).
-          port: port,
-          handler_module: Connection,
-          handler_options: [
-            server_name: server_name,
-            registry_name: registry_name,
-            client_registry: client_registry_name,
-            task_supervisor: task_supervisor_name,
-            keepalive_idle_ms: opts[:keepalive_idle_ms] || 60_000,
-            keepalive_grace_ms: opts[:keepalive_grace_ms] || 60_000,
-            disconnect_grace_ms: opts[:disconnect_grace_ms] || 2_000
-          ],
-          transport_module: ThousandIsland.Transports.TCP,
-          transport_options: [nodelay: true],
-          read_timeout: opts[:read_timeout] || 180_000,
-          num_acceptors: num_acceptors
-        }
-      ] ++ mdns_children(opts, device_config, supervisor_name)
+        {Server, name: server_name, device_config: device_config, adapters: adapters, registry_name: registry_name},
+        infrared_subtree(server_name)
+      ] ++
+        dialer_children(outgoing, server_name, handler_options, read_timeout) ++
+        [
+          {
+            ThousandIsland,
+            # Hard backstop only: the Connection-level keepalive ping keeps the
+            # inbound side of healthy connections audible well inside this
+            # (ThousandIsland's default of 60s would reap busy-but-quiet
+            # clients — see "Keepalive" in the moduledoc).
+            port: port,
+            handler_module: Connection,
+            handler_options: handler_options,
+            transport_module: ThousandIsland.Transports.TCP,
+            transport_options: [nodelay: true],
+            read_timeout: read_timeout,
+            num_acceptors: num_acceptors
+          }
+        ] ++ mdns_children(opts, device_config, supervisor_name)
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
@@ -204,6 +279,81 @@ defmodule Espex.Supervisor do
   end
 
   defp check_wizard_available!(_adapters), do: :ok
+
+  @outgoing_keys [:host, :port, :delay, :target]
+  # Test-only overrides of the dialer's timings (see Espex.Dialer).
+  @outgoing_private_keys [:connect_timeout, :precondition_retry, :backoff_min, :random, :connect]
+
+  defp outgoing_connection!(nil, _device_config), do: nil
+  defp outgoing_connection!(false, _device_config), do: nil
+
+  defp outgoing_connection!(opts, device_config) when is_list(opts) do
+    case Keyword.keys(opts) -- (@outgoing_keys ++ @outgoing_private_keys) do
+      [] -> :ok
+      [key | _] -> outgoing_invalid!("unknown key #{inspect(key)}")
+    end
+
+    if not (DeviceConfig.encrypted?(device_config) or device_config.accepts_key_provisioning) do
+      outgoing_invalid!("dial-back is Noise only: set a :psk, or accepts_key_provisioning: true")
+    end
+
+    port = Keyword.get(opts, :port, 6054)
+    delay = Keyword.get(opts, :delay, 60_000)
+    if port not in 1..65_535//1, do: outgoing_invalid!(":port #{inspect(port)} is not 1-65535")
+    if not (is_integer(delay) and delay >= 0), do: outgoing_invalid!(":delay #{inspect(delay)} is not a time in ms")
+
+    Keyword.take(opts, @outgoing_private_keys) ++
+      [
+        host: outgoing_address!(opts[:host], :host),
+        target: outgoing_address!(opts[:target], :target),
+        port: port,
+        delay: delay
+      ]
+  end
+
+  defp outgoing_connection!(other, _device_config),
+    do: outgoing_invalid!("expected a keyword list, got #{inspect(other)}")
+
+  defp outgoing_address!(nil, _key), do: nil
+
+  defp outgoing_address!(value, key) do
+    case Espex.Dialer.Target.parse(value) do
+      {:ok, ip} -> ip
+      {:error, message} -> outgoing_invalid!("#{inspect(key)} #{message}")
+    end
+  end
+
+  @spec outgoing_invalid!(String.t()) :: no_return()
+  defp outgoing_invalid!(message), do: raise(ArgumentError, "invalid :outgoing_connection: " <> message)
+
+  # IR/RF transmits run off the connections, in a subtree of their own
+  # (see Espex.InfraredQueue.Supervisor). Its own Task.Supervisor, because
+  # the listener-notification one sheds work.
+  defp infrared_subtree(server_name) do
+    {Espex.InfraredQueue.Supervisor,
+     name: Module.concat(server_name, "InfraredSupervisor"),
+     queue: infrared_queue_name(server_name),
+     task_supervisor: infrared_task_supervisor_name(server_name)}
+  end
+
+  # See Espex.Dialer.Supervisor for the subtree's order and restarts.
+  defp dialer_children(nil, _server_name, _handler_options, _read_timeout), do: []
+
+  defp dialer_children(outgoing, server_name, handler_options, read_timeout) do
+    [
+      {Espex.Dialer.Supervisor,
+       name: Module.concat(server_name, "DialerSupervisor"),
+       dialer:
+         Keyword.merge(outgoing,
+           name: dialer_name(server_name),
+           server: server_name,
+           connection_supervisor: dialer_connection_supervisor_name(server_name),
+           task_supervisor: dialer_task_supervisor_name(server_name),
+           handler_options: [dialed: true] ++ handler_options,
+           read_timeout: read_timeout
+         )}
+    ]
+  end
 
   # Builds the advertiser child spec when the caller opted in via :mdns.
   defp mdns_children(opts, device_config, supervisor_name) do
@@ -223,6 +373,28 @@ defmodule Espex.Supervisor do
   @doc false
   @spec task_supervisor_name(atom()) :: atom()
   def task_supervisor_name(server_name), do: Module.concat(server_name, "TaskSupervisor")
+
+  # Conventional names of the IR/RF transmit queue and its Task.Supervisor (internal).
+  @doc false
+  @spec infrared_queue_name(atom()) :: atom()
+  def infrared_queue_name(server_name), do: Module.concat(server_name, "InfraredQueue")
+
+  @doc false
+  @spec infrared_task_supervisor_name(atom()) :: atom()
+  def infrared_task_supervisor_name(server_name), do: Module.concat(server_name, "InfraredTaskSupervisor")
+
+  # Conventional names of the dial-back processes (internal).
+  @doc false
+  @spec dialer_name(atom()) :: atom()
+  def dialer_name(server_name), do: Module.concat(server_name, "Dialer")
+
+  @doc false
+  @spec dialer_connection_supervisor_name(atom()) :: atom()
+  def dialer_connection_supervisor_name(server_name), do: Module.concat(server_name, "DialerConnectionSupervisor")
+
+  @doc false
+  @spec dialer_task_supervisor_name(atom()) :: atom()
+  def dialer_task_supervisor_name(server_name), do: Module.concat(server_name, "DialerTaskSupervisor")
 
   @doc """
   Return the conventional Registry name for a given server name.

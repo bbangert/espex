@@ -93,6 +93,8 @@ defmodule Espex.DeviceConfig do
           accepts_key_provisioning: boolean()
         }
 
+  # The key stays out of inspect output, crash reports included.
+  @derive {Inspect, except: [:psk]}
   defstruct name: "espex",
             friendly_name: "Espex",
             mac_address: "00:00:00:00:00:00",
@@ -154,6 +156,24 @@ defmodule Espex.DeviceConfig do
   @spec encrypted?(t()) :: boolean()
   def encrypted?(%__MODULE__{psk: nil}), do: false
   def encrypted?(%__MODULE__{psk: <<_::binary-size(32)>>}), do: true
+
+  @doc since: "0.12.0"
+  @doc """
+  The MAC address in the form the Noise server hello carries it: the
+  hex digits only, lowercase (`"aabbccddeeff"`).
+
+  ESPHome firmware sends this form on every server hello, and
+  aioesphomeapi's dial-back listener refuses any other.
+  `DeviceInfoResponse.mac_address` keeps the configured colon form, as
+  firmware does.
+
+      iex> Espex.DeviceConfig.hello_mac(%Espex.DeviceConfig{mac_address: "AA:BB:CC:DD:EE:FF"})
+      "aabbccddeeff"
+  """
+  @spec hello_mac(t()) :: String.t()
+  def hello_mac(%__MODULE__{mac_address: mac}) do
+    mac |> String.replace([":", "-"], "") |> String.downcase()
+  end
 
   @doc since: "0.4.0"
   @doc """
@@ -267,19 +287,8 @@ defmodule Espex.DeviceConfig do
   protocol handling of its own. Past 1.10 each step required:
 
     * 1.14 — `object_id` optional on entities (espex always sends it)
-    * 1.15 — `DeviceCapabilitiesRequest` answered
-    * 1.16 — `ZWaveProxyRequestResponse` after SUBSCRIBE / UNSUBSCRIBE,
-      `SerialProxyRequestResponse` after CONFIGURE and SET_MODEM_PINS,
-      `status` on `SerialProxyGetModemPinsResponse`
-    * 1.17 — serial proxy single-owner rule (the SUBSCRIBEd connection
-      owns the instance; others get `PORT_IN_USE`) and
-      `SerialProxySetModeRequest` (RAW / PROTOCOL) acknowledged with
-      `SET_MODE`
-    * 1.18 — every `InfraredRFTransmitRawTimingsRequest` answered with
-      `InfraredRFTransmitCompleteResponse` (clients pace IR/RF frames on
-      it); `SubscribeSerialProxyIdentityRequest` answered per port; the
-      optional Sendspin (`Espex.Sendspin`) and device wizard
-      (`Espex.Wizard`) messages
+    * 1.15 to 1.18 — see the API version guides: [1.15](1.15.html),
+      [1.16](1.16.html), [1.17](1.17.html) and [1.18](1.18.html)
   """
   @spec api_version_minor() :: non_neg_integer()
   def api_version_minor, do: @api_version_minor

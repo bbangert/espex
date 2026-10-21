@@ -4,16 +4,12 @@ defmodule Espex.Dispatch do
   import Bitwise
 
   alias Espex.{BluetoothProxy, ConnectionState, DeviceConfig, InfraredProxy, Proto, SerialProxy, Wizard}
+  alias Espex.HomeAssistantStates.{Subscription, Table}
 
   # Bit positions for Proto.SerialProxy{Set,Get}ModemPins{Request,Response}.line_states,
   # per ESPHome's SerialProxyLineStateFlag enum in serial_proxy.h.
   @rts_bit 0x01
   @dtr_bit 0x02
-
-  # transmit_raw/3 blocks the connection for the frame's air time, so a
-  # request that would hold it longer than this is refused. Upstream
-  # reports a transmit 30 s overdue as failed.
-  @infrared_max_air_time_us 30_000_000
 
   # Every protobuf struct in this list routes through
   # Espex.EntityProvider.handle_command/1 when a provider is configured.
@@ -60,9 +56,11 @@ defmodule Espex.Dispatch do
           | :infrared_unsubscribe
           | {:send_device_capabilities, Proto.DeviceCapabilitiesResponse.t()}
           | {:wizard_input_set, key :: non_neg_integer(), entity_ids :: [String.t()]}
+          | {:ha_state, entity_id :: String.t(), attribute :: String.t() | nil, state :: String.t()}
+          | {:ha_link_set, key :: non_neg_integer(), [Subscription.t()]}
           | :sendspin_pairing_token
           | {:infrared_transmit, key :: non_neg_integer(), device_id :: non_neg_integer(), timings :: [integer()],
-             InfraredProxy.transmit_opts()}
+             InfraredProxy.transmit_opts(), reply? :: boolean()}
           | :ble_scanner_subscribe
           | :ble_scanner_unsubscribe
           | {:ble_scanner_set_mode, :passive | :active}
@@ -84,6 +82,7 @@ defmodule Espex.Dispatch do
           | {:entity_command, struct()}
           | {:set_psk, binary()}
           | :client_connected
+          | {:dialer_hello, :dialed | :target}
           | {:arm_disconnect_timeout, pos_integer()}
 
   @type result :: {ConnectionState.t(), [action()]}
@@ -108,12 +107,14 @@ defmodule Espex.Dispatch do
       name: state.device_config.name
     }
 
+    {state, outgoing_actions} = outgoing_hello(state, req)
+
     {state,
      [
        {:log, :info, "hello from #{state.peer} (client_info=#{inspect(req.client_info)})"},
        {:send, response},
        :client_connected
-     ]}
+     ] ++ outgoing_actions}
   end
 
   def handle_request(state, %Proto.AuthenticationRequest{}) do
@@ -133,7 +134,12 @@ defmodule Espex.Dispatch do
 
   def handle_request(state, %Proto.DeviceInfoRequest{}) do
     serial_protos = Enum.map(state.serial_proxies, &SerialProxy.Info.to_proto/1)
-    response = DeviceConfig.to_device_info_response(state.device_config, serial_protos)
+
+    response = %{
+      DeviceConfig.to_device_info_response(state.device_config, serial_protos)
+      | api_outgoing_connection_supported: state.outgoing_connection?
+    }
+
     {state, [{:send, response}]}
   end
 
@@ -186,8 +192,39 @@ defmodule Espex.Dispatch do
     {state, [{:log, :debug, "#{state.peer} subscribed to HA services"}]}
   end
 
+  # One SubscribeHomeAssistantStateResponse per entry of the table. A
+  # second request walks it again, as upstream. Entries added later are
+  # sent as they arrive (the {:espex_ha_subscriptions, ...} event).
   def handle_request(state, %Proto.SubscribeHomeAssistantStatesRequest{}) do
-    {state, [{:log, :debug, "#{state.peer} subscribed to HA states"}]}
+    responses =
+      state.ha_subscriptions
+      |> Table.sort()
+      |> Enum.map(&{:send, subscribe_state_response(&1)})
+
+    {ConnectionState.put_ha_states_subscribed(state), responses}
+  end
+
+  # A state for a subscribed entity: an entry matches on entity_id, and
+  # on attribute, where "" means the entity's state. One call per
+  # message, however many entries match. The device does not check that
+  # this client sent request 38, as upstream.
+  def handle_request(state, %Proto.HomeAssistantStateResponse{entity_id: ""}) do
+    {state, []}
+  end
+
+  def handle_request(state, %Proto.HomeAssistantStateResponse{} = msg) do
+    attribute = if msg.attribute == "", do: nil, else: msg.attribute
+
+    cond do
+      not Enum.any?(state.ha_subscriptions, &(&1.entity_id == msg.entity_id and &1.attribute == attribute)) ->
+        {state, []}
+
+      ConnectionState.adapter?(state, :home_assistant_states) ->
+        {state, [{:ha_state, msg.entity_id, attribute, msg.state}]}
+
+      true ->
+        {state, [{:log, :debug, "Home Assistant state for #{msg.entity_id} dropped — no adapter configured"}]}
+    end
   end
 
   def handle_request(state, %Proto.DisconnectRequest{reason: reason}) do
@@ -373,34 +410,25 @@ defmodule Espex.Dispatch do
 
   # -- Infrared Proxy --
 
-  # Every request is answered with InfraredRFTransmitCompleteResponse
-  # (API 1.18): refusals here at once with success=false, transmits once
-  # the adapter's transmit_raw/3 returns (see Espex.Connection).
+  # API 1.18 clients get an InfraredRFTransmitCompleteResponse for every
+  # request: a refusal here at once with success=false, a transmit from
+  # Espex.InfraredQueue once it is settled. Older clients get no reply
+  # at all, as upstream (want_reply).
   def handle_request(state, %Proto.InfraredRFTransmitRawTimingsRequest{} = req) do
+    reply? = ConnectionState.api_version_at_least?(state, {1, 18})
+
     cond do
       not ConnectionState.adapter?(state, :infrared_proxy) ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit ignored — no adapter configured"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit ignored — no adapter configured")
 
       req.timings == [] ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit for key #{req.key} refused — no timings"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit for key #{req.key} refused — no timings")
 
-      infrared_air_time_us(req) > @infrared_max_air_time_us ->
-        {state,
-         [
-           {:log, :warning, "infrared transmit for key #{req.key} refused — longer than 30 s on air"},
-           {:send, infrared_transmit_complete(req.key, req.device_id, false)}
-         ]}
+      not Enum.any?(state.infrared_entities, &(&1.key == req.key)) ->
+        refuse_infrared_transmit(state, req, reply?, "infrared transmit for unknown key #{req.key} refused")
 
       true ->
-        handle_infrared_transmit(state, req)
+        handle_infrared_transmit(state, req, reply?)
     end
   end
 
@@ -422,11 +450,12 @@ defmodule Espex.Dispatch do
   end
 
   # As api_wizard.cpp: no reply, and an ignored request is only logged.
-  # The value stays out of the log.
+  # The value stays out of the log. A linked input's entries follow the
+  # value into the subscription table (see Espex.Wizard.Input).
   def handle_request(state, %Proto.WizardInputSetRequest{key: key, entity_id: value}) do
     with %Wizard.Input{} = input <- Wizard.Document.find_input(state.wizard, key),
          {:ok, entity_ids} <- Wizard.Input.parse_entity_ids(input, value) do
-      {state, [{:wizard_input_set, key, entity_ids}]}
+      {state, [{:wizard_input_set, key, entity_ids} | ha_link_set(input, entity_ids)]}
     else
       nil -> {state, [{:log, :warning, "wizard input set ignored — no input has key #{key}"}]}
       :error -> {state, [{:log, :warning, "wizard input set for key #{key} ignored — not a valid entity id"}]}
@@ -724,6 +753,23 @@ defmodule Espex.Dispatch do
     end
   end
 
+  # Espex.Server changed the subscription table. The copy is always
+  # updated; a client that sent request 38 is also sent the entries it
+  # has not seen. Removed entries send nothing: there is no unsubscribe.
+  def handle_event(state, {:espex_ha_subscriptions, added, removed}) do
+    {state, new} = ConnectionState.update_ha_subscriptions(state, added, removed)
+
+    if state.ha_states_subscribed do
+      {state, Enum.map(Table.sort(new), &{:send, subscribe_state_response(&1)})}
+    else
+      {state, []}
+    end
+  end
+
+  def handle_event(state, {:espex_ir_transmit_complete, key, device_id, success?}) do
+    {state, [{:send, infrared_transmit_complete(key, device_id, success?)}]}
+  end
+
   def handle_event(state, {:espex_ble_advertisement, address, rssi, address_type, data}) do
     if state.bluetooth_scanner_subscribed do
       advertisement = %Proto.BluetoothLERawAdvertisement{
@@ -980,13 +1026,27 @@ defmodule Espex.Dispatch do
 
   @doc """
   Build the `InfraredRFTransmitCompleteResponse` (API 1.18) for a
-  transmit request. Dispatch emits it for refusals; the handler sends it
-  once `:infrared_transmit` has run, with `success` from the adapter.
+  transmit request. Dispatch emits it for refusals and for the queue's
+  `{:espex_ir_transmit_complete, ...}` event; the handler sends it when
+  the queue cannot be reached.
   """
   @spec infrared_transmit_complete(non_neg_integer(), non_neg_integer(), boolean()) ::
           Proto.InfraredRFTransmitCompleteResponse.t()
   def infrared_transmit_complete(key, device_id, success?) do
     %Proto.InfraredRFTransmitCompleteResponse{key: key, device_id: device_id, success: success?}
+  end
+
+  @doc """
+  Build the `SubscribeHomeAssistantStateResponse` for a subscription
+  entry. No attribute goes on the wire as `""`.
+  """
+  @spec subscribe_state_response(Subscription.t()) :: Proto.SubscribeHomeAssistantStateResponse.t()
+  def subscribe_state_response(%Subscription{} = entry) do
+    %Proto.SubscribeHomeAssistantStateResponse{
+      entity_id: entry.entity_id,
+      attribute: entry.attribute || "",
+      once: entry.once
+    }
   end
 
   @doc """
@@ -1211,11 +1271,39 @@ defmodule Espex.Dispatch do
     end
   end
 
-  defp infrared_air_time_us(req) do
-    Enum.reduce(req.timings, 0, &(abs(&1) + &2)) * max(req.repeat_count, 1)
+  # Dial-back, as upstream's HelloRequest handler: a hello on a dialed
+  # connection tells the dialer the dial worked, and a client that sets
+  # outgoing_connection_target over Noise becomes the dial-back target,
+  # once per connection. Without a key the flag is refused; without
+  # dial-back configured it is ignored.
+  defp outgoing_hello(state, req) do
+    dialed = if state.dialed?, do: [{:dialer_hello, :dialed}], else: []
+
+    cond do
+      not req.outgoing_connection_target or state.outgoing_target? or not state.outgoing_connection? ->
+        {state, dialed}
+
+      match?({:active, _, _}, state.encryption) ->
+        {ConnectionState.put_outgoing_target(state), dialed ++ [{:dialer_hello, :target}]}
+
+      true ->
+        {state, dialed ++ [{:log, :warning, "dial-back target refused; no key active"}]}
+    end
   end
 
-  defp handle_infrared_transmit(state, req) do
+  defp ha_link_set(%Wizard.Input{links: []}, _entity_ids), do: []
+
+  # A linked input is never multiple, so there is one id.
+  defp ha_link_set(%Wizard.Input{key: key, links: links}, [entity_id]) do
+    [{:ha_link_set, key, Enum.map(links, &%{&1 | entity_id: entity_id})}]
+  end
+
+  defp refuse_infrared_transmit(state, req, reply?, message) do
+    reply = if reply?, do: [{:send, infrared_transmit_complete(req.key, req.device_id, false)}], else: []
+    {state, [{:log, :warning, message} | reply]}
+  end
+
+  defp handle_infrared_transmit(state, req, reply?) do
     opts = [
       carrier_frequency: if(req.carrier_frequency > 0, do: req.carrier_frequency, else: 38_000),
       repeat_count: if(req.repeat_count > 0, do: req.repeat_count, else: 1)
@@ -1228,7 +1316,7 @@ defmodule Espex.Dispatch do
         {[:infrared_subscribe], ConnectionState.put_infrared_subscribed(state, true)}
       end
 
-    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts}]}
+    {state, sub_actions ++ [{:infrared_transmit, req.key, req.device_id, req.timings, opts, reply?}]}
   end
 
   defp disconnect_reason_to_wire(:unspecified), do: :DISCONNECT_REASON_UNSPECIFIED

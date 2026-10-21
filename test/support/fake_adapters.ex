@@ -437,6 +437,86 @@ defmodule Espex.Test.KeyedInfraredProxy do
   def unsubscribe(_pid), do: :ok
 end
 
+defmodule Espex.Test.BlockingInfraredProxy do
+  @moduledoc """
+  Infrared adapter for queue tests. `transmit_raw/3` tells the process in
+  `opts[:test]` it started, as `{:started, opts[:tag], task_pid}`, then
+  blocks until that task is sent `{:release, result}` and returns
+  `result`. `raise: true` in opts raises instead.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @impl true
+  def list_entities, do: []
+
+  @impl true
+  def transmit_raw(_key, _timings, opts) do
+    if opts[:raise], do: raise("induced transmit failure")
+    send(opts[:test], {:started, opts[:tag], self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
+defmodule Espex.Test.OtherBlockingInfraredProxy do
+  @moduledoc "A second adapter module with `BlockingInfraredProxy`'s behaviour, for a second lane."
+  @behaviour Espex.InfraredProxy
+
+  alias Espex.Test.BlockingInfraredProxy
+
+  @impl true
+  defdelegate list_entities, to: BlockingInfraredProxy
+  @impl true
+  defdelegate transmit_raw(key, timings, opts), to: BlockingInfraredProxy
+  @impl true
+  defdelegate subscribe(pid), to: BlockingInfraredProxy
+  @impl true
+  defdelegate unsubscribe(pid), to: BlockingInfraredProxy
+end
+
+defmodule Espex.Test.SlowInfraredProxy do
+  @moduledoc """
+  Infrared adapter with one transmitter, key 42, for TCP tests.
+  `transmit_raw/3` sends `{:ir_started, task_pid}` to the pid stored by
+  `put_test_pid/1` and blocks until the task is sent `{:release, result}`.
+  """
+  @behaviour Espex.InfraredProxy
+
+  @spec put_test_pid(pid()) :: :ok
+  def put_test_pid(pid), do: :persistent_term.put({__MODULE__, :test}, pid)
+
+  @spec reset() :: boolean()
+  def reset, do: :persistent_term.erase({__MODULE__, :test})
+
+  @impl true
+  def list_entities do
+    [%Espex.InfraredProxy.Entity{key: 42, object_id: "slow_ir", name: "Slow IR", capabilities: [:transmit]}]
+  end
+
+  @impl true
+  def transmit_raw(_key, _timings, _opts) do
+    send(:persistent_term.get({__MODULE__, :test}), {:ir_started, self()})
+
+    receive do
+      {:release, result} -> result
+    end
+  end
+
+  @impl true
+  def subscribe(_pid), do: :ok
+
+  @impl true
+  def unsubscribe(_pid), do: :ok
+end
+
 defmodule Espex.Test.FakeEntityProvider do
   @moduledoc false
   @behaviour Espex.EntityProvider
@@ -997,4 +1077,121 @@ defmodule Espex.Test.HandBuiltWizard do
 
   @impl true
   def input_set(key, entity_ids), do: Espex.Test.TrackingWizard.input_set(key, entity_ids)
+end
+
+defmodule Espex.Test.FakeHomeAssistantStates do
+  @moduledoc """
+  Home Assistant states adapter. `subscriptions/0` returns the list set
+  with `put_subscriptions/1`; `handle_state/3` sends
+  `{:ha_state, entity_id, attribute, state}` to the pid set with
+  `put_test_pid/1`, and raises for entity `"boom.raise"`. Tests using it
+  MUST run `async: false`.
+  """
+  @behaviour Espex.HomeAssistantStates
+
+  @key {__MODULE__, :config}
+
+  def put_test_pid(pid), do: :persistent_term.put(@key, %{config() | test: pid})
+  def put_subscriptions(subscriptions), do: :persistent_term.put(@key, %{config() | subscriptions: subscriptions})
+  def reset, do: :persistent_term.erase(@key)
+
+  defp config, do: :persistent_term.get(@key, %{test: nil, subscriptions: []})
+
+  @impl true
+  def subscriptions, do: config().subscriptions
+
+  @impl true
+  def handle_state("boom.raise", _attribute, _state), do: raise("induced handle_state failure")
+
+  def handle_state(entity_id, attribute, state) do
+    send(config().test, {:ha_state, entity_id, attribute, state})
+    :ok
+  end
+end
+
+defmodule Espex.Test.OtherHomeAssistantStates do
+  @moduledoc """
+  A second Home Assistant states adapter, subscribed to `"weather.home"`.
+  States go to the same test pid as `FakeHomeAssistantStates`.
+  """
+  @behaviour Espex.HomeAssistantStates
+
+  @impl true
+  def subscriptions, do: [Espex.HomeAssistantStates.Subscription.new!(entity_id: "weather.home")]
+
+  @impl true
+  defdelegate handle_state(entity_id, attribute, state), to: Espex.Test.FakeHomeAssistantStates
+end
+
+defmodule Espex.Test.LinkedWizard do
+  @moduledoc """
+  Wizard adapter with a linked input "outdoor" (the entity's state and
+  its "unit_of_measurement") and an unlinked input "light". `input_set/2`
+  reports to `TrackingWizard`'s listener.
+  """
+  @behaviour Espex.Wizard
+
+  alias Espex.Wizard.{Document, Input, Page}
+
+  @impl true
+  def wizard do
+    Document.new!(
+      pages: [
+        %Page{
+          title: "Setup",
+          inputs: [%Input{id: "outdoor", links: [[], [attribute: "unit_of_measurement"]]}, %Input{id: "light"}]
+        }
+      ]
+    )
+  end
+
+  @impl true
+  defdelegate input_set(key, entity_ids), to: Espex.Test.TrackingWizard
+end
+
+defmodule Espex.Test.PidTargetStore do
+  @moduledoc """
+  `Espex.OutgoingTargetStore` that sends `{:store_target, ip}` to the pid
+  set with `put/2` and answers the result set there (`:ok` by default).
+  Tests using it MUST run `async: false`.
+  """
+  @behaviour Espex.OutgoingTargetStore
+
+  @key {__MODULE__, :config}
+
+  def put(pid, result \\ :ok), do: :persistent_term.put(@key, {pid, result})
+  def reset, do: :persistent_term.erase(@key)
+
+  @impl true
+  def store_target(ip) do
+    {pid, result} = :persistent_term.get(@key, {nil, :ok})
+    if pid, do: send(pid, {:store_target, ip})
+    result
+  end
+end
+
+defmodule Espex.Test.ThrowingHomeAssistantStates do
+  @moduledoc "Home Assistant states adapter whose `subscriptions/0` throws."
+  @behaviour Espex.HomeAssistantStates
+
+  @impl true
+  def subscriptions, do: throw(:not_ready)
+
+  @impl true
+  def handle_state(_entity_id, _attribute, _state), do: :ok
+end
+
+defmodule Espex.Test.OtherPidTargetStore do
+  @moduledoc """
+  A second `Espex.OutgoingTargetStore`: sends `{:other_store_target, ip}`
+  to the pid set with `Espex.Test.PidTargetStore.put/2` and answers `:ok`.
+  """
+  @behaviour Espex.OutgoingTargetStore
+
+  @impl true
+  def store_target(ip) do
+    {pid, _result} = :persistent_term.get({Espex.Test.PidTargetStore, :config}, {nil, :ok})
+    if pid, do: send(pid, {:other_store_target, ip})
+    :ok
+  end
 end

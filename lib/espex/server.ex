@@ -3,12 +3,16 @@ defmodule Espex.Server do
 
   use GenServer
 
+  require Logger
+
   alias Espex.{ConnectionState, DeviceConfig, ServerState}
+  alias Espex.HomeAssistantStates.{Subscription, Table}
 
   @type start_opts :: [
           name: GenServer.name(),
           device_config: DeviceConfig.t() | keyword(),
-          adapters: map()
+          adapters: map(),
+          registry_name: atom() | nil
         ]
 
   @spec start_link(start_opts()) :: GenServer.on_start()
@@ -186,16 +190,71 @@ defmodule Espex.Server do
     GenServer.call(server, {:update_adapters, changes})
   end
 
+  @doc """
+  Make wizard input `key` own exactly `entries` in the Home Assistant
+  state subscription table, if `wizard` is still the configured wizard
+  module. A connection accepted before `update_adapters/2` swapped the
+  wizard holds the old document; its links are refused with
+  `{:error, :stale_wizard}`. Connections hear about entries that entered
+  or left the table (see `Espex.HomeAssistantStates.Table`).
+  """
+  @spec set_wizard_links(GenServer.server(), module(), non_neg_integer(), [Subscription.t()]) ::
+          :ok | {:error, :stale_wizard}
+  def set_wizard_links(server, wizard, key, entries) when is_atom(wizard) and is_list(entries) do
+    GenServer.call(server, {:set_wizard_links, wizard, key, entries})
+  end
+
+  @doc """
+  Remember the dial-back target the dialer learned and the
+  `{store module, address}` its store last accepted, so a restarted
+  dialer starts from them.
+  """
+  @spec put_dial_back_target(GenServer.server(), :inet.ip_address() | nil, {module(), :inet.ip_address()} | nil) ::
+          :ok
+  def put_dial_back_target(server, target, stored) do
+    GenServer.call(server, {:put_dial_back_target, target, stored})
+  end
+
+  @doc """
+  The `{target, stored}` last given to `put_dial_back_target/3`, or
+  `nil`.
+  """
+  @spec dial_back_target(GenServer.server()) ::
+          {:inet.ip_address() | nil, {module(), :inet.ip_address()} | nil} | nil
+  def dial_back_target(server), do: GenServer.call(server, :dial_back_target)
+
+  @doc """
+  Add `entry` to the subscription table for `owner`.
+  """
+  @spec put_ha_subscription(GenServer.server(), Table.owner(), Subscription.t()) :: :ok
+  def put_ha_subscription(server, owner, %Subscription{} = entry) do
+    GenServer.call(server, {:put_ha_subscription, owner, entry})
+  end
+
+  @doc """
+  Remove `owner`'s claim on `entry`; the entry leaves the table once no
+  owner is left.
+  """
+  @spec delete_ha_subscription(GenServer.server(), Table.owner(), Subscription.t()) :: :ok
+  def delete_ha_subscription(server, owner, %Subscription{} = entry) do
+    GenServer.call(server, {:delete_ha_subscription, owner, entry})
+  end
+
+  # The host's entries are read here, not in a continue: the table must
+  # be full before the listener (a later child) opens.
   @impl GenServer
   def init(opts) do
     device_config = normalise_device_config(opts[:device_config])
     adapters = opts[:adapters] || %{}
 
     state =
-      ServerState.new(device_config: device_config)
+      ServerState.new(device_config: device_config, registry_name: opts[:registry_name])
       |> ServerState.put_adapters(Map.new(adapters))
 
-    {:ok, state}
+    {table, _added, _removed} =
+      Table.replace(Table.new(), :host, host_subscriptions(state.adapters.home_assistant_states))
+
+    {:ok, ServerState.put_ha_subscriptions(state, table)}
   end
 
   @impl GenServer
@@ -299,9 +358,31 @@ defmodule Espex.Server do
 
   def handle_call({:update_adapters, changes}, _from, state) do
     case ServerState.merge_adapters(state, changes) do
-      {:ok, new_state} -> {:reply, :ok, new_state}
+      {:ok, new_state} -> {:reply, :ok, reconcile_ha_subscriptions(new_state, state.adapters)}
       {:error, _reason} = error -> {:reply, error, state}
     end
+  end
+
+  def handle_call({:set_wizard_links, wizard, key, entries}, _from, %{adapters: %{wizard: wizard}} = state) do
+    {:reply, :ok, apply_ha_change(state, Table.replace(state.ha_subscriptions, {:wizard, key}, entries))}
+  end
+
+  def handle_call({:set_wizard_links, _stale, _key, _entries}, _from, state) do
+    {:reply, {:error, :stale_wizard}, state}
+  end
+
+  def handle_call({:put_dial_back_target, target, stored}, _from, state) do
+    {:reply, :ok, %{state | dial_back_target: {target, stored}}}
+  end
+
+  def handle_call(:dial_back_target, _from, state), do: {:reply, state.dial_back_target, state}
+
+  def handle_call({:put_ha_subscription, owner, entry}, _from, state) do
+    {:reply, :ok, apply_ha_change(state, Table.put(state.ha_subscriptions, owner, entry))}
+  end
+
+  def handle_call({:delete_ha_subscription, owner, entry}, _from, state) do
+    {:reply, :ok, apply_ha_change(state, Table.delete(state.ha_subscriptions, owner, entry))}
   end
 
   @impl GenServer
@@ -312,6 +393,73 @@ defmodule Espex.Server do
   end
 
   def handle_info(_other, state), do: {:noreply, state}
+
+  # A new adapter brings its own entries; a new wizard brings a new
+  # document, so links set against the old one go. Clients resend their
+  # inputs when they reconnect.
+  defp reconcile_ha_subscriptions(state, old_adapters) do
+    state
+    |> reseed_host_subscriptions(old_adapters.home_assistant_states)
+    |> drop_wizard_links(old_adapters.wizard)
+  end
+
+  defp reseed_host_subscriptions(%{adapters: %{home_assistant_states: same}} = state, same), do: state
+
+  defp reseed_host_subscriptions(state, _old_adapter) do
+    entries = host_subscriptions(state.adapters.home_assistant_states)
+    apply_ha_change(state, Table.replace(state.ha_subscriptions, :host, entries))
+  end
+
+  defp drop_wizard_links(%{adapters: %{wizard: same}} = state, same), do: state
+
+  defp drop_wizard_links(state, _old_wizard) do
+    apply_ha_change(state, Table.drop_owners(state.ha_subscriptions, &match?({:wizard, _}, &1)))
+  end
+
+  # Connections hold a copy of the table; tell them what changed. Server
+  # only sends, it never calls a connection.
+  defp apply_ha_change(state, {table, added, removed}) do
+    if (added != [] or removed != []) and state.registry_name do
+      Registry.dispatch(state.registry_name, :subscribers, fn entries ->
+        Enum.each(entries, fn {pid, _} -> send(pid, {:espex_ha_subscriptions, added, removed}) end)
+      end)
+    end
+
+    ServerState.put_ha_subscriptions(state, table)
+  end
+
+  # Host code: a raise, throw or exit, or anything but a list of
+  # subscriptions, is logged and counts as no entries.
+  defp host_subscriptions(nil), do: []
+
+  defp host_subscriptions(adapter) do
+    if Code.ensure_loaded?(adapter) and function_exported?(adapter, :subscriptions, 0) do
+      adapter.subscriptions() |> List.wrap() |> Enum.flat_map(&host_entry(adapter, &1))
+    else
+      []
+    end
+  catch
+    kind, reason ->
+      Logger.warning(
+        "Espex #{inspect(adapter)}.subscriptions/0 #{crash_label(kind, reason)} — no Home Assistant subscriptions"
+      )
+
+      []
+  end
+
+  defp crash_label(:error, exception) when is_exception(exception), do: "raised #{inspect(exception.__struct__)}"
+  defp crash_label(kind, reason), do: "#{kind}: #{inspect(reason)}"
+
+  defp host_entry(adapter, entry) do
+    case Subscription.build(entry) do
+      {:ok, subscription} ->
+        [subscription]
+
+      {:error, message} ->
+        Logger.warning("Espex #{inspect(adapter)}.subscriptions/0 entry skipped: #{message}")
+        []
+    end
+  end
 
   defp claim_serial(state, instance, pid) do
     state

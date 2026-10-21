@@ -2,13 +2,17 @@ defmodule Espex.ServerState do
   @moduledoc false
 
   alias Espex.{ConnectionState, DeviceConfig}
+  alias Espex.HomeAssistantStates.Table
 
   @type t :: %__MODULE__{
           device_config: DeviceConfig.t(),
           adapters: ConnectionState.adapters(),
           ble_owners: %{non_neg_integer() => pid()},
           serial_owners: %{non_neg_integer() => pid()},
-          owner_monitors: %{pid() => reference()}
+          owner_monitors: %{pid() => reference()},
+          ha_subscriptions: Table.t(),
+          registry_name: atom() | nil,
+          dial_back_target: {:inet.ip_address() | nil, {module(), :inet.ip_address()} | nil} | nil
         }
 
   @enforce_keys [:device_config]
@@ -24,11 +28,20 @@ defmodule Espex.ServerState do
       psk_store: nil,
       connection_listener: nil,
       sendspin: nil,
-      wizard: nil
+      wizard: nil,
+      home_assistant_states: nil,
+      outgoing_target_store: nil
     },
     ble_owners: %{},
     serial_owners: %{},
-    owner_monitors: %{}
+    owner_monitors: %{},
+    ha_subscriptions: %{},
+    # The :subscribers registry Espex.Server broadcasts subscription
+    # table changes on; nil outside an Espex.Supervisor tree.
+    registry_name: nil,
+    # The dial-back target the dialer learned, and the one its store last
+    # accepted, kept here so they outlive a restart of the dialer.
+    dial_back_target: nil
   ]
 
   @doc """
@@ -85,6 +98,14 @@ defmodule Espex.ServerState do
   @spec adapter(t(), ConnectionState.feature()) :: module() | nil
   def adapter(%__MODULE__{adapters: adapters}, feature) do
     Map.get(adapters, feature)
+  end
+
+  @doc """
+  Replace the Home Assistant state subscription table.
+  """
+  @spec put_ha_subscriptions(t(), Table.t()) :: t()
+  def put_ha_subscriptions(%__MODULE__{} = state, table) when is_map(table) do
+    %{state | ha_subscriptions: table}
   end
 
   @doc """
