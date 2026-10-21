@@ -222,4 +222,21 @@ defmodule Espex.InfraredQueueTest do
     :sys.get_state(queue)
     refute {:process, self()} in monitors.()
   end
+
+  test "an answered request drops a queued unanswered one for the same key", %{queue: queue} do
+    transmit(queue, 1, :running)
+    assert_receive {:started, :running, running}
+
+    transmit(queue, 2, :legacy, reply_to: nil)
+    transmit(queue, 2, :current, device_id: 2)
+
+    release(running)
+    assert_receive {:started, :current, current}
+    release(current)
+    assert_receive {:espex_ir_transmit_complete, 2, 2, true}
+
+    :sys.get_state(queue)
+    refute_received {:started, :legacy, _}
+    assert :sys.get_state(queue).reqs == %{}
+  end
 end

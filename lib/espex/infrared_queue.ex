@@ -16,8 +16,8 @@ defmodule Espex.InfraredQueue do
   #     on.
   #
   # A request without `reply_to` (a client below 1.18) takes no slot and
-  # is never answered, but still transmits in its lane; a newer one for
-  # the same key drops it while it is queued. A requester that
+  # is never answered, but still transmits in its lane; any newer request
+  # for the same key drops it while it is queued. A requester that
   # dies loses its slots without a reply; its queued frames still go out.
   #
   # Each request carries the adapter the connection captured at accept,
@@ -136,24 +136,25 @@ defmodule Espex.InfraredQueue do
 
   # -- Slots ------------------------------------------------------------------
 
-  # The older owner of the key hears `false` now. Queued, it never
-  # transmitted, so it is dropped; running, it finishes unanswered.
-  #
-  # A request nobody waits on (a client below 1.18) takes no slot, but a
-  # newer one for the key still drops a queued one, so such a client
-  # cannot queue more than one frame per entity.
-  defp supersede(state, %{reply_to: nil} = new) do
-    queued_unowned? = fn {_id, req} ->
-      req.key == new.key and req.adapter == new.adapter and req.reply_to == nil and req.status == :queued
-    end
-
-    case Enum.find(state.reqs, queued_unowned?) do
-      {_id, old} -> drop_queued(state, old)
-      nil -> state
-    end
+  # The latest request for a key wins. Queued frames nobody waits on (a
+  # client below 1.18, or one that disconnected) are dropped by any newer
+  # request for the key, so they too stay at one per entity. The older
+  # owner of the key hears `false` now: queued, it never transmitted, so
+  # it is dropped; running, it finishes unanswered.
+  defp supersede(state, new) do
+    state |> drop_queued_unowned(new) |> supersede_owner(new)
   end
 
-  defp supersede(state, %{key: key}) do
+  defp drop_queued_unowned(state, new) do
+    state.reqs
+    |> Map.values()
+    |> Enum.filter(&(&1.key == new.key and &1.adapter == new.adapter and &1.reply_to == nil and &1.status == :queued))
+    |> Enum.reduce(state, &drop_queued(&2, &1))
+  end
+
+  defp supersede_owner(state, %{reply_to: nil}), do: state
+
+  defp supersede_owner(state, %{key: key}) do
     case state.slots do
       %{^key => old_id} ->
         old = Map.fetch!(state.reqs, old_id)
