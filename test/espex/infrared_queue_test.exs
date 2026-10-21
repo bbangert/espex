@@ -218,6 +218,8 @@ defmodule Espex.InfraredQueueTest do
     release(c)
     assert_receive {:espex_ir_transmit_complete, 3, 3, true}
 
+    # The reply goes out before the monitor is dropped, in one callback.
+    :sys.get_state(queue)
     refute {:process, self()} in monitors.()
   end
 end

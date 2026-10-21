@@ -485,6 +485,32 @@ defmodule Espex.Api118Test do
       Enum.each([old_client, watcher, later], &:gen_tcp.close/1)
     end
 
+    test "frames buffered behind an input set see its links", %{port: port, outdoor: outdoor} do
+      {socket, _hello, rest} = hello(port)
+
+      # One write, so the connection reads all three frames at once.
+      frames =
+        Enum.map(
+          [
+            %Proto.WizardInputSetRequest{key: outdoor, entity_id: "sensor.outdoor"},
+            %Proto.HomeAssistantStateResponse{entity_id: "sensor.outdoor", state: "21.5"},
+            %Proto.SubscribeHomeAssistantStatesRequest{}
+          ],
+          fn struct ->
+            {:ok, frame} = Espex.MessageTypes.encode_message(struct)
+            frame
+          end
+        )
+
+      :ok = :gen_tcp.send(socket, frames)
+
+      rest = recv_links(socket, rest, "sensor.outdoor")
+      assert_receive {:ha_state, "sensor.outdoor", nil, "21.5"}, 1_000
+      # The walk already had the entries; the broadcast sends nothing more.
+      assert_nothing_sent(socket, rest)
+      :gen_tcp.close(socket)
+    end
+
     test "a client that sets an input before subscribing gets it in the walk", %{port: port, outdoor: outdoor} do
       {socket, _hello, rest} = hello(port)
       set_input(socket, outdoor, "sensor.outdoor")

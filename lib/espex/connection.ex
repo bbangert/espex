@@ -823,18 +823,18 @@ defmodule Espex.Connection do
   # Server broadcasts the change to every connection, this one included.
   # The wizard module goes along: links from a document the server has
   # since replaced are refused.
-  defp interpret_action(_socket, state, {:ha_link_set, key, entries}) do
+  defp interpret_action(socket, state, {:ha_link_set, key, entries}) do
     case Server.set_wizard_links(state.server_name, state.adapters.wizard, key, entries) do
       :ok ->
-        :ok
+        apply_ha_broadcasts(socket, state)
 
       {:error, :stale_wizard} ->
         Logger.info(
           "Espex #{state.peer} wizard input #{key} links ignored — the wizard changed since this client connected"
         )
-    end
 
-    {:cont, state}
+        {:cont, state}
+    end
   catch
     :exit, {reason, {GenServer, :call, _}} ->
       Logger.warning("Espex #{state.peer} wizard input #{key} links not applied: #{inspect(reason)}")
@@ -1713,6 +1713,25 @@ defmodule Espex.Connection do
           mtu: 0,
           error: BluetoothProxy.ErrorCodes.generic_error()
         })
+    end
+  end
+
+  # Server broadcasts before it replies, so once set_wizard_links/4 returns,
+  # this change's broadcast and every earlier one are in the mailbox.
+  # Apply them now, in order, so frames already buffered behind the
+  # input set (a state for the new entity, a subscribe request) see the
+  # new table, as on firmware.
+  defp apply_ha_broadcasts(socket, state) do
+    receive do
+      {:espex_ha_subscriptions, _added, _removed} = event ->
+        {state, actions} = Dispatch.handle_event(state, event)
+
+        case interpret_actions(socket, state, actions) do
+          {:cont, state} -> apply_ha_broadcasts(socket, state)
+          halt -> halt
+        end
+    after
+      0 -> {:cont, state}
     end
   end
 

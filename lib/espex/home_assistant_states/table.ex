@@ -26,7 +26,7 @@ defmodule Espex.HomeAssistantStates.Table do
   @spec entries(t()) :: [Subscription.t()]
   def entries(table), do: table |> Map.keys() |> sort()
 
-  @spec sort([Subscription.t()]) :: [Subscription.t()]
+  @spec sort([Subscription.t()] | MapSet.t(Subscription.t())) :: [Subscription.t()]
   def sort(entries), do: Enum.sort_by(entries, &{&1.entity_id, &1.attribute || "", &1.once})
 
   @spec put(t(), owner(), Subscription.t()) :: change()
