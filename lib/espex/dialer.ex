@@ -73,9 +73,8 @@ defmodule Espex.Dialer do
       backoff_min: Keyword.get(opts, :backoff_min, Backoff.initial()),
       random: Keyword.get(opts, :random, &(:rand.uniform(&1) - 1)),
       learn?: host == nil,
-      target: host || Keyword.get(opts, :target),
-      # The target the store holds: a seed came from it.
-      stored_target: Keyword.get(opts, :target),
+      target: host,
+      stored_target: nil,
       warned_no_store?: false,
       phase: :waiting,
       timer: nil,
@@ -84,7 +83,23 @@ defmodule Espex.Dialer do
       live: %{}
     }
 
-    {:ok, schedule(%{state | backoff: state.backoff_min}, state.delay)}
+    {:ok,
+     state
+     |> restore_target(Keyword.get(opts, :target))
+     |> Map.put(:backoff, state.backoff_min)
+     |> schedule(state.delay)}
+  end
+
+  # A configured host is the target. Otherwise start from what an earlier
+  # dialer learned (kept by Espex.Server, so a restart of this subtree
+  # keeps it), or else the boot seed, which came from the store.
+  defp restore_target(%{learn?: false} = state, _seed), do: state
+
+  defp restore_target(state, seed) do
+    case Server.dial_back_target(state.server) do
+      {target, stored_target} -> %{state | target: target, stored_target: stored_target}
+      nil -> %{state | target: seed, stored_target: seed}
+    end
   end
 
   @impl GenServer
@@ -245,7 +260,9 @@ defmodule Espex.Dialer do
   defp learn(state, peer) do
     case Target.from_peer(peer) do
       {:ok, target} ->
-        store(%{state | target: target}, target)
+        learned = store(%{state | target: target}, target)
+        :ok = Server.put_dial_back_target(learned.server, learned.target, learned.stored_target)
+        learned
 
       {:error, reason} ->
         Logger.warning("Espex dial-back target not remembered: #{reason}")

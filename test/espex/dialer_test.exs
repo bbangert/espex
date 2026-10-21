@@ -126,6 +126,25 @@ defmodule Espex.DialerTest do
     :gen_tcp.close(socket)
   end
 
+  test "a restarted dialer keeps the target it learned", %{listener: listener, ha_port: ha_port} = context do
+    %{port: port, dialer: dialer} = start(context, target: "127.0.0.2", port: ha_port)
+    client = target_client(port)
+    assert_receive {:store_target, {127, 0, 0, 1}}, 1_000
+
+    # A dialer fault takes its subtree and the listener down; the target
+    # client goes with them.
+    old = Process.whereis(dialer)
+    ref = Process.monitor(old)
+    Process.exit(old, :kill)
+    assert_receive {:DOWN, ^ref, :process, ^old, :killed}, 1_000
+    close(client)
+
+    wait_until(fn -> Process.whereis(dialer) not in [nil, old] end)
+    assert %{target: {127, 0, 0, 1}, stored_target: {127, 0, 0, 1}} = :sys.get_state(dialer)
+    listener |> accept_dial() |> :gen_tcp.close()
+    refute_received {:store_target, _}
+  end
+
   test "the target is stored once, and again after a failed write", %{ha_port: ha_port} = context do
     %{port: port} = start(context, port: ha_port)
 

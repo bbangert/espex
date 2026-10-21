@@ -464,6 +464,27 @@ defmodule Espex.Api118Test do
       :gen_tcp.close(socket)
     end
 
+    test "a client accepted before a wizard swap cannot set links for the old document",
+         %{port: port, outdoor: outdoor, server_name: server_name} do
+      {old_client, _hello, rest_old} = hello(port)
+      rest_old = sync(old_client, rest_old)
+
+      :ok = Espex.update_adapters(server_name, wizard: Espex.Test.TrackingWizard)
+      {watcher, _hello, rest_w} = hello(port)
+      rest_w = subscribe_states(watcher, rest_w)
+
+      set_input(old_client, outdoor, "sensor.outdoor")
+      _ = sync(old_client, rest_old)
+      assert_nothing_sent(watcher, rest_w)
+
+      # Nothing reached the table either.
+      {later, _hello, rest_l} = hello(port)
+      rest_l = subscribe_states(later, rest_l)
+      assert_nothing_sent(later, rest_l)
+
+      Enum.each([old_client, watcher, later], &:gen_tcp.close/1)
+    end
+
     test "a client that sets an input before subscribing gets it in the walk", %{port: port, outdoor: outdoor} do
       {socket, _hello, rest} = hello(port)
       set_input(socket, outdoor, "sensor.outdoor")

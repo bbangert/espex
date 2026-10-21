@@ -11,7 +11,8 @@ defmodule Espex.ServerState do
           serial_owners: %{non_neg_integer() => pid()},
           owner_monitors: %{pid() => reference()},
           ha_subscriptions: Table.t(),
-          registry_name: atom() | nil
+          registry_name: atom() | nil,
+          dial_back_target: {:inet.ip_address() | nil, :inet.ip_address() | nil} | nil
         }
 
   @enforce_keys [:device_config]
@@ -37,7 +38,10 @@ defmodule Espex.ServerState do
     ha_subscriptions: %{},
     # The :subscribers registry Espex.Server broadcasts subscription
     # table changes on; nil outside an Espex.Supervisor tree.
-    registry_name: nil
+    registry_name: nil,
+    # The dial-back target the dialer learned, and the one its store last
+    # accepted, kept here so they outlive a restart of the dialer.
+    dial_back_target: nil
   ]
 
   @doc """

@@ -108,7 +108,9 @@ defmodule Espex.Supervisor do
       `:outgoing_target_store` adapter (`Espex.OutgoingTargetStore`).
       Home Assistant does this for the node's own config entry.
       Link-local IPv6 addresses are not remembered: they cannot be
-      dialed without a scope id. With `host`, nothing is learned. On a
+      dialed without a scope id. A learned target outlives a restart of
+      the dialer; after a restart of the whole tree the node starts from
+      `target` again. With `host`, nothing is learned. On a
       keyless node with `accepts_key_provisioning`, the client that
       provisions the key can then make itself the target; set `host`
       if that matters on your network.
@@ -143,7 +145,7 @@ defmodule Espex.Supervisor do
 
   use Supervisor
 
-  alias Espex.{Connection, DeviceConfig, InfraredQueue, Server}
+  alias Espex.{Connection, DeviceConfig, Server}
   alias Espex.Mdns.Advertiser, as: MdnsAdvertiser
 
   @adapter_keys [
@@ -196,9 +198,6 @@ defmodule Espex.Supervisor do
 
   # Upper bound on in-flight connection-listener notifications per instance.
   @max_listener_tasks 16
-
-  # Upper bound on concurrent IR/RF transmits: one per adapter module.
-  @max_infrared_tasks 8
 
   @impl Supervisor
   def init(opts) do
@@ -327,33 +326,24 @@ defmodule Espex.Supervisor do
   @spec outgoing_invalid!(String.t()) :: no_return()
   defp outgoing_invalid!(message), do: raise(ArgumentError, "invalid :outgoing_connection: " <> message)
 
-  # IR/RF transmits run here, off the connections, in a subtree of their
-  # own: connections reach the queue by name and answer `false` while it
-  # is gone, so an IR fault restarts only IR. :one_for_all, so a new queue
-  # never overlaps a frame an old one started; the tasks' supervisor
-  # comes first, so on a stop the queue goes before its tasks. Its own
-  # Task.Supervisor, because the listener-notification one sheds work.
+  # IR/RF transmits run off the connections, in a subtree of their own
+  # (see Espex.InfraredQueue.Supervisor). Its own Task.Supervisor, because
+  # the listener-notification one sheds work.
   defp infrared_subtree(server_name) do
-    subtree(Module.concat(server_name, "InfraredSupervisor"), [strategy: :one_for_all], [
-      {Task.Supervisor, name: infrared_task_supervisor_name(server_name), max_children: @max_infrared_tasks},
-      {InfraredQueue,
-       name: infrared_queue_name(server_name), task_supervisor: infrared_task_supervisor_name(server_name)}
-    ])
+    {Espex.InfraredQueue.Supervisor,
+     name: Module.concat(server_name, "InfraredSupervisor"),
+     queue: infrared_queue_name(server_name),
+     task_supervisor: infrared_task_supervisor_name(server_name)}
   end
 
-  # The dialer comes after its two supervisors, so they exist when it
-  # first dials and it stops before them. Any fault takes the whole
-  # subtree down (max_restarts: 0), so the top level restarts it together
-  # with the listener: no connection outlives the dialer that knew of it.
+  # See Espex.Dialer.Supervisor for the subtree's order and restarts.
   defp dialer_children(nil, _server_name, _handler_options, _read_timeout), do: []
 
   defp dialer_children(outgoing, server_name, handler_options, read_timeout) do
     [
-      subtree(Module.concat(server_name, "DialerSupervisor"), [strategy: :one_for_all, max_restarts: 0], [
-        # One dialed connection and one dial at a time, as upstream.
-        {DynamicSupervisor, name: dialer_connection_supervisor_name(server_name), max_children: 1},
-        {Task.Supervisor, name: dialer_task_supervisor_name(server_name), max_children: 1},
-        {Espex.Dialer,
+      {Espex.Dialer.Supervisor,
+       name: Module.concat(server_name, "DialerSupervisor"),
+       dialer:
          Keyword.merge(outgoing,
            name: dialer_name(server_name),
            server: server_name,
@@ -362,12 +352,7 @@ defmodule Espex.Supervisor do
            handler_options: [dialed: true] ++ handler_options,
            read_timeout: read_timeout
          )}
-      ])
     ]
-  end
-
-  defp subtree(name, opts, children) do
-    %{id: name, type: :supervisor, start: {Supervisor, :start_link, [children, [name: name] ++ opts]}}
   end
 
   # Builds the advertiser child spec when the caller opted in via :mdns.

@@ -191,14 +191,34 @@ defmodule Espex.Server do
   end
 
   @doc """
-  Make `owner` own exactly `entries` in the Home Assistant state
-  subscription table. Connections hear about entries that entered or
-  left the table (see `Espex.HomeAssistantStates.Table`).
+  Make wizard input `key` own exactly `entries` in the Home Assistant
+  state subscription table, if `wizard` is still the configured wizard
+  module. A connection accepted before `update_adapters/2` swapped the
+  wizard holds the old document; its links are refused with
+  `{:error, :stale_wizard}`. Connections hear about entries that entered
+  or left the table (see `Espex.HomeAssistantStates.Table`).
   """
-  @spec replace_ha_subscriptions(GenServer.server(), Table.owner(), [Subscription.t()]) :: :ok
-  def replace_ha_subscriptions(server, owner, entries) when is_list(entries) do
-    GenServer.call(server, {:replace_ha_subscriptions, owner, entries})
+  @spec set_wizard_links(GenServer.server(), module(), non_neg_integer(), [Subscription.t()]) ::
+          :ok | {:error, :stale_wizard}
+  def set_wizard_links(server, wizard, key, entries) when is_atom(wizard) and is_list(entries) do
+    GenServer.call(server, {:set_wizard_links, wizard, key, entries})
   end
+
+  @doc """
+  Remember the dial-back target the dialer learned and the one its store
+  last accepted, so a restarted dialer starts from them.
+  """
+  @spec put_dial_back_target(GenServer.server(), :inet.ip_address() | nil, :inet.ip_address() | nil) :: :ok
+  def put_dial_back_target(server, target, stored_target) do
+    GenServer.call(server, {:put_dial_back_target, target, stored_target})
+  end
+
+  @doc """
+  The `{target, stored_target}` last given to `put_dial_back_target/3`,
+  or `nil`.
+  """
+  @spec dial_back_target(GenServer.server()) :: {:inet.ip_address() | nil, :inet.ip_address() | nil} | nil
+  def dial_back_target(server), do: GenServer.call(server, :dial_back_target)
 
   @doc """
   Add `entry` to the subscription table for `owner`.
@@ -340,9 +360,19 @@ defmodule Espex.Server do
     end
   end
 
-  def handle_call({:replace_ha_subscriptions, owner, entries}, _from, state) do
-    {:reply, :ok, apply_ha_change(state, Table.replace(state.ha_subscriptions, owner, entries))}
+  def handle_call({:set_wizard_links, wizard, key, entries}, _from, %{adapters: %{wizard: wizard}} = state) do
+    {:reply, :ok, apply_ha_change(state, Table.replace(state.ha_subscriptions, {:wizard, key}, entries))}
   end
+
+  def handle_call({:set_wizard_links, _stale, _key, _entries}, _from, state) do
+    {:reply, {:error, :stale_wizard}, state}
+  end
+
+  def handle_call({:put_dial_back_target, target, stored_target}, _from, state) do
+    {:reply, :ok, %{state | dial_back_target: {target, stored_target}}}
+  end
+
+  def handle_call(:dial_back_target, _from, state), do: {:reply, state.dial_back_target, state}
 
   def handle_call({:put_ha_subscription, owner, entry}, _from, state) do
     {:reply, :ok, apply_ha_change(state, Table.put(state.ha_subscriptions, owner, entry))}

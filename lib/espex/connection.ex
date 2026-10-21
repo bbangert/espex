@@ -821,8 +821,19 @@ defmodule Espex.Connection do
   end
 
   # Server broadcasts the change to every connection, this one included.
+  # The wizard module goes along: links from a document the server has
+  # since replaced are refused.
   defp interpret_action(_socket, state, {:ha_link_set, key, entries}) do
-    Server.replace_ha_subscriptions(state.server_name, {:wizard, key}, entries)
+    case Server.set_wizard_links(state.server_name, state.adapters.wizard, key, entries) do
+      :ok ->
+        :ok
+
+      {:error, :stale_wizard} ->
+        Logger.info(
+          "Espex #{state.peer} wizard input #{key} links ignored — the wizard changed since this client connected"
+        )
+    end
+
     {:cont, state}
   catch
     :exit, {reason, {GenServer, :call, _}} ->

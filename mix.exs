@@ -15,6 +15,7 @@ defmodule Espex.MixProject do
       deps: deps(),
       aliases: aliases(),
       dialyzer: dialyzer(),
+      argus: argus(),
       description: description(),
       package: package(),
       source_url: @source_url,
@@ -53,6 +54,22 @@ defmodule Espex.MixProject do
     [
       protobuf: [
         "protobuf.generate --output-path=./lib/espex/proto --include-path=./priv/protos --package-prefix=espex.proto priv/protos/api_options.proto priv/protos/api.proto"
+      ]
+    ]
+  end
+
+  defp argus do
+    [
+      ignore: [
+        # rest_for_one_orphaned_children, inferred: the task supervisor is
+        # a runtime name, so argus guesses the top-level listener
+        # Task.Supervisor. Each of these starts its tasks under its own
+        # Task.Supervisor, which shares a :one_for_all subtree with it
+        # (Espex.InfraredQueue.Supervisor, Espex.Dialer.Supervisor).
+        findings: [
+          {:coupling, {Espex.InfraredQueue, :start, 2}},
+          {:coupling, {Espex.Dialer, :start_dial, 1}}
+        ]
       ]
     ]
   end
