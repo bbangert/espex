@@ -148,6 +148,18 @@ defmodule Espex.Api118Test do
       on_exit(&Espex.Test.SlowInfraredProxy.reset/0)
     end
 
+    test "a crash of the transmit queue stops its transmits with it", %{port: port, server_name: server_name} do
+      {socket, _hello, _rest} = hello(port)
+      transmit(socket, 42)
+      assert_receive {:ir_started, task}
+      task_ref = Process.monitor(task)
+
+      # A new queue must never overlap a frame the old one started.
+      Process.exit(Process.whereis(Espex.Supervisor.infrared_queue_name(server_name)), :kill)
+      assert_receive {:DOWN, ^task_ref, :process, ^task, _}
+      :gen_tcp.close(socket)
+    end
+
     test "the connection answers a ping while its frame is on the air", %{port: port} do
       {socket, _hello, rest} = hello(port)
       transmit(socket, 42)
