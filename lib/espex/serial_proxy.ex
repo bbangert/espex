@@ -512,8 +512,9 @@ defmodule Espex.SerialProxy do
   Return `:ok` once the settings are in effect: the handle stays, and so
   do the client's subscription and mode. Return `{:error, reason}` when
   the settings cannot be applied: the CONFIGURE is acknowledged `ERROR`
-  and the handle stays, at its previous settings. A refusal here is not a
-  failed open, so it never delays a later lazy open.
+  and espex keeps the handle. The adapter must leave the port at its
+  previous settings on error. A refusal here is not a failed open, so it
+  never delays a later lazy open.
 
   Espex calls this only with a handle you returned from `c:open/3`. A
   CONFIGURE before any open still goes through `c:open/3`, and an

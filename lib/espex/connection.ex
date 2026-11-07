@@ -553,9 +553,10 @@ defmodule Espex.Connection do
 
   # CONFIGURE on an open port. An adapter exporting configure/2 retunes the
   # handle in place, so the session (handle, subscribe intent, mode) stays
-  # as it is; a refusal leaves the port at its old settings, which is not
-  # an open failure. Without the callback the port is closed and reopened,
-  # and the reopen reattaches the session.
+  # as it is; espex acks ERROR and keeps the handle, expecting the adapter
+  # to have left the port at its old settings. This is not an open failure.
+  # Without the callback the port is closed and reopened, and the reopen
+  # reattaches the session.
   defp interpret_action(socket, state, {:serial_configure, instance, opts}) do
     adapter = state.adapters.serial_proxy
 
