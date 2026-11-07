@@ -6,7 +6,7 @@ defmodule Espex.Api117Test do
 
   import Espex.Test.TcpClient
 
-  alias Espex.{Proto, Server}
+  alias Espex.{ConnectionState, Proto, Server}
 
   @subscribe :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
   @unsubscribe :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
@@ -494,7 +494,7 @@ defmodule Espex.Api117Test do
       :gen_tcp.close(socket)
     end
 
-    test "PROTOCOL mode survives without a set_mode/2 reapply", %{port: port} do
+    test "PROTOCOL mode survives without a set_mode/2 reapply", %{port: port, server_name: server_name} do
       {socket, _hello, rest} = hello(port)
       rest = subscribe(socket, 0, rest)
 
@@ -508,8 +508,12 @@ defmodule Espex.Api117Test do
       refute_received {:set_mode, _, _}
       refute_received {:close, _}
 
-      # The mode is still recorded: UNSUBSCRIBE tears the session down
-      # through close/1 alone, never a raw reset.
+      owner = Server.serial_owner(server_name, 0)
+      {_socket, conn_state} = :sys.get_state(owner)
+      assert ConnectionState.serial_mode(conn_state, 0) == :protocol
+
+      # UNSUBSCRIBE tears the session down through close/1 alone, never a
+      # raw reset.
       request(socket, 0, @unsubscribe)
       assert_receive {:close, {:tracking_handle, 0}}
       _rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
