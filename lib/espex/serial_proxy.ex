@@ -19,7 +19,8 @@ defmodule Espex.SerialProxy do
   | `c:list_instances/0` | yes | Advertise the available ports |
   | `c:open/3` | yes | Open an instance with the client's requested UART params |
   | `c:write/2` | yes | Write bytes to an opened instance |
-  | `c:close/1` | yes | Close and release an instance |
+  | `c:close/1` | yes | Release a session; the device may stay open |
+  | `c:configure/2` | no | Retune an open session in place on CONFIGURE |
   | `c:set_modem_pins/3` | no | Toggle RTS/DTR |
   | `c:get_modem_pins/1` | no | Read RTS/DTR |
   | `c:request/2` | no | Handle subscribe / unsubscribe / flush |
@@ -33,8 +34,9 @@ defmodule Espex.SerialProxy do
   becomes a no-op, `c:default_open_opts/1` falls back to
   `default_open_opts/0` (9600-8-N-1), and `c:set_mode/2` answers
   `NOT_SUPPORTED` for PROTOCOL (RAW is always `OK`), `c:identity/1`
-  reports every port with source `NONE` — your adapter can
-  safely omit whatever the hardware can't do.
+  reports every port with source `NONE`, and a CONFIGURE on an open
+  port without `c:configure/2` closes the handle and opens a new one —
+  your adapter can safely omit whatever the hardware can't do.
 
   ## Ownership
 
@@ -53,8 +55,9 @@ defmodule Espex.SerialProxy do
 
   Ownership is released by `UNSUBSCRIBE` and when the owning connection
   closes for any reason. Both close the owner's handle (`c:close/1`)
-  *before* the release, so once an instance shows as free its port really
-  is: an adapter that allows one open per device works with the handoff.
+  *before* the release, so once an instance shows as free its session
+  really is: an adapter that allows one session per device works with the
+  handoff, whether `c:close/1` closes the device or only detaches from it.
   The one exception is a connection killed outright, which espex cannot
   tear down; its ownership is still swept, so a handle must not outlive
   the `subscriber` pid it was opened for (see `c:open/3`).
@@ -82,12 +85,15 @@ defmodule Espex.SerialProxy do
   adapter's optional `c:set_mode/2` is the whole surface, and an adapter
   that does not export it answers `NOT_SUPPORTED` to `PROTOCOL`.
 
-  The mode belongs to the owner's session, per instance. Espex reapplies
-  a `PROTOCOL` mode after a `CONFIGURE` reopens the port (the fresh
-  handle starts raw). The mode dies with the handle: both `UNSUBSCRIBE`
-  and disconnect close it without a `c:set_mode/2` call, so `c:close/1`
-  is where an adapter tears down its protocol handler. `c:set_mode/2`
-  with `:raw` only arrives when a client asks for it explicitly.
+  The mode belongs to the owner's session, per instance, and survives a
+  `CONFIGURE`. With `c:configure/2` the handle is retuned in place and
+  keeps its mode, so espex makes no `c:set_mode/2` call. Without it,
+  `CONFIGURE` reopens the port and espex reapplies a `PROTOCOL` mode on
+  the fresh handle, which starts raw. The mode dies with the handle: both
+  `UNSUBSCRIBE` and disconnect close it without a `c:set_mode/2` call, so
+  `c:close/1` is where an adapter tears down its protocol handler.
+  `c:set_mode/2` with `:raw` only arrives when a client asks for it
+  explicitly.
 
   ## Data flow
 
@@ -101,9 +107,15 @@ defmodule Espex.SerialProxy do
   the data back to an instance id.
 
   The client can later change port parameters by issuing another
-  configure request; the connection handler will `close/1` the existing
-  handle and call `open/3` again with the new options. Your adapter
-  doesn't need to handle reconfigure-in-place.
+  configure request. When your adapter exports `c:configure/2` (since
+  0.13.0), espex hands it the open handle and the new options, and the
+  session carries on: same handle, same subscription, same mode, no gap
+  in the data. Implement it when closing and reopening the device has
+  side effects, such as a USB CDC port dropping DTR/RTS on close or a
+  bridge treating line-coding changes as a signal. Otherwise espex calls
+  `close/1` on the existing handle and `open/3` again with the new
+  options, so an adapter without `c:configure/2` never has to retune in
+  place.
 
   ## `open_opts` reference
 
@@ -174,7 +186,7 @@ defmodule Espex.SerialProxy do
 
   | Request | Status |
   |---------|--------|
-  | CONFIGURE | `OK` when `c:open/3` succeeds, `ERROR` with the reason when it fails |
+  | CONFIGURE | `OK` when `c:configure/2` (on an open port) or `c:open/3` succeeds, `ERROR` with the reason when it fails |
   | SET_MODEM_PINS | `OK` / `ERROR` from `c:set_modem_pins/3`, `NOT_SUPPORTED` when the adapter does not implement it or returns `{:error, :not_supported}` |
   | GET_MODEM_PINS | `OK` with the line states, `NOT_SUPPORTED`, or `ERROR` |
   | SUBSCRIBE | `OK` once the instance is claimed — the adapter's `c:request/2` answer is logged, not echoed, since ownership is taken regardless; `PORT_IN_USE` when another live connection owns it |
@@ -283,7 +295,8 @@ defmodule Espex.SerialProxy do
   than a one-shot stash: after every successful `c:open/3` (whether
   triggered by a lazy open or by CONFIGURE), espex re-issues `c:request/2`
   with `:subscribe` if the intent is set, so a subscription survives
-  reconfiguration instead of being consumed by the first open. Your
+  reconfiguration instead of being consumed by the first open. A
+  `c:configure/2` keeps the handle, so it needs no re-issue. Your
   adapter still never receives `request/2` before `open/3` — the
   `handle` argument is always one you just returned. A `:subscribe` or
   `:unsubscribe` that can't reach the adapter yet (the lazy/configure
@@ -383,7 +396,16 @@ defmodule Espex.SerialProxy do
   @callback write(handle(), data :: binary()) :: :ok | {:error, term()}
 
   @doc """
-  Close an opened instance and release any associated resources.
+  Release this session: the handle `c:open/3` returned is done with, and
+  so is any per-session state such as a protocol handler (see "Port
+  mode"). Called on UNSUBSCRIBE, on disconnect, and before the reopen of
+  a CONFIGURE when the adapter does not export `c:configure/2`.
+
+  The device itself may stay open. An adapter that holds the device for
+  as long as it is attached — to keep the modem lines steady, or the
+  bytes that arrive between sessions — detaches the session here and
+  keeps the device; one that opens the device per session closes it.
+  Either way, a later `c:open/3` for the instance must succeed.
   """
   @callback close(handle()) :: :ok
 
@@ -464,7 +486,8 @@ defmodule Espex.SerialProxy do
   `NOT_SUPPORTED`), or `{:error, reason}` for a failure (acknowledged
   `ERROR`). Espex calls this with `:raw` only when the owner leaves
   protocol mode explicitly, and re-issues `:protocol` on the new handle
-  after a CONFIGURE reopens the port. A session ending (UNSUBSCRIBE or
+  after a CONFIGURE reopens the port (never after `c:configure/2`, which
+  keeps the handle and its mode). A session ending (UNSUBSCRIBE or
   disconnect) closes the handle instead; tear the protocol handler down
   in `c:close/1`. See "Port mode" above.
   """
@@ -480,10 +503,33 @@ defmodule Espex.SerialProxy do
   """
   @callback identity(instance :: non_neg_integer()) :: Identity.t() | nil
 
+  @doc since: "0.13.0"
+  @doc """
+  Apply new options to an open session in place
+  (`SerialProxyConfigureRequest` on a port that already has a handle).
+  Optional.
+
+  Return `:ok` once the settings are in effect: the handle stays, and so
+  do the client's subscription and mode. Return `{:error, reason}` when
+  the settings cannot be applied: the CONFIGURE is acknowledged `ERROR`
+  and the handle stays, at its previous settings. A refusal here is not a
+  failed open, so it never delays a later lazy open.
+
+  Espex calls this only with a handle you returned from `c:open/3`. A
+  CONFIGURE before any open still goes through `c:open/3`, and an
+  adapter that does not export `configure/2` gets `c:close/1` followed
+  by `c:open/3` instead. Skipping a retune when `open_opts` match the
+  current settings is the adapter's choice; some USB bridges watch
+  line-coding changes as a signalling channel, so a redundant apply is
+  not always harmless. See "Data flow" above.
+  """
+  @callback configure(handle(), open_opts()) :: :ok | {:error, term()}
+
   @optional_callbacks set_modem_pins: 3,
                       get_modem_pins: 1,
                       request: 2,
                       default_open_opts: 1,
                       set_mode: 2,
-                      identity: 1
+                      identity: 1,
+                      configure: 2
 end

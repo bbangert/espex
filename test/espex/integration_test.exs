@@ -232,7 +232,7 @@ defmodule Espex.IntegrationTest do
     end
 
     @tag adapters: %{serial_proxy: Espex.Test.TrackingSerialProxy}
-    test "subscription persists across reconfigure", %{port: port} do
+    test "subscription persists across reconfigure (close + reopen without configure/2)", %{port: port} do
       socket = connect(port)
 
       send_struct(socket, %Proto.SerialProxyRequest{
@@ -257,6 +257,36 @@ defmodule Espex.IntegrationTest do
       {:ok, %Proto.SerialProxyRequestResponse{type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE}, rest2} =
         recv_struct(socket, rest1)
 
+      assert {:error, :timeout} = recv_struct(socket, rest2, 250)
+
+      :gen_tcp.close(socket)
+    end
+
+    @tag adapters: %{serial_proxy: Espex.Test.ConfiguringSerialProxy}
+    test "subscription persists across an in-place configure/2 without a reopen", %{port: port} do
+      socket = connect(port)
+
+      send_struct(socket, %Proto.SerialProxyRequest{
+        instance: 0,
+        type: :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
+      })
+
+      assert_receive {:open, 0, _opts1, _subscriber1}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      {:ok, %Proto.SerialProxyRequestResponse{}, rest1} = recv_struct(socket)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
+
+      assert_receive {:configure, {:tracking_handle, 0}, opts2}
+      assert opts2[:speed] == 115_200
+
+      {:ok, %Proto.SerialProxyRequestResponse{type: :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE}, rest2} =
+        recv_struct(socket, rest1)
+
+      # Same handle, so nothing to close, reopen or resubscribe.
+      refute_received {:close, _}
+      refute_received {:open, _, _, _}
+      refute_received {:request, _, :subscribe}
       assert {:error, :timeout} = recv_struct(socket, rest2, 250)
 
       :gen_tcp.close(socket)

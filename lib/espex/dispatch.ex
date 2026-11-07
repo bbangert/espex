@@ -40,6 +40,7 @@ defmodule Espex.Dispatch do
           | {:close, atom()}
           | {:log, :debug | :info | :warning | :error, String.t()}
           | {:serial_open, instance :: non_neg_integer(), SerialProxy.open_opts() | :default_opts}
+          | {:serial_configure, instance :: non_neg_integer(), SerialProxy.open_opts()}
           | {:serial_write, instance :: non_neg_integer(), data :: binary()}
           | {:serial_close, instance :: non_neg_integer()}
           | {:serial_modem_pins_set, instance :: non_neg_integer(), rts :: boolean(), dtr :: boolean()}
@@ -272,14 +273,11 @@ defmodule Espex.Dispatch do
       true ->
         opts = SerialProxy.configure_request_to_open_opts(req)
 
-        close_actions =
-          if ConnectionState.port_open?(state, req.instance) do
-            [{:serial_close, req.instance}]
-          else
-            []
-          end
-
-        {state, close_actions ++ [{:serial_open, req.instance, opts}]}
+        if ConnectionState.port_open?(state, req.instance) do
+          {state, [{:serial_configure, req.instance, opts}]}
+        else
+          {state, [{:serial_open, req.instance, opts}]}
+        end
     end
   end
 

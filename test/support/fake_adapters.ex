@@ -179,6 +179,59 @@ defmodule Espex.Test.ModeTrackingSerialProxy do
   end
 end
 
+defmodule Espex.Test.ConfiguringSerialProxy do
+  @moduledoc """
+  `Espex.Test.ModeTrackingSerialProxy` plus `configure/2` — the adapter that
+  retunes an open handle in place on CONFIGURE. Every call is forwarded
+  through the same listener fan-out (register under
+  `{Espex.Test.TrackingSerialProxy, test}`); `configure/2` notifies
+  `{:configure, handle, opts}` and answers `:ok`, or
+  `{:error, :test_induced_failure}` once after
+  `{Espex.Test.TrackingSerialProxy, :fail_next_configure}` is set.
+  """
+  @behaviour Espex.SerialProxy
+
+  alias Espex.Test.{ModeTrackingSerialProxy, TrackingSerialProxy}
+
+  @impl true
+  defdelegate list_instances, to: TrackingSerialProxy
+
+  @impl true
+  defdelegate open(instance, opts, subscriber), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate write(handle, data), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate close(handle), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate set_modem_pins(handle, rts, dtr), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate get_modem_pins(handle), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate request(handle, type), to: TrackingSerialProxy
+
+  @impl true
+  defdelegate set_mode(handle, mode), to: ModeTrackingSerialProxy
+
+  @impl true
+  def configure(handle, opts) do
+    TrackingSerialProxy.notify({:configure, handle, opts})
+
+    case :persistent_term.get({TrackingSerialProxy, :fail_next_configure}, false) do
+      true ->
+        :persistent_term.erase({TrackingSerialProxy, :fail_next_configure})
+        {:error, :test_induced_failure}
+
+      false ->
+        :ok
+    end
+  end
+end
+
 defmodule Espex.Test.TrackingSerialProxyWithDefaults do
   @moduledoc """
   Same as `Espex.Test.TrackingSerialProxy` but exports
@@ -1010,7 +1063,7 @@ defmodule Espex.Test.IdentitySerialProxy do
       manufacturer: "Nabu Casa",
       product: "ZBT-2",
       serial_number: "3c2f19a0",
-      usb: %{vendor_id: 0x303A, product_id: 0x4001, interface_number: 1}
+      usb: %{vendor_id: 0x303A, product_id: 0x4001, interface_number: 1, interface_description: "ZBT-2"}
     )
   end
 

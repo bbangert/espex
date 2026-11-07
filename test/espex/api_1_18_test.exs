@@ -316,6 +316,7 @@ defmodule Espex.Api118Test do
       assert usb.flags == 1
       assert {usb.manufacturer, usb.product} == {"Nabu Casa", "ZBT-2"}
       assert usb.usb.vendor_id == 0x303A
+      assert usb.usb.interface_description == "ZBT-2"
 
       assert none == %Proto.SerialProxyIdentity{instance: 1, source: :SERIAL_PROXY_IDENTITY_SOURCE_NONE}
       :gen_tcp.close(socket)

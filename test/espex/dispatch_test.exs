@@ -234,12 +234,15 @@ defmodule Espex.DispatchTest do
       assert opts[:flow_control] == :hardware
     end
 
-    test "owned instance already open: emits :serial_close then :serial_open" do
+    test "owned instance already open: emits :serial_configure with translated opts" do
       info = SerialProxy.Info.new(instance: 0, name: "n")
       s = owned_state([info], 0) |> ConnectionState.put_port(0, :existing_handle)
-      {_s, actions} = Dispatch.handle_request(s, %Proto.SerialProxyConfigureRequest{instance: 0})
+      req = %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 460_800, flow_control: true}
 
-      assert [{:serial_close, 0}, {:serial_open, 0, _opts}] = actions
+      {_s, [{:serial_configure, 0, opts}]} = Dispatch.handle_request(s, req)
+
+      assert opts[:speed] == 460_800
+      assert opts[:flow_control] == :hardware
     end
 
     test "known instance without SUBSCRIBE: acks PORT_IN_USE, no open" do
