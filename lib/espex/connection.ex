@@ -551,6 +551,36 @@ defmodule Espex.Connection do
     end
   end
 
+  # CONFIGURE on an open port. An adapter exporting configure/2 retunes the
+  # handle in place, so the session (handle, subscribe intent, mode) stays
+  # as it is; espex acks ERROR and keeps the handle, expecting the adapter
+  # to have left the port at its old settings. This is not an open failure.
+  # Without the callback the port is closed and reopened, and the reopen
+  # reattaches the session.
+  defp interpret_action(socket, state, {:serial_configure, instance, opts}) do
+    adapter = state.adapters.serial_proxy
+
+    with true <- optional_callback?(adapter, :configure, 2),
+         {:ok, handle} <- ConnectionState.port_handle(state, instance) do
+      result =
+        case adapter.configure(handle, opts) do
+          :ok ->
+            Logger.info("Espex #{state.peer} reconfigured serial proxy instance #{instance}")
+            {:ok, :ok}
+
+          {:error, reason} = error ->
+            Logger.warning("Espex #{state.peer} serial configure instance #{instance} failed: #{inspect(reason)}")
+            error
+        end
+
+      ack_configure(socket, state, instance, opts, result)
+    else
+      _ ->
+        {:cont, state} = interpret_action(socket, state, {:serial_close, instance})
+        interpret_action(socket, state, {:serial_open, instance, opts})
+    end
+  end
+
   defp interpret_action(_socket, state, {:serial_write, instance, data}) do
     state
     |> ConnectionState.port_handle(instance)

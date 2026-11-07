@@ -6,7 +6,7 @@ defmodule Espex.Api117Test do
 
   import Espex.Test.TcpClient
 
-  alias Espex.{Proto, Server}
+  alias Espex.{ConnectionState, Proto, Server}
 
   @subscribe :SERIAL_PROXY_REQUEST_TYPE_SUBSCRIBE
   @unsubscribe :SERIAL_PROXY_REQUEST_TYPE_UNSUBSCRIBE
@@ -455,6 +455,116 @@ defmodule Espex.Api117Test do
 
       set_mode(socket, 0, 7)
       _rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_INVALID_ARGUMENT)
+
+      :gen_tcp.close(socket)
+    end
+  end
+
+  # Adapters without configure/2 keep the close + reopen path; the CONFIGURE
+  # cases above (TrackingSerialProxy / ModeTrackingSerialProxy) cover it.
+  describe "CONFIGURE with configure/2" do
+    @describetag serial_proxy: Espex.Test.ConfiguringSerialProxy
+
+    @configure :SERIAL_PROXY_REQUEST_TYPE_CONFIGURE
+
+    test "retunes the open handle in place; the subscription and data path stay", ctx do
+      %{port: port, server_name: server_name} = ctx
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, pid}
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 460_800, flow_control: true})
+      assert_receive {:configure, {:tracking_handle, 0}, opts}
+      assert opts[:speed] == 460_800
+      assert opts[:flow_control] == :hardware
+      rest = assert_ack(socket, rest, 0, @configure, :SERIAL_PROXY_STATUS_OK)
+
+      refute_received {:close, _}
+      refute_received {:open, _, _, _}
+      refute_received {:request, _, :subscribe}
+      assert Server.serial_owner(server_name, 0) == pid
+
+      send(pid, {:espex_serial_data, {:tracking_handle, 0}, "after"})
+      assert {:ok, %Proto.SerialProxyDataReceived{instance: 0, data: "after"}, _rest} = recv_struct(socket, rest)
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "out"})
+      assert_receive {:write, {:tracking_handle, 0}, "out"}
+
+      :gen_tcp.close(socket)
+    end
+
+    test "PROTOCOL mode survives without a set_mode/2 reapply", %{port: port, server_name: server_name} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+
+      set_mode(socket, 0, :SERIAL_PROXY_MODE_PROTOCOL)
+      assert_receive {:set_mode, {:tracking_handle, 0}, :protocol}
+      rest = assert_ack(socket, rest, 0, :SERIAL_PROXY_REQUEST_TYPE_SET_MODE, :SERIAL_PROXY_STATUS_OK)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
+      assert_receive {:configure, {:tracking_handle, 0}, _opts}
+      rest = assert_ack(socket, rest, 0, @configure, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, _}
+      refute_received {:close, _}
+
+      owner = Server.serial_owner(server_name, 0)
+      {_socket, conn_state} = :sys.get_state(owner)
+      assert ConnectionState.serial_mode(conn_state, 0) == :protocol
+
+      # UNSUBSCRIBE tears the session down through close/1 alone, never a
+      # raw reset.
+      request(socket, 0, @unsubscribe)
+      assert_receive {:close, {:tracking_handle, 0}}
+      _rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:set_mode, _, :raw}
+
+      :gen_tcp.close(socket)
+    end
+
+    test "a refused configure acks ERROR, keeps the handle and arms no open backoff", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, _pid}
+
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_configure}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_configure}) end)
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 115_200})
+      assert_receive {:configure, {:tracking_handle, 0}, _opts}
+      assert {:ok, %Proto.SerialProxyRequestResponse{} = ack, rest} = recv_struct(socket, rest)
+      assert {ack.instance, ack.type, ack.status} == {0, @configure, :SERIAL_PROXY_STATUS_ERROR}
+      assert ack.error_message =~ "test_induced_failure"
+      refute_received {:close, _}
+
+      send_struct(socket, %Proto.SerialProxyWriteRequest{instance: 0, data: "still"})
+      assert_receive {:write, {:tracking_handle, 0}, "still"}
+      refute_received {:open, _, _, _}
+
+      # A later lazy open is not held back by the refusal.
+      request(socket, 0, @unsubscribe)
+      assert_receive {:close, {:tracking_handle, 0}}
+      rest = assert_ack(socket, rest, 0, @unsubscribe, :SERIAL_PROXY_STATUS_OK)
+      _rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts2, _pid2}
+
+      :gen_tcp.close(socket)
+    end
+
+    test "CONFIGURE with no handle yet still opens via open/3", %{port: port} do
+      {socket, _hello, rest} = hello(port)
+
+      :persistent_term.put({Espex.Test.TrackingSerialProxy, :fail_next_open}, true)
+      on_exit(fn -> :persistent_term.erase({Espex.Test.TrackingSerialProxy, :fail_next_open}) end)
+      rest = subscribe(socket, 0, rest)
+      assert_receive {:open, 0, _opts, _pid}
+
+      send_struct(socket, %Proto.SerialProxyConfigureRequest{instance: 0, baudrate: 460_800})
+      assert_receive {:open, 0, opts, _pid2}
+      assert opts[:speed] == 460_800
+      assert_receive {:request, {:tracking_handle, 0}, :subscribe}
+      _rest = assert_ack(socket, rest, 0, @configure, :SERIAL_PROXY_STATUS_OK)
+      refute_received {:configure, _, _}
 
       :gen_tcp.close(socket)
     end

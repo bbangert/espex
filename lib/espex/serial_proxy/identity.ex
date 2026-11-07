@@ -30,7 +30,9 @@ defmodule Espex.SerialProxy.Identity do
       `:vendor_id`, `:product_id`, `:bcd_device`, `:interface_number`
       (the `bInterfaceNumber` the port is bound through),
       `:interface_class` and `:port_number` (the port's index among those
-      a vendor driver exposes on the interface). Missing keys are 0.
+      a vendor driver exposes on the interface), plus
+      `:interface_description` (the interface's `iInterface` string, since
+      0.13.0). Missing ids are 0 and a missing description is `""`.
   """
 
   import Bitwise
@@ -45,7 +47,8 @@ defmodule Espex.SerialProxy.Identity do
           optional(:bcd_device) => non_neg_integer(),
           optional(:interface_number) => non_neg_integer(),
           optional(:interface_class) => non_neg_integer(),
-          optional(:port_number) => non_neg_integer()
+          optional(:port_number) => non_neg_integer(),
+          optional(:interface_description) => String.t()
         }
 
   @type t :: %__MODULE__{
@@ -75,7 +78,15 @@ defmodule Espex.SerialProxy.Identity do
   @connected_bit 1 <<< 0
   @error_bit 1 <<< 1
 
-  @usb_keys [:vendor_id, :product_id, :bcd_device, :interface_number, :interface_class, :port_number]
+  @usb_keys [
+    :vendor_id,
+    :product_id,
+    :bcd_device,
+    :interface_number,
+    :interface_class,
+    :port_number,
+    :interface_description
+  ]
 
   @doc since: "0.12.0"
   @doc """

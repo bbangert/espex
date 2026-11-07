@@ -51,6 +51,32 @@ defmodule Espex.SerialProxy.IdentityTest do
     end
   end
 
+  describe "interface_description" do
+    test "is carried in the descriptor as field 7" do
+      usb = %{vendor_id: 0x303A, product_id: 0x831A, interface_number: 0, interface_description: "ZBT-2"}
+      proto = Identity.to_proto(%Identity{instance: 0, source: :usb, connected?: true, usb: usb})
+
+      assert proto.usb.interface_description == "ZBT-2"
+      # Tag 0x3A = field 7, wire type 2 (length-delimited).
+      assert Proto.UsbDeviceDescriptor.encode(%Proto.UsbDeviceDescriptor{interface_description: "ZBT-2"}) ==
+               <<0x3A, 5, "ZBT-2">>
+    end
+
+    test "round-trips through the wire encoding" do
+      usb = %{vendor_id: 0x303A, product_id: 0x4001, interface_class: 2, interface_description: "CDC Data"}
+      proto = Identity.to_proto(%Identity{instance: 0, source: :usb, connected?: true, usb: usb})
+      decoded = proto |> Proto.SerialProxyIdentity.encode() |> Proto.SerialProxyIdentity.decode()
+
+      assert decoded == proto
+      assert decoded.usb.interface_description == "CDC Data"
+    end
+
+    test "defaults to empty when the adapter leaves it out" do
+      proto = Identity.to_proto(%Identity{instance: 0, source: :usb, usb: %{vendor_id: 1}})
+      assert proto.usb.interface_description == ""
+    end
+  end
+
   test "Info encodes the USB_SERIAL port type" do
     info = Info.new(instance: 0, name: "usb", port_type: :usb_serial)
     assert Info.to_proto(info).port_type == :SERIAL_PROXY_PORT_TYPE_USB_SERIAL
